@@ -2,6 +2,17 @@
 
 OpenAI-compatible HTTP server that wraps a local GGUF model in a Z3-verified reasoning loop. The model translates natural-language problems to SMT-LIB; Z3 does the search and verifies the answer with a machine-checkable certificate (a model + uniqueness proof, or a minimal unsat core).
 
+## Why this exists
+
+Demonstrated on a 3-disk Tower of Hanoi puzzle modified to forbid disk D2 from peg B (provably impossible — see [docs/benchmark.md](docs/benchmark.md), problem 18):
+
+- **Direct Qwen 3.6 35B** confidently emits a 10-move "solution" with a self-described "verification" step. The proposed sequence's move 6 is illegal (it moves D2 while D1 sits on top), but the model's verification only checks which pegs D2 visited, missing the legality violation entirely. The user gets a wrong answer with no signal of trouble.
+- **The harness** forces the model to commit to encoded constraints step-by-step before declaring complete. On the same prompt, the harness's prose correctly proves the puzzle IMPOSSIBLE, then runs a back-translation read-back pass on its own SMT-LIB; when the SMT encoding turned out to be incomplete (Z3 returned `unknown`) the read-back caught it and surfaced the gap loudly rather than silently certifying.
+
+The harness's headline value is in this regime: catching the kind of confident hallucinated proofs that direct prose-only models produce when they pattern-match to a standard solution and miss a modification.
+
+For routine puzzles where direct already gets it right, the harness's value is the machine-checkable certificate it adds (Z3 model + uniqueness proof, or a minimal unsat core) — useful when you need to trust the answer downstream.
+
 ## Install
 
 ```bash
