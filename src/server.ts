@@ -15,6 +15,7 @@ import crypto from "node:crypto";
 import type { LLMClient } from "./llm/types.js";
 import type { ServerConfig } from "./config.js";
 import { runHarness } from "./harness/harness.js";
+import { runAgent } from "./harness/agent.js";
 
 const MAX_BODY_SIZE = 10 * 1024 * 1024;
 
@@ -62,8 +63,13 @@ interface ChatRequest {
   model?: string;
   messages: Array<{ role: string; content: string }>;
   max_steps?: number;
+  max_turns?: number;
   /** When true, bypass harness and call the model directly. */
   raw?: boolean;
+  /** When set to "agent", use the REPL-style tool-call agent loop
+   *  instead of the step-based harness. Default is the step-based
+   *  harness for backward compatibility. */
+  mode?: "harness" | "agent";
 }
 
 export function createServer(
@@ -131,9 +137,13 @@ export function createServer(
           content = llmRes.content;
           finishReason = llmRes.finishReason;
         } else {
-          const result = await runHarness(userMsg.content, llmClient, {
-            config: body.max_steps ? { maxSteps: body.max_steps } : undefined,
-          });
+          const result = body.mode === "agent"
+            ? await runAgent(userMsg.content, llmClient, {
+                config: body.max_turns ? { maxTurns: body.max_turns } : undefined,
+              })
+            : await runHarness(userMsg.content, llmClient, {
+                config: body.max_steps ? { maxSteps: body.max_steps } : undefined,
+              });
           if (result.status === "completed") {
             content = result.finalAnswer;
             finishReason = "stop";
