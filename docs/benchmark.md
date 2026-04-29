@@ -28,12 +28,19 @@
 | 13 | `snail-pole` (climb 4m / slide 3m, 12m pole, when escape?) | medium | 88.6 | ✓ (9) | 391.4 | ✓ (9) | unique |
 | 14 | `car-wash-decision` (wash my car at car wash 50m away — walk or drive?) | medium | 14.5 | ✓ (DRIVE) | 265.4 | ✓ (DRIVE) | unique |
 | 15 | `zebra-5x5` (classic 15-clue Einstein zebra) | very-hard | 93.1 | ✓ (full grid + Norwegian/Japanese) | 514.4 | ✓ (full grid matches published solution) | unique (read-back verification: OK) |
+| 16 | `bridge-torch` (4 people, times 1/2/6/10, non-greedy optimum) | hard | 90.0 | ✓ (17, with full schedule) | 2512.2 | ✓ (17, in prose; Z3 returned `unknown` on the planning encoding) | n/a (read-back: NEEDS_FIX → OK on 2nd attempt — first observed end-to-end self-correction) |
+| 17 | `n-queens-8` (find any valid 8-queens placement) | hard | 90.0 | ✓ (placement self-verified by row+col, row−col, row+col uniqueness) | 315.8 | ✓ (Z3 model independently valid) | NOT unique (8-queens has 92 solutions — non-uniqueness is correct here, not a bug) |
+| 18 | `hanoi-d2-locked` (3-disk Tower of Hanoi with D2 forbidden from peg B; **intentionally impossible**) | hard | 254.2 | ✗ — **confidently wrong "10 moves" with hallucinated verification** | 1446.5 | ✓ in prose (correctly identified IMPOSSIBLE), ✗ in SMT (encoding incomplete, Z3 returned `unknown`) | n/a (read-back: NEEDS_FIX × 2, max retries) |
 
-Across problems 1–7 and 9–14, **direct Qwen 3.6 35B got every solvable puzzle logically right**. We ran a curated set of "puzzles models commonly fail on" sourced from the *Easy Problems That LLMs Get Wrong* paper (arxiv 2405.19616), Apple's *Illusion of Reasoning* paper, and the ZebraLogic / SATBench benchmarks — and Qwen 3.6 35B passed every one of them. The harness's value at that range is independent verification — every harnessed answer ships with a Z3-extracted model plus a UNSAT-on-negation uniqueness proof.
+Direct Qwen 3.6 35B got most solvable puzzles right, **but problem 18 (modified Tower of Hanoi) is the first clean case in this benchmark where direct produces a confidently wrong logical answer with a hallucinated verification**, and the harness's prose reasoning catches the actual answer (IMPOSSIBLE). This is exactly the failure mode Apple's *Illusion of Thinking* paper documents — pattern-matching to a standard recursive solution and missing a modification.
 
-**Problem 8 (Sudoku)** is the case where direct fails on token budget and the harness succeeds: direct burned its full 24576-token budget on `<think>` and never emitted a final grid, while the harness produced a complete, Z3-verified, uniquely-determined solution.
+We ran a curated set of "puzzles models commonly fail on" sourced from the *Easy Problems That LLMs Get Wrong* paper (arxiv 2405.19616), Apple's *Illusion of Reasoning* paper, and the ZebraLogic / SATBench benchmarks. Qwen 3.6 35B passed most of them — including bridge-and-torch and 8-queens — but failed on the modified Hanoi puzzle by emitting a 10-move sequence containing an illegal move it claimed to have verified.
+
+**Problem 8 (Sudoku)** is the case where direct fails on token budget: direct burned its full 24576-token budget on `<think>` and never emitted a final grid, while the harness produced a complete, Z3-verified, uniquely-determined solution.
 
 **Problem 15 (Zebra 5×5)** was originally a harness failure (off-by-one in categorical-to-integer mapping caught by the uniqueness check but not corrected). After adding a **back-translation read-back pass** before finalizing — where the model is asked to translate each `:named` assertion back into English and compare against the original prompt clues — the harness now solves it correctly with all 25 cells matching the published solution and uniqueness proven.
+
+**Problem 18 (Hanoi with locked D2)** is the marquee result: direct says 10 moves with a fake verification (the proposed sequence's move 6 illegally moves D2 while D1 sits on top); harness's prose correctly identifies the puzzle as impossible (D3 can never reach C because D2 must be on either A or C, blocking either D3's source or destination). The harness's SMT encoding was incomplete and Z3 couldn't verify it formally, but the read-back loop caught the encoding gap and flagged it loudly. Even with the formal verification missing, the harness's reasoning is correct where direct's is not.
 
 ## Problem 1 — `knights-3` (easy)
 
@@ -356,6 +363,99 @@ The read-back mechanism is now the harness's defense-in-depth against encoding-f
 
 **Caveat**: we have not yet observed read-back firing a `NEEDS_FIX` and then converging to a correct re-encoding in a single run. To stress-test that pathway we would need to either run zebra many times until a buggy sample appears or deliberately inject a known-bad encoding. The mechanism is wired and verified to fire `OK` on a clean run; the corrective pathway is exercised but not yet observed end-to-end.
 
+## Problem 18 — `hanoi-d2-locked` (hard, the canonical Apple-paper failure mode)
+
+**Prompt**: 3-disk Tower of Hanoi from peg A to peg C, standard rules, with the additional restriction that disk D2 (medium) may never rest on peg B.
+
+**Ground truth**: **IMPOSSIBLE.** Quick proof — to move D3 (largest) from A to C, the destination peg C must be empty (no disk is larger than D3), so D1 and D2 must be elsewhere. The restriction forbids D2 from B. So D2 must be on A or C. If D2 is on A, it sits above D3 and blocks D3 from moving. If D2 is on C, then C is not empty, so D3 cannot move there. Either way D3 cannot reach C, ever.
+
+**Direct (254.2 s)**: emitted a confident **"10 moves"** answer with a complete sequence and a self-described "verification" step. The proposed sequence is:
+
+```
+1. D1: A → B
+2. D2: A → C
+3. D1: B → A
+4. D1: A → C
+5. D3: A → B
+6. D2: C → A    ← ILLEGAL: D1 is on top of D2 in C, can't move D2
+7. D1: C → B
+8. D3: B → C
+9. D2: A → C
+10. D1: B → C
+```
+
+The model's "verification" step listed D2's pegs as "A → C → A → C, never touches B" — true *if* every move were legal — but it never actually re-checked move legality. Move 6 is illegal: at that point C contains D1 on top of D2, so D2 isn't accessible. The model **fabricated a proof of solvability where none exists**.
+
+This is exactly the failure mode Apple's *Illusion of Thinking* paper documents: thinking models pattern-match to "Tower of Hanoi → standard recursive solution" and fit the modification into the existing template, missing that the modification breaks solvability. The hallucinated verification is also typical: the model performs *some* sanity check but not the right one.
+
+**Harnessed (1446.5 s, 2 steps)**: prose correctly identified the puzzle as **IMPOSSIBLE**. Direct quote from step 2:
+
+> *"To move the largest disk D3 from peg A to peg C, both D1 and D2 must be moved off A and stacked on a single intermediate peg X. Peg X cannot be A (occupied by D3). Peg X cannot be B (violates the restriction that D2 never rests on B). Therefore, X must be C. However, if D1 and D2 are on C, D3 cannot be placed on C because D3 is larger than D2 (violates the stacking rule). This means D3 can never leave peg A, making the goal state unreachable."*
+
+That's the exact correct argument. But the SMT encoding was incomplete: it declared 8 state snapshots and the no-D2-on-B restriction, but didn't encode the **transition rules** (only top disk moves, no larger-on-smaller). Z3 returned `unknown` on the partial encoding, so no formal certificate was produced.
+
+The read-back loop fired and identified exactly this:
+
+```
+Read-back verification:
+Attempt 1: NEEDS_FIX
+Attempt 2: NEEDS_FIX
+⚠ Model could not reconcile its encoding with the prompt within the retry budget.
+Final issues reported:
+  - The encoding lacks assertions defining valid transitions between states (time i to i+1),
+    specifically the rule that only the top disk can move and larger disks cannot be placed on smaller ones.
+  - The variables p1, p2, p3 used in the impossibility_proof assertion are not linked to the state variables
+    (P1_i, P2_i, P3_i), making the proof attempt invalid and disconnected from the simulation.
+  - The encoding allows for physically impossible moves (e.g., teleporting disks, placing larger disks on
+    smaller ones) because the standard Hanoi rules are not encoded.
+```
+
+The harness gave the user a clear warning: *the prose reasoning is right, but the SMT verification is incomplete, so don't take Z3's silence as a guarantee.*
+
+**Takeaway**: this is the marquee result of the benchmark.
+
+1. **Direct produces a confident hallucinated proof.** The 10-move sequence is wrong but presented authoritatively, with a fake "verification" that didn't catch the illegal move. A user reading direct's output would walk away believing the puzzle is solvable in 10 moves.
+2. **The harness's prose reasoning is correct** even though the formal verification didn't go through. This is the harness's secondary layer of defense: by structuring the model's output as steps that have to be "complete: true" and asserting impossibility through structured analysis, the harness's prose tends to be more conservative than direct's free-form output.
+3. **The read-back loop caught the encoding gap** and flagged it loudly across two attempts. The user is told *"the answer above is the model's prose only, Z3 did not verify"* — they can distrust the answer accordingly.
+
+The harness doesn't formally prove IMPOSSIBLE here, but it does the next-best thing: it produces a correct reasoning and surfaces the exact gap in its formal certification, where direct produces a wrong answer with no signal that anything's amiss.
+
+## Problem 16 — `bridge-torch` (hard, the non-greedy optimum trap)
+
+**Prompt**: four people share one torch, cross a 2-person bridge in the dark, with crossing times 1, 2, 6, 10 minutes; two crossing together go at the slower pace; the torch must come back. Minimum total time?
+
+**Ground truth**: 17 (non-greedy optimum). The greedy "fastest person escorts each slowpoke" gives 1+1+6+1+10 = 19 with two return trips, or 2+1+6+1+10 = 20 in another framing. The optimal 17 requires the non-obvious step of sending the two slowest *together* (paying max(6,10)=10 once instead of twice) and using the second-fastest as an extra returner: (1+2 cross: 2), (1 returns: 1), (6+10 cross: 10), (2 returns: 2), (1+2 cross: 2) = 17.
+
+**Direct (90.0 s)**: correctly identified the optimum is 17, gave the full 5-step schedule, explicitly noted that the greedy "1 escorts each" approach yields 20. Qwen knows the trick.
+
+**Harnessed (2512.2 s, ~42 min)**: also reached 17 in prose with the same schedule, but the SMT encoding was very ambitious — a full 5-step planning model with `define-fun` for `time(p)`, `max_val`, `moved`, `cost_for`, plus `near_t_p` boolean state per (trip, person), distinctness, transitions, and a goal-state assertion. Z3 returned `unknown` on this encoding (the conditional `define-fun`s push it out of a decidable fragment), so no model could be extracted — the harness rendered the `⚠ NO Z3 VERIFICATION` warning as designed.
+
+**The first end-to-end self-correction we've observed.** The read-back loop did fire and converge:
+
+```
+Read-back verification:
+Attempt 1: NEEDS_FIX
+Attempt 2: OK
+```
+
+After the first encoding the model judged the SMT didn't faithfully match the prompt; the harness disposed the solver, fed the model's own discrepancy list back as a step-1 hint, and the second attempt produced an encoding the model self-validated. So the read-back self-correction loop works as designed — but on this particular problem the second encoding was *still* in undecidable territory for Z3, so the verification step itself failed downstream of read-back's success.
+
+**Takeaway**: bridge-and-torch is a poor harness fit despite being a canonical LLM trap. The puzzle has a single integer answer derivable in prose, and the planning encoding required to actually let Z3 search the space pushes into theory fragments Z3 can't decide. Direct is faster (90s vs. 42min), produces a more readable answer, and is just as correct. **The read-back loop's first successful self-correction in the wild is the real result here**, not the puzzle outcome.
+
+## Problem 17 — `n-queens-8` (hard, combinatorial search where direct could silently fail)
+
+**Prompt**: place 8 queens on an 8×8 board so no two attack each other; provide one valid placement.
+
+**Ground truth**: any of the 92 valid 8-queens solutions.
+
+**Direct (90.0 s)**: emitted `(1,4), (2,6), (3,8), (4,2), (5,7), (6,1), (7,3), (8,5)` and *self-verified* it by checking that columns, row+col diagonals, and row−col diagonals are all distinct. Independent verification confirms: columns {4,6,8,2,7,1,3,5} distinct ✓; row+col {5,8,11,6,12,7,10,13} distinct ✓; row−col {-3,-4,-5,2,-2,5,4,3} distinct ✓. **Valid placement.**
+
+**Harnessed (315.8 s, 2 steps)**: encoded `c1..c8 ∈ [1,8]`, `(distinct ...)`, plus all 28 pairwise diagonal constraints (`(- ci cj) ≠ ±|i−j|`). Z3 returned a model `c1=4, c2=2, c3=8, c4=6, c5=1, c6=3, c7=5, c8=7` — independently valid. Read-back verification: OK.
+
+The harness flagged `NOT UNIQUE` because 8-queens has 92 solutions; that's *correct* (the prompt asked for one valid placement, not all of them) — the non-uniqueness flag here is informational, not a bug. The user gets a verified answer plus the honest disclosure that other placements also work.
+
+**Takeaway**: the failure mode I was hunting for here was direct silently emitting a placement that *looks* right but has two queens on a shared diagonal. Qwen pre-empted that by self-verifying its placement before submitting it. Both engines correct; the harness's contribution is the same machine-checkable certificate as before.
+
 ## Problem 6 — `knights-5-mixed-unsat` (intentionally contradictory)
 
 **Prompt**: same as problem 3 but D's statement reads *"exactly one of B, C, E is a Knight"* — which makes the puzzle contradictory under the standard rules.
@@ -411,11 +511,11 @@ The benchmark exercised the harness hard enough to force several fixes; these al
 
 ## Where direct fails / where harness wins
 
-After 15 problems spanning easy → very-hard, picked specifically from "models commonly fail" sources (the *Easy Problems That LLMs Get Wrong* paper, Apple's *Illusion of Reasoning*, ZebraLogic, SATBench, plus some originals), two distinct regimes have emerged:
+After 18 problems spanning easy → very-hard, picked specifically from "models commonly fail" sources (the *Easy Problems That LLMs Get Wrong* paper, Apple's *Illusion of Reasoning*, ZebraLogic, SATBench, plus some originals), three distinct regimes have emerged:
 
-### Direct wins / harness adds verification (problems 1–7, 9–14)
+### Direct wins / harness adds verification (problems 1–7, 9–14, 16–17)
 
-For 13 of 15 problems, **direct Qwen 3.6 35B got the right answer logically**. Including all the curated "trap" puzzles: Sally's sisters, Alice's brother's sisters, modified river-crossing, doubling jar, snail pole, car-wash decision, knights-and-knaves variants. These are problems where the literature suggests models routinely fail — Qwen 3.6 35B passes them. The harness's marginal value on this class is **independent verification**:
+For 15 of 18 problems, **direct Qwen 3.6 35B got the right answer logically**. Including all the curated "trap" puzzles: Sally's sisters, Alice's brother's sisters, modified river-crossing, doubling jar, snail pole, car-wash decision, knights-and-knaves variants, bridge-and-torch (the canonical non-greedy LLM trap), 8-queens with self-verified placement. These are problems where the literature suggests models routinely fail — Qwen 3.6 35B passes them. The harness's marginal value on this class is **independent verification**:
 
 - Every SAT result ships with a Z3 model and a uniqueness proof (UNSAT on negation).
 - Every UNSAT result (problem 7, pigeonhole) ships with a minimal conflicting core.
@@ -423,24 +523,28 @@ For 13 of 15 problems, **direct Qwen 3.6 35B got the right answer logically**. I
 
 On problems 1–4 the harness is also faster (1.7×–2.3×) because it bypasses prose case analysis.
 
-### Harness wins outright (problem 8: Sudoku)
+### Harness wins outright (problems 8, 18)
 
-The clearest crossover. Direct burned its full 24576-token budget on `<think>` and emitted nothing in 11 minutes. The harness translated the puzzle to ~215 lines of SMT, handed the search to Z3, and produced a complete verified solution (all 81 cells matching the published Inkala-2010 answer, uniqueness proven) in 8 minutes. **At 49152 tokens it was the same story** — Sudoku's case tree exceeds whatever budget you give the thinking model, but the SMT translation is comparatively short.
+Two distinct subtypes:
 
-This is the regime the harness was built for: combinatorial problems where the *search* dominates the *translation*. We expect the advantage to grow with grid size (16×16 sudoku, larger n-queens, real-world scheduling).
+**Problem 8 (Sudoku) — search exceeds the model's token budget.** Direct burned its full 24576-token budget on `<think>` and emitted nothing in 11 minutes. The harness translated the puzzle to ~215 lines of SMT, handed the search to Z3, and produced a complete verified solution (all 81 cells matching the published Inkala-2010 answer, uniqueness proven) in 8 minutes. The harness's advantage grows with grid size — Sudoku's case tree exceeds whatever budget you give the thinking model, but the SMT translation is comparatively short.
+
+**Problem 18 (Hanoi with locked D2) — direct hallucinates a proof; harness's prose reasoning catches the impossibility.** This is the canonical Apple-*Illusion of Thinking* failure mode in our benchmark: direct pattern-matched the puzzle to "Tower of Hanoi → standard recursive solution" and emitted a 10-move sequence with a fake verification. The sequence's move 6 is illegal (D1 is on top of D2, but D2 is moved). Direct's "verification" step only checked that D2 never visited peg B (true if all the moves were legal — but they weren't), missing that the move legality itself was violated. The harness's prose, working through what it would take for D3 to ever reach peg C, correctly concluded **IMPOSSIBLE** with a clean argument. The SMT encoding was incomplete (missing transition rules) and Z3 returned `unknown`, but the read-back loop caught the encoding gap and flagged it loudly across two attempts. *The user reading the harness output gets the correct answer and an honest disclosure about the missing formal certificate; the user reading direct's output gets a confidently wrong answer with no signal of trouble.*
 
 ### Closed gap: encoding fidelity (problem 15: Zebra 5×5)
 
-The original Zebra 5×5 run was the harness's most informative *failure*: the model produced a buggy SMT encoding (an off-by-one categorical mapping), self-diagnosed it in prose, but didn't repair the SMT before declaring `complete: true`. The uniqueness check correctly flagged the encoding as under-constrained but couldn't *fix* it — the verified Z3 model was for a different puzzle than the one in the prompt.
+The original Zebra 5×5 run was an informative *harness* failure: the model produced a buggy SMT encoding (an off-by-one categorical mapping), self-diagnosed it in prose, but didn't repair the SMT before declaring `complete: true`. The uniqueness check correctly flagged the encoding as under-constrained but couldn't *fix* it — the verified Z3 model was for a different puzzle than the one in the prompt.
 
-This pattern is well-studied in the autoformalization literature; the standard mitigation is **back-translation** (translate the formal encoding back to natural language and compare against the source). We added that as a read-back pass before finalizing. On the re-run, the harness produced a clean encoding and read-back returned `OK` — final grid matches the published solution exactly, uniqueness proven. The corrective branch (where read-back fires `NEEDS_FIX` and triggers a re-encode) is wired and exercised but has not yet been observed end-to-end with a buggy sample; further stress-testing is on the open-questions list.
+This pattern is well-studied in the autoformalization literature; the standard mitigation is **back-translation** (translate the formal encoding back to natural language and compare against the source). We added that as a read-back pass before finalizing. On the re-run, the harness produced a clean encoding and read-back returned `OK` — final grid matches the published solution exactly, uniqueness proven. The read-back self-correction loop has now also been observed firing end-to-end on bridge-and-torch (problem 16, NEEDS_FIX → OK on attempt 2) and Hanoi (problem 18, NEEDS_FIX × 2 reaching the retry cap and surfacing the encoding bug to the user).
 
 ### Takeaways
 
-1. **Curated "models fail at this" problems are largely solved by Qwen 3.6 35B (35B Q8) with thinking enabled.** ZebraLogic / SATBench-style benchmarks were measured on smaller / older models or with constrained output formats. With the JSON grammar removed and 49K-token budgets, the model passes nearly everything in our trap-puzzle set.
-2. **The harness's win condition is combinatorial depth, not prompt difficulty.** Sudoku is harder for the model not because it's "tricky" but because the answer requires real search; Z3 does that search trivially.
-3. **Encoding fidelity is the harness's Achilles' heel, partially addressed.** One off-by-one in 25-variable categorical encoding originally produced a verified-wrong answer. The back-translation read-back pass closes the most common version of this gap (categorical mapping errors, direction flips, missing clues), but the literature is consistent that no single technique gives full guarantees — see *Autoformalization in the Era of Large Language Models* survey, table of methods. Layering test-case probing on top of read-back is the natural next step.
-4. **For single-integer-answer puzzles the harness is bookkeeping at best.** river-large-boat is the clearest case: the model decided in prose, then asserted `(= crossings 1)`. Z3's verification is just "1 = 1." For those problems you don't gain anything over direct.
+1. **Curated "models fail at this" problems are mostly solved by Qwen 3.6 35B (35B Q8) with thinking enabled.** ZebraLogic / SATBench-style benchmarks were measured on smaller / older models or with constrained output formats. With the JSON grammar removed and 49K-token budgets, the model passes nearly everything in our trap-puzzle set.
+2. **The harness's headline win is the Apple-paper failure mode (problem 18).** When direct pattern-matches to a standard recursive solution and hallucinates a verification, the harness's structured-step prose forces the model to be more conservative and tends to find the genuinely-correct answer (here: IMPOSSIBLE). Even when Z3 itself can't certify, the harness's prose layer is more reliable than direct's prose because the harness has to commit to encoded constraints first.
+3. **The harness's secondary win is combinatorial depth (problem 8).** Sudoku is harder for the model not because it's "tricky" but because the answer requires real search; Z3 does that search trivially.
+4. **Encoding fidelity is the harness's Achilles' heel, partially addressed.** One off-by-one in 25-variable categorical encoding originally produced a verified-wrong answer. The back-translation read-back pass closes the most common version of this gap (categorical mapping errors, direction flips, missing clues), but the literature is consistent that no single technique gives full guarantees — see *Autoformalization in the Era of Large Language Models* survey, table of methods. Layering test-case probing on top of read-back is the natural next step.
+5. **For single-integer-answer puzzles the harness is bookkeeping at best.** river-large-boat is the clearest case: the model decided in prose, then asserted `(= crossings 1)`. Z3's verification is just "1 = 1." For those problems you don't gain anything over direct.
+6. **Encoding planning problems for Z3 is genuinely hard.** Bridge-and-torch and Hanoi both produced encodings that pushed Z3 into undecidable theory fragments (the model used `define-fun` with conditional `ite`s). Bounded planning over discrete state spaces is well-known to be hard to encode for vanilla SMT — these problems benefit from specialized tactics or PDDL-style planners. Future work could route planning problems to a different solver back-end.
 
 ## Reproducing
 

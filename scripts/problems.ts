@@ -129,6 +129,51 @@ Determine, for each house 1..5, the colour, nationality, drink, cigar, and pet. 
     maxSteps: 25,
   },
 
+  "hanoi-d2-locked": {
+    id: "hanoi-d2-locked",
+    type: "Modified Tower of Hanoi (forbidden-peg restriction; intentionally UNSAT)",
+    difficulty: "hard",
+    prompt: `Standard Tower of Hanoi puzzle: three disks D1 (smallest), D2 (medium), and D3 (largest) start stacked on peg A in size order (D3 at the bottom). The goal is to move all three to peg C in the same order. There are three pegs: A, B, and C. Standard rules apply:
+- Move one disk at a time.
+- Only the top disk of any peg can be moved.
+- A larger disk may never be placed on top of a smaller disk.
+
+ADDITIONAL RESTRICTION: disk D2 may never rest on peg B at any point during the solution. (D2 may be on peg A or peg C only.)
+
+Determine whether this puzzle can be solved under both the standard rules and the restriction. If yes, give the minimum number of moves and a valid move sequence. If no, prove the puzzle is impossible with a clear argument.
+
+Show your reasoning step by step, then state the answer as either a single integer (minimum moves) or "IMPOSSIBLE" with justification.`,
+    expectedAnswer:
+      "IMPOSSIBLE. To move D3 from peg A to peg C, the destination peg C must be empty (D3 is the largest) and D1, D2 must be elsewhere. With D2 forbidden from peg B, D2 must be on either A or C. If D2 is on A, it sits on top of D3, blocking D3's movement. If D2 is on C, then C is not empty and D3 cannot move there. Either way, D3 can never be moved to C. The puzzle has no valid solution. (Direct LLMs are documented to pattern-match to the standard 7-move recursive solution and miss the impossibility — Apple's *Illusion of Thinking* paper.)",
+    maxSteps: 12,
+  },
+
+  "bridge-torch": {
+    id: "bridge-torch",
+    type: "Bridge-and-torch optimisation (non-greedy minimum)",
+    difficulty: "hard",
+    prompt: `Four people need to cross a rickety bridge at night. They share one torch. The bridge can hold at most two people at a time. The torch must be carried for any crossing — so when two people cross together, they share the torch and travel at the slower person's pace. After people reach the far side, the torch has to be carried back so others can cross.
+
+The four people take 1, 2, 6, and 10 minutes to cross individually.
+
+What is the minimum total time for all four to be on the far side of the bridge? Show your reasoning, including the schedule of crossings, then state the answer as a single integer (minutes).`,
+    expectedAnswer:
+      "17. The non-greedy optimum sends the two slowest together: (1+2 cross: 2 min), (1 returns: 1 min), (6+10 cross: 10 min), (2 returns: 2 min), (1+2 cross: 2 min) = 17. The greedy 'fastest escorts everyone' strategy gives 1+1+6+1+10 = … wait the greedy total is actually 2+1+6+1+10 = 20. Models that pick the greedy approach commonly answer 20 (or 19 if they miscalculate); the non-greedy 17 requires recognising that it pays to send the two slowest TOGETHER and bring back a slower returnee.",
+    maxSteps: 12,
+  },
+
+  "n-queens-8": {
+    id: "n-queens-8",
+    type: "8-queens (find a valid placement)",
+    difficulty: "hard",
+    prompt: `Place 8 queens on an 8×8 chessboard so that no two queens attack each other (no two in the same row, same column, or same diagonal).
+
+Provide a valid placement as 8 (row, column) pairs with rows and columns numbered 1..8. Show your reasoning, then state the placement as a list, e.g. "(1, 4), (2, 7), …".`,
+    expectedAnswer:
+      "Any of the 92 valid 8-queens solutions. One example: (1,1), (2,5), (3,8), (4,6), (5,3), (6,7), (7,2), (8,4). Direct LLMs commonly emit a placement that LOOKS plausible but has two queens on a shared diagonal — the failure is silent unless verified.",
+    maxSteps: 12,
+  },
+
   "snail-pole": {
     id: "snail-pole",
     type: "Off-by-one trap (models often answer 12 instead of 9)",
