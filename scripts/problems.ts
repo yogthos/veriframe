@@ -131,7 +131,7 @@ Determine, for each house 1..5, the colour, nationality, drink, cigar, and pet. 
 
   "hanoi-d2-locked": {
     id: "hanoi-d2-locked",
-    type: "Modified Tower of Hanoi (forbidden-peg restriction; intentionally UNSAT)",
+    type: "Modified Tower of Hanoi (forbidden-peg restriction; non-standard solution)",
     difficulty: "hard",
     prompt: `Standard Tower of Hanoi puzzle: three disks D1 (smallest), D2 (medium), and D3 (largest) start stacked on peg A in size order (D3 at the bottom). The goal is to move all three to peg C in the same order. There are three pegs: A, B, and C. Standard rules apply:
 - Move one disk at a time.
@@ -144,7 +144,7 @@ Determine whether this puzzle can be solved under both the standard rules and th
 
 Show your reasoning step by step, then state the answer as either a single integer (minimum moves) or "IMPOSSIBLE" with justification.`,
     expectedAnswer:
-      "IMPOSSIBLE. To move D3 from peg A to peg C, the destination peg C must be empty (D3 is the largest) and D1, D2 must be elsewhere. With D2 forbidden from peg B, D2 must be on either A or C. If D2 is on A, it sits on top of D3, blocking D3's movement. If D2 is on C, then C is not empty and D3 cannot move there. Either way, D3 can never be moved to C. The puzzle has no valid solution. (Direct LLMs are documented to pattern-match to the standard 7-move recursive solution and miss the impossibility — Apple's *Illusion of Thinking* paper.)",
+      "11 moves (solvable, but non-standard). The puzzle IS solvable, contrary to a tempting one-shot impossibility argument that assumes D3 must move A→C directly. Since D3 can go A→B then B→C, the puzzle has a solution. One optimal sequence: D1:A→B, D2:A→C, D1:B→C, D3:A→B, D1:C→B, D2:C→A, D1:B→A, D3:B→C, D1:A→B, D2:A→C, D1:B→C. D2's path is C→A→C — never B. Models commonly fail in two ways: (a) pattern-match to the standard 7-move solution and emit illegal moves (direct's typical failure); (b) accept the surface-level impossibility argument (D3 can never reach C) and miss that D3 can use peg B as an intermediate stop.",
     maxSteps: 12,
   },
 

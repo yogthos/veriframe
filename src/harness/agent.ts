@@ -451,7 +451,11 @@ async function runTool(
           return { result: `inconclusive — Z3 returned ${result} on the negation` };
         } finally {
           session.solver.pop();
-          session.lastCheckResult = "sat"; // restore (we're still SAT outside the probe)
+          // The solver's internal lastCheckResult was clobbered by the
+          // negation probe's check. Re-run to restore the SAT state so
+          // get_model / eval still work in subsequent turns.
+          await session.solver.check();
+          session.lastCheckResult = "sat";
         }
       } catch (e) {
         return {
@@ -566,9 +570,13 @@ export async function runAgent(
 
     if (outcome === "done") {
       // Verify the final state: confirm SAT and surface uniqueness.
+      // Re-run check() unconditionally — the solver's internal state may
+      // have been left at "unsat" by the model's earlier check_uniqueness
+      // probe (which proves uniqueness via UNSAT-on-negation but leaves
+      // the solver pointing at that negative result).
       let verification: SolutionVerification | undefined;
       try {
-        const checkResult = session.lastCheckResult ?? (await session.solver.check());
+        const checkResult = await session.solver.check();
         if (checkResult === "sat") {
           const model = session.solver.getModel();
           if (Object.keys(model).length > 0) {

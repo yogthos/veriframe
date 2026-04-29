@@ -4,12 +4,13 @@ OpenAI-compatible HTTP server that wraps a local GGUF model in a Z3-verified rea
 
 ## Why this exists
 
-Demonstrated on a 3-disk Tower of Hanoi puzzle modified to forbid disk D2 from peg B (provably impossible — see [docs/benchmark.md](docs/benchmark.md), problem 18):
+Demonstrated on a 3-disk Tower of Hanoi puzzle modified to forbid disk D2 from peg B — solvable in 11 moves but with a tempting impossibility trap (see [docs/benchmark.md](docs/benchmark.md), problem 18):
 
-- **Direct Qwen 3.6 35B** confidently emits a 10-move "solution" with a self-described "verification" step. The proposed sequence's move 6 is illegal (it moves D2 while D1 sits on top), but the model's verification only checks which pegs D2 visited, missing the legality violation entirely. The user gets a wrong answer with no signal of trouble.
-- **The harness** forces the model to commit to encoded constraints step-by-step before declaring complete. On the same prompt, the harness's prose correctly proves the puzzle IMPOSSIBLE, then runs a back-translation read-back pass on its own SMT-LIB; when the SMT encoding turned out to be incomplete (Z3 returned `unknown`) the read-back caught it and surfaced the gap loudly rather than silently certifying.
+- **Direct Qwen 3.6 35B** confidently emits a 10-move "solution" with a self-described "verification" step. The sequence's move 6 is illegal (it moves D2 while D1 sits on top), but the model's verification only checks which pegs D2 visited, missing the move-legality violation. *Wrong answer (sequence illegal), no signal of trouble.*
+- **The step-based harness** forces the model to commit to encoded constraints step by step. On the same prompt, the harness's prose argues the puzzle is *impossible*: "D3 must reach C, which requires C empty and D1+D2 elsewhere; D2 can't be on B; ergo D2 blocks either D3's source or destination." This argument silently assumes D3 moves A→C directly — but D3 can route through B (A→B then B→C). *Wrong answer (claimed impossible), but the read-back pass caught the SMT encoding gap and warned the user about the missing formal certificate, which is partial recovery.*
+- **The REPL-style agent** (added on the `repl-style` branch — see `mode: "agent"` in the API) issues one tool call per turn against a persistent solver, the way a programmer iterates against a REPL. On the same prompt it emits the correct 11-move sequence, which traces cleanly: every move is the top disk, no larger-on-smaller, D2 visits C→A→C and never B. *Right answer.*
 
-The harness's headline value is in this regime: catching the kind of confident hallucinated proofs that direct prose-only models produce when they pattern-match to a standard solution and miss a modification.
+The agent's win here is from a different framing of *thinking*, not from heavier engagement with Z3 (it actually engages the solver less than the step-based harness). The hypothesis: a turn-by-turn REPL framing nudges the model toward concrete move-by-move reasoning, where pattern-match traps lose their grip. We're still characterizing where the agent helps and where the step-based harness's structured verification is the better tool. See [docs/benchmark.md](docs/benchmark.md) for the full 18-problem comparison.
 
 For routine puzzles where direct already gets it right, the harness's value is the machine-checkable certificate it adds (Z3 model + uniqueness proof, or a minimal unsat core) — useful when you need to trust the answer downstream.
 
