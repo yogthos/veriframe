@@ -1,0 +1,7 @@
+node_modules/
+dist/
+*.tsbuildinfo
+
+# Local GGUF models — large, not for VCS
+models/
+*.gguf

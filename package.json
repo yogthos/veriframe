@@ -1,0 +1,42 @@
+{
+  "name": "reasoning-harness",
+  "version": "0.1.0",
+  "type": "module",
+  "description": "LLM reasoning harness with Z3 symbolic solver guard rails — exposes OpenAI-compatible API",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "bin": {
+    "reasoning-harness": "./dist/bin/server.js"
+  },
+  "scripts": {
+    "build": "tsc",
+    "start": "tsx src/bin/server.ts",
+    "test": "vitest",
+    "test:run": "vitest run",
+    "typecheck": "tsc --noEmit"
+  },
+  "keywords": [
+    "reasoning",
+    "z3",
+    "smt",
+    "llm",
+    "openai-api",
+    "symbolic"
+  ],
+  "license": "Apache-2.0",
+  "author": "",
+  "devDependencies": {
+    "@types/node": "^22.0.0",
+    "tsx": "^4.19.0",
+    "typescript": "^5.6.0",
+    "undici": "^8.1.0",
+    "vitest": "^4.0.17"
+  },
+  "engines": {
+    "node": ">=20.0.0"
+  },
+  "dependencies": {
+    "node-llama-cpp": "^3.18.1",
+    "z3-solver": "^4.16.0"
+  }
+}
