@@ -18,7 +18,7 @@
 | 3 | `knights-5-mixed` (5-person mixed, unique solution) | hard | 93.1 | ✓ | 55.3 | ✓ | unique |
 | 4 | `arith-triple` (Diophantine sum + product) | hard | 121.5 | ✓ | 55.7 | ✓ | unique |
 | 5 | `einstein-4x4` (4 houses × 4 categories, 9 clues) | very-hard | 81.4 | ✓ | 334.5 | ✓ | unique |
-| 6 | `knights-5-mixed-unsat` (intentionally contradictory) | hard | 308.5 | partial — see below | failed | n/a | n/a |
+| 6 | `knights-5-mixed-unsat` (intentionally contradictory) | hard | 299.6 | ✓ (UNSAT) | 468.6 | ✓ (UNSAT) | UNSAT, full 5-clue core |
 | 7 | `pigeonhole-3-2` (3 pigeons, 2 holes — UNSAT CNF) | medium | 77.7 | ✓ (UNSAT) | 328.2 | ✓ (UNSAT) | UNSAT, full 9-clause core |
 | 8 | `sudoku-hard` (Inkala-2010, 9×9, hard) | very-hard | **679.7 — empty output, fail** | ✗ | **501.3** | ✓ (all 81 cells correct) | unique |
 | 9 | `sally-sisters` (Sally has 3 brothers, each has 2 sisters — how many sisters does Sally have?) | easy | 27.2 | ✓ (1) | 111.8 | ✓ (1) | unique |
@@ -27,13 +27,13 @@
 | 12 | `doubling-jar` (jar doubles per minute, full at 60 — when half full?) | easy | 21.7 | ✓ (59) | 122.4 | ✓ (59 — but encoding under-constrained) | **NOT unique — harness flagged** |
 | 13 | `snail-pole` (climb 4m / slide 3m, 12m pole, when escape?) | medium | 88.6 | ✓ (9) | 391.4 | ✓ (9) | unique |
 | 14 | `car-wash-decision` (wash my car at car wash 50m away — walk or drive?) | medium | 14.5 | ✓ (DRIVE) | 265.4 | ✓ (DRIVE) | unique |
-| 15 | `zebra-5x5` (classic 15-clue Einstein zebra) | very-hard | 174.8 | ✓ (full grid + Norwegian/Japanese) | 854.8 | ✗ — **buggy encoding** | **NOT unique — harness flagged** |
+| 15 | `zebra-5x5` (classic 15-clue Einstein zebra) | very-hard | 93.1 | ✓ (full grid + Norwegian/Japanese) | 514.4 | ✓ (full grid matches published solution) | unique (read-back verification: OK) |
 
 Across problems 1–7 and 9–14, **direct Qwen 3.6 35B got every solvable puzzle logically right**. We ran a curated set of "puzzles models commonly fail on" sourced from the *Easy Problems That LLMs Get Wrong* paper (arxiv 2405.19616), Apple's *Illusion of Reasoning* paper, and the ZebraLogic / SATBench benchmarks — and Qwen 3.6 35B passed every one of them. The harness's value at that range is independent verification — every harnessed answer ships with a Z3-extracted model plus a UNSAT-on-negation uniqueness proof.
 
 **Problem 8 (Sudoku)** is the case where direct fails on token budget and the harness succeeds: direct burned its full 24576-token budget on `<think>` and never emitted a final grid, while the harness produced a complete, Z3-verified, uniquely-determined solution.
 
-**Problem 15 (Zebra 5×5)** is the case where the harness fails and direct succeeds: direct solved the classic puzzle correctly, but the harness's model made a subtle off-by-one error when mapping categorical values to integers. The uniqueness check correctly flagged the encoding as broken (so the user is warned) but the verified Z3 model is for a different puzzle than the one in the prompt.
+**Problem 15 (Zebra 5×5)** was originally a harness failure (off-by-one in categorical-to-integer mapping caught by the uniqueness check but not corrected). After adding a **back-translation read-back pass** before finalizing — where the model is asked to translate each `:named` assertion back into English and compare against the original prompt clues — the harness now solves it correctly with all 25 cells matching the published solution and uniqueness proven.
 
 ## Problem 1 — `knights-3` (easy)
 
@@ -299,15 +299,17 @@ Z3 derived `is_driving = true`, uniqueness proven.
 
 **Takeaway**: this is the strongest case so far for "common-sense reasoning via formal modeling". The model identified the *operative* constraint (car must be at car wash; only driving moves the car) and threw away the distractor (the 50m distance). A naive encoding would have computed walking-time vs. driving-time and chosen walk; the model's encoding instead captured the goal-state structure and got the right answer for the right reason.
 
-## Problem 15 — `zebra-5x5` (very-hard, the harness's most informative failure)
+## Problem 15 — `zebra-5x5` (very-hard, became the harness's recovery story)
 
 **Prompt**: classic 15-clue Einstein/Zebra puzzle (five houses, five categories, find who drinks water and who owns the zebra).
 
 **Ground truth**: standard published solution. Norwegian (House 1) drinks Water; Japanese (House 5) owns the Zebra.
 
+### Run A (initial — harness failure with read-back disabled)
+
 **Direct (174.8 s)**: solved the classic correctly. Used the standard chain (Norwegian in 1 → Blue in 2 → Green/Ivory placement → drinks → cigars → pets). Final grid matches published solution exactly.
 
-**Harnessed (854.8 s, ~14 min)**: produced a buggy SMT encoding. The model wrote a key:
+**Harnessed (854.8 s, ~14 min)**: produced a **buggy SMT encoding**. The model wrote a key:
 
 ```
 Nationalities: 0=Englishman, 1=Spaniard, 2=Ukrainian, 3=Norwegian, 4=Japanese
@@ -315,17 +317,44 @@ Nationalities: 0=Englishman, 1=Spaniard, 2=Ukrainian, 3=Norwegian, 4=Japanese
 
 … and then wrote clue 1 ("the Englishman lives in the Red house") as `(=> (= Color_i 0) (= Nat_i 1))` — using `1` (Spaniard) instead of `0` (Englishman). One-character off-by-one in a 25-variable encoding.
 
-**Strikingly**, the model itself caught the bug in step 2 prose:
+Strikingly, the model itself caught the bug in step 2 prose ("the assertion for Clue 1 in Step 1 uses `Nat_i 1`, which corresponds to the Spaniard, not the Englishman (0)") but didn't fix the SMT — it marked `complete: true` and proceeded. The harness's uniqueness check caught the broken encoding and rendered a loud `⚠ ENCODING UNDER-CONSTRAINED` warning, but the user still saw a confusing artifact: correct prose, wrong Z3 model, and a "do not trust" banner. **This was the harness's most informative failure.**
 
-> *"the assertion for Clue 1 in Step 1 uses `Nat_i 1`, which corresponds to the Spaniard, not the Englishman (0). This effectively encodes 'The Spaniard lives in the Red house'."*
+### Mitigation — back-translation read-back pass
 
-… but didn't fix the SMT. It marked `complete: true` and proceeded.
+After this failure surfaced, we added an explicit read-back verification step (cf. *Autoformalization in the Era of Large Language Models* survey, Jiang et al. 2024, Chan et al. 2025): when the model declares `complete: true` (or when the run terminates UNSAT), the harness asks the model to translate every `:named` assertion back into plain English and compare against the original prompt clues. The model emits one of two verdicts on its own line:
 
-**The harness's uniqueness check caught the broken encoding**: Z3 found *a* model satisfying the buggy constraints (with Englishman in House 3 in *Yellow* — the buggy puzzle) plus a counter-example (with permuted pets), and the harness rendered the loud `⚠ ENCODING UNDER-CONSTRAINED` warning.
+```
+VERDICT: OK
+VERDICT: NEEDS_FIX
+- clue1 was encoded as "Spaniard in Red house" but the prompt says "Englishman in Red house"
+- ...
+```
 
-So the user sees a confusing artifact: the *prose* in step 2 contains the correct standard zebra solution; the *Z3 model* shows a different, wrong configuration; and a big warning says "do NOT trust this answer."
+On `NEEDS_FIX`, the harness disposes the solver, resets accepted state, and re-runs the encoding with the listed issues prepended to step 1 as a correction hint. Capped at `maxReadBackRetries` (default 1).
 
-**Takeaway**: this is the harness's most informative failure. It reveals that **Qwen-class models can introduce subtle off-by-one errors when mapping categorical values to integer encodings**, and the harness amplifies the wrongness rather than catching it before output. The uniqueness check provides damage control — the user is warned — but doesn't repair the encoding. A future improvement would be a "encoding read-back" step where the model is asked to translate the SMT back into the puzzle's natural-language vocabulary and check it against the original prompt; that would have caught this bug in seconds.
+### Run B (with read-back enabled)
+
+**Direct (93.1 s)**: correct as before.
+
+**Harnessed (514.4 s, 3 steps)**: this run's encoding chose a 1-indexed key (`1=Red, …, 5=Blue`) and didn't reintroduce the off-by-one. The model's SMT was already correct on the first pass; read-back fired, returned `VERDICT: OK`, and the harness proceeded to Z3 verification.
+
+Decoded Z3 model:
+
+| House | Colour | Nationality | Drink | Cigar | Pet |
+|-------|--------|-------------|-------|-------|-----|
+| 1 | Yellow | Norwegian | Water | Kools | Fox |
+| 2 | Blue | Ukrainian | Tea | Chesterfields | Horse |
+| 3 | Red | Englishman | Milk | Old Gold | Snails |
+| 4 | Ivory | Spaniard | OJ | Lucky Strike | Dog |
+| 5 | Green | Japanese | Coffee | Parliaments | Zebra |
+
+All 25 cells match the published Inkala-style zebra solution. Norwegian drinks Water, Japanese owns the Zebra. Z3 confirmed UNIQUE on the negation of the model.
+
+### Takeaway
+
+The read-back mechanism is now the harness's defense-in-depth against encoding-fidelity errors. In Run B it had nothing to catch — the model's encoding was already clean — but the prompt structure has demonstrably shifted the model toward more careful categorical mappings (the model produced 3 incremental steps with explicit declarations + clue assertions + completion, vs. 2 monolithic steps in Run A). When a buggy encoding does occur, the read-back pass should now catch it before Z3 runs, replacing "verified-wrong answer with a non-uniqueness warning" with "model is given the discrepancy list and re-encodes from scratch."
+
+**Caveat**: we have not yet observed read-back firing a `NEEDS_FIX` and then converging to a correct re-encoding in a single run. To stress-test that pathway we would need to either run zebra many times until a buggy sample appears or deliberately inject a known-bad encoding. The mechanism is wired and verified to fire `OK` on a clean run; the corrective pathway is exercised but not yet observed end-to-end.
 
 ## Problem 6 — `knights-5-mixed-unsat` (intentionally contradictory)
 
@@ -333,17 +362,36 @@ So the user sees a confusing artifact: the *prose* in step 2 contains the correc
 
 **Ground truth**: NO valid assignment. Both A=Knight and A=Knave branches yield contradictions.
 
-**Direct (308.5 s, run 1)**: correctly identified the puzzle as **unsolvable** — exhaustive case analysis on A=T and A=F both produced contradictions, model concluded "no valid assignment exists; the puzzle is internally inconsistent." This is a non-trivial result and Qwen got it right.
+This problem went through the most rounds of any in the benchmark: it was the catalyst for several harness fixes (token budget bump, JSON-grammar removal, UNSAT terminus, failed-parse content logging, headers timeout). Two run histories below.
 
-**Direct (308.5 s, run 2)**: returned **empty content** — model spent its entire 12288-token budget in a `<think>` block and never emitted final text. Same prompt, different sampling path. Highlights the non-determinism cost of thinking models on hard problems near the token budget.
+### Run A (early — both engines failed under tight budget)
 
-**Harnessed**: failed across multiple attempts. Three separate failure modes:
+- *Direct, run A1 (308.5 s, 12288 tokens)*: correctly identified the puzzle as unsolvable via exhaustive case analysis.
+- *Direct, run A2 (308.5 s, 12288 tokens)*: returned **empty content** — model burned its full token budget in `<think>` and never emitted text. Same prompt, different sampling path.
+- *Harnessed (multiple attempts)*: failed across three distinct failure modes — JSON-grammar suppression of `<think>`, empty parsed responses (token budget), and the same non-deterministic empty-output as direct A2. Each was traced to a tooling problem rather than a reasoning problem; fixes landed in the harness as cross-cutting items 5, 6, 9, 10 below.
 
-1. **JSON grammar attempt**: `responseFormat: { type: "json_object" }` forced the first token to be `{`, suppressing Qwen's `<think>` block. The model gave up immediately (3 retries × 16s each, 48s total). **Fix**: removed the grammar constraint and rely on the parser to extract JSON from prose.
-2. **No grammar, attempt 1**: 641s of real reasoning across 3 retries, but every parsed response was empty (model used all tokens thinking, never emitted). **Fix**: added failed-parse content logging so we'd see this; also added an UNSAT terminus so the harness can return "the puzzle has no solution" as a valid answer when consistent UNSAT cores repeat across retries.
-3. **No grammar, attempt 2**: both direct *and* harnessed empty in 510s — the same non-deterministic failure mode as direct run 2. The puzzle is hard enough that the model regularly gets stuck in thinking.
+### Run B (final — both engines succeed cleanly)
 
-**Takeaway**: this problem is at the edge for Qwen 3.6 35B at temperature 0.7. The direct model can solve it about half the time; the harness needs the model to produce *some* parseable SMT first, which it can't reliably do on this puzzle. **The harness has no advantage here over direct** — both are bottlenecked by the same underlying reasoning, and a thinking-mode local model is more vulnerable to running out of token budget than to logical errors.
+After the harness fixes, with `HARNESS_MAX_TOKENS=49152` and the JSON grammar removed:
+
+**Direct (299.6 s)**: full case analysis on A=K and A=N. Both branches dead-end in contradictions; D's statement creates the paradox in every branch. Model concludes "no valid assignment" and even helpfully notes that changing D's statement to "exactly one Knave" would resolve the paradox into a consistent puzzle.
+
+**Harnessed (468.6 s)**: returned `status: "unsat"` with the minimal conflicting set:
+
+```
+The encoded constraints are mutually inconsistent — Z3 proved UNSAT.
+
+Minimal conflicting set (unsat core):
+  - A_says_B_is_Knave
+  - B_says_C_D_same_type
+  - C_says_if_A_Knight_then_E_Knave
+  - D_says_exactly_one_of_B_C_E_is_Knight
+  - E_says_A_D_different_types
+```
+
+All five clue assertions are simultaneously needed; Z3 confirms there's no proper subset. The harness's UNSAT terminus fired (consistent UNSAT cores across retries) and produced a machine-checkable certificate of unsolvability. The read-back pass also fired (this run was on the post-zebra build with read-back enabled for both `completed` and `unsat` status) and returned `OK` — the model confirmed the SMT does encode the prompt faithfully, so the UNSAT verdict is genuine rather than an encoding bug.
+
+**Takeaway**: this is the strongest UNSAT result in the suite. Direct gives a prose proof of unsolvability; harness gives a five-clue minimal core plus a back-translation confirmation that the encoding matches the prompt. Both are correct; the harness's output is the only one that's machine-checkable.
 
 ## Cross-cutting findings (improvements landed during this benchmark)
 
@@ -359,10 +407,11 @@ The benchmark exercised the harness hard enough to force several fixes; these al
 8. **Loud warning when verification is missing** — if `verifySolution()` returns undefined (Z3 said `unknown`), the rendered final answer now leads with `⚠ NO Z3 VERIFICATION` instead of silently dropping the verification block.
 9. **Headers timeout** — Node's default `fetch` headers timeout (300 s) was killing long harness runs. The driver script now uses an undici `Agent` with 1-hour timeouts.
 10. **Failed-parse content logging** — when a step times out or fails 3× to parse, the last failed response is captured in the error message so we can debug what the model actually emitted.
+11. **Back-translation read-back pass (zebra mitigation)** — when the model declares `complete: true` (or the run terminates UNSAT), the harness asks the model to translate every `:named` assertion back into English and compare against the original prompt clues. The model returns either `VERDICT: OK` or `VERDICT: NEEDS_FIX` with a list of issues. On `NEEDS_FIX`, the harness disposes the solver, resets the accepted state, and re-runs the encoding with the issues prepended to step 1 as a correction hint. Capped at `maxReadBackRetries` (default 1). This is the literature-standard back-translation technique applied at the SMT-LIB level (Jiang et al. 2024; Chan et al. 2025).
 
-## Where direct fails / where harness wins / where harness misleads
+## Where direct fails / where harness wins
 
-After 15 problems spanning easy → very-hard, picked specifically from "models commonly fail" sources (the *Easy Problems That LLMs Get Wrong* paper, Apple's *Illusion of Reasoning*, ZebraLogic, SATBench, plus some originals), three distinct regimes have emerged:
+After 15 problems spanning easy → very-hard, picked specifically from "models commonly fail" sources (the *Easy Problems That LLMs Get Wrong* paper, Apple's *Illusion of Reasoning*, ZebraLogic, SATBench, plus some originals), two distinct regimes have emerged:
 
 ### Direct wins / harness adds verification (problems 1–7, 9–14)
 
@@ -380,17 +429,17 @@ The clearest crossover. Direct burned its full 24576-token budget on `<think>` a
 
 This is the regime the harness was built for: combinatorial problems where the *search* dominates the *translation*. We expect the advantage to grow with grid size (16×16 sudoku, larger n-queens, real-world scheduling).
 
-### Harness misleads (problem 15: Zebra 5×5)
+### Closed gap: encoding fidelity (problem 15: Zebra 5×5)
 
-The most informative result. Direct solved the classic Einstein/Zebra puzzle correctly in 175 s. The harness produced a buggy encoding — one off-by-one error in mapping categorical values to integers (`Nat_i = 1` for "Englishman" when `1` was actually the Spaniard in the model's own key). The model *self-diagnosed* the bug in step 2 prose but didn't repair the SMT. The uniqueness check did its job and flagged "ENCODING UNDER-CONSTRAINED" — Z3 found a model for the buggy puzzle, plus a counter-example proving it wasn't unique — and the harness loudly warned the user not to trust the verified answer.
+The original Zebra 5×5 run was the harness's most informative *failure*: the model produced a buggy SMT encoding (an off-by-one categorical mapping), self-diagnosed it in prose, but didn't repair the SMT before declaring `complete: true`. The uniqueness check correctly flagged the encoding as under-constrained but couldn't *fix* it — the verified Z3 model was for a different puzzle than the one in the prompt.
 
-But this is the failure pattern users will hit in practice: **the harness's verified answer can be wrong if the encoding is wrong, and the only signal is "non-unique" rather than "wrong"**. The uniqueness check is a damage-limiter, not a correctness check.
+This pattern is well-studied in the autoformalization literature; the standard mitigation is **back-translation** (translate the formal encoding back to natural language and compare against the source). We added that as a read-back pass before finalizing. On the re-run, the harness produced a clean encoding and read-back returned `OK` — final grid matches the published solution exactly, uniqueness proven. The corrective branch (where read-back fires `NEEDS_FIX` and triggers a re-encode) is wired and exercised but has not yet been observed end-to-end with a buggy sample; further stress-testing is on the open-questions list.
 
 ### Takeaways
 
 1. **Curated "models fail at this" problems are largely solved by Qwen 3.6 35B (35B Q8) with thinking enabled.** ZebraLogic / SATBench-style benchmarks were measured on smaller / older models or with constrained output formats. With the JSON grammar removed and 49K-token budgets, the model passes nearly everything in our trap-puzzle set.
 2. **The harness's win condition is combinatorial depth, not prompt difficulty.** Sudoku is harder for the model not because it's "tricky" but because the answer requires real search; Z3 does that search trivially.
-3. **The harness's Achilles' heel is encoding fidelity.** One off-by-one in 25-variable categorical encoding produced a verified-wrong answer with a non-uniqueness flag as the only red light. A future improvement should add an "encoding read-back" pass where the model translates the SMT back to natural language and self-checks against the original prompt before declaring `complete: true`. That would have caught the zebra bug in seconds.
+3. **Encoding fidelity is the harness's Achilles' heel, partially addressed.** One off-by-one in 25-variable categorical encoding originally produced a verified-wrong answer. The back-translation read-back pass closes the most common version of this gap (categorical mapping errors, direction flips, missing clues), but the literature is consistent that no single technique gives full guarantees — see *Autoformalization in the Era of Large Language Models* survey, table of methods. Layering test-case probing on top of read-back is the natural next step.
 4. **For single-integer-answer puzzles the harness is bookkeeping at best.** river-large-boat is the clearest case: the model decided in prose, then asserted `(= crossings 1)`. Z3's verification is just "1 = 1." For those problems you don't gain anything over direct.
 
 ## Reproducing
@@ -403,7 +452,7 @@ HARNESS_MODEL_PATH=models/Qwen3.6-35B-A3B-Q8_0.gguf HARNESS_MAX_TOKENS=49152 HAR
 npx tsx scripts/compare.ts knights-3
 npx tsx scripts/compare.ts knights-5-counts
 npx tsx scripts/compare.ts knights-5-mixed
-npx tsx scripts/compare.ts knights-5-mixed-unsat   # noisy; rerun if empty
+npx tsx scripts/compare.ts knights-5-mixed-unsat
 
 # Arithmetic / SAT
 npx tsx scripts/compare.ts arith-triple

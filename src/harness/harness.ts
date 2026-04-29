@@ -103,7 +103,8 @@ function appendReadBackNote(
   result: RunResult,
   history: Array<{ attempt: number; verdict: "OK" | "NEEDS_FIX"; explanation: string }>,
 ): RunResult {
-  if (result.status !== "completed" || history.length === 0) return result;
+  if (history.length === 0) return result;
+  if (result.status !== "completed" && result.status !== "unsat") return result;
   const last = history[history.length - 1];
   const lines: string[] = ["", "─── Read-back verification ───"];
   for (const h of history) {
