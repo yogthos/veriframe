@@ -60,7 +60,7 @@ async function ask(
       raw,
       mode,
       max_steps: problem.maxSteps ?? 12,
-      max_turns: 30,
+      max_turns: 40,
     }),
     dispatcher: longLivedAgent,
   });

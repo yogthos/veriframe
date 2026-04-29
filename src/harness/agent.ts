@@ -129,7 +129,41 @@ Avoid dumping all your SMT in one turn — you lose the benefit of incremental f
 
 Avoid using quantifiers (forall / exists) on finite domains. Enumerate cases explicitly. For categorical mappings, declare a clear key in a \`note()\` and reference it consistently.
 
-Never include solver-control commands inside an \`assert\` call — the harness manages (check-sat), (push), (pop), etc.`;
+Never include solver-control commands inside an \`assert\` call — the harness manages (check-sat), (push), (pop), etc.
+
+## Encoding state-transition planning problems
+
+When the problem asks for a sequence of moves transforming an initial state into a goal state under some legality rules — i.e. a *planning* problem — use the bounded SAT/SMT planning template (Kautz & Selman 1992; Rintanen). Stay quantifier-free in linear integer arithmetic; that's what Z3 handles cleanly.
+
+**Fixed-horizon framing.** Pick a horizon \`K\` (an upper bound on the number of moves). Encode the problem with K+1 timesteps 0..K. Initial state ⇒ constraints at t=0; goal ⇒ constraints at t=K. SAT means a plan of length ≤ K exists; UNSAT means no plan of length ≤ K exists. Don't try to encode an unknown-length plan in one shot — it pushes Z3 into harder theory fragments.
+
+Estimate K from the problem itself: a brute-force or naive plan length is a fine starting upper bound. If you can construct any (possibly suboptimal) plan in your head, use its length as K.
+
+**State variables indexed by time, not arrays.** For each piece of state \`s\` and each time \`t ∈ 0..K\`, declare a flat variable \`s_t\` (\`Int\` for categorical or numeric, \`Bool\` for binary). Do NOT use arrays, quantifiers over time, or \`define-fun\` chains. Bound each variable to its domain.
+
+You can put many declarations in a single \`declare()\` call by separating them with newlines. Batch — don't waste turns declaring one variable at a time.
+
+**Per-step transition: one action per step, with frame axioms.** For each transition step \`t → t+1\`, assert a disjunction over the possible actions. For each disjunct (one per action):
+
+- the state variables that THIS action changes get the changed-value constraint
+- the state variables that THIS action does NOT change are explicitly equated between \`t\` and \`t+1\` (these are the **frame axioms** — write them out)
+- the action's preconditions on \`t\`-state are added as additional conjuncts
+
+This pattern keeps the encoding in QF_LIA. Quantifier-free, linear in (K × num-actions × num-state-components).
+
+**Initial and goal as concrete equalities at t=0 and t=K.** Domain-specific invariants (e.g. "X never has property P") get enumerated per-timestep as \`(not (P x_t0))\`, \`(not (P x_t1))\`, ..., \`(not (P x_tK))\`. Don't use \`forall\` over the time axis.
+
+**On UNSAT: iterate K, don't conclude impossible.** UNSAT at horizon K only means "no plan of length ≤ K exists." If your encoding faithfully captures the problem (sanity-check intermediate-reachability with \`probe_sat\`), the standard response is to increase K and retry. Mechanically:
+
+1. \`retract\` the goal-state assertion (and any per-timestep restrictions tied to the old final timestep).
+2. \`declare\` new state variables for one or more additional timesteps and bound them.
+3. \`assert\` the new transition(s) and any per-timestep invariants for the new timesteps.
+4. \`assert\` the goal state at the new final timestep.
+5. \`check()\` again.
+
+Only declare a problem IMPOSSIBLE after several K values give UNSAT with an encoding you've sanity-checked.
+
+**Workflow.** Read the problem; identify state, actions, legality rules, goal. Use \`note()\` to record your encoding plan, including your K estimate, in plain English. \`declare()\` and \`assert()\` in batches. \`check()\` after each major addition. On SAT, \`get_model()\` and reconstruct the action sequence by reading off how state variables change across timesteps. On UNSAT, iterate K. Inline state computations as per-step constraints; never use \`define-fun\` with conditional \`ite\` chains over uninterpreted state. Call \`done()\` only after you have a model.`;
 
 const TOOL_CALL_FENCE_RE = /```tool-call\s*\r?\n([\s\S]*?)```/;
 
@@ -241,21 +275,54 @@ async function runTool(
     case "declare": {
       const smt = typeof args.smt === "string" ? args.smt.trim() : "";
       if (!smt) return { result: "[error] declare requires {smt: string}" };
-      const kind = classifySmt(smt);
-      if (kind !== "declaration") {
+      // Split on declaration boundaries so we can validate / dedupe
+      // each one individually. Multi-declaration in one call is fine
+      // and encouraged for batching.
+      const lines = smt
+        .split(/\n+/)
+        .map((s) => s.trim())
+        .filter((s) => s.length > 0);
+      const previouslyDeclared = new Set(
+        session.declarations.flatMap((d) => extractDeclaredNames(d)),
+      );
+      const newDecls: string[] = [];
+      const duplicates: string[] = [];
+      for (const line of lines) {
+        if (classifySmt(line) !== "declaration") {
+          return {
+            result: `[error] declare expects only declarations (declare-const / declare-fun / declare-sort / define-fun / define-sort) — got: ${line.slice(0, 80)}`,
+          };
+        }
+        const names = extractDeclaredNames(line);
+        const dup = names.filter((n) => previouslyDeclared.has(n));
+        if (dup.length > 0) {
+          duplicates.push(...dup);
+          continue;
+        }
+        for (const n of names) previouslyDeclared.add(n);
+        newDecls.push(line);
+      }
+      if (newDecls.length === 0) {
         return {
-          result: `[error] declare expects a declaration (declare-const, declare-fun, declare-sort, define-fun, define-sort) — got ${kind}`,
+          result: `[error] all ${duplicates.length} declaration(s) were duplicates of already-declared symbols: ${duplicates.join(", ")}. Use list_assertions or view_smt to see the current state, or skip ahead to assertions.`,
         };
       }
       try {
-        session.solver.assert(smt);
-        session.declarations.push(smt);
+        for (const d of newDecls) {
+          session.solver.assert(d);
+          session.declarations.push(d);
+        }
         session.lastCheckResult = null;
         session.cachedModel = null;
-        return { result: `OK — declaration added (#${session.declarations.length}).` };
+        const note = duplicates.length > 0
+          ? ` Skipped ${duplicates.length} duplicate(s): ${duplicates.join(", ")}.`
+          : "";
+        return {
+          result: `OK — added ${newDecls.length} declaration(s); session now has ${session.declarations.length} total.${note}`,
+        };
       } catch (e) {
         return {
-          result: `[error] solver rejected declaration: ${e instanceof Error ? e.message : String(e)}`,
+          result: `[error] solver rejected declaration batch: ${e instanceof Error ? e.message : String(e)}`,
         };
       }
     }
@@ -500,7 +567,7 @@ export async function runAgent(
   llm: LLMClient,
   opts: AgentRunOptions = {},
 ): Promise<RunResult> {
-  const maxTurns = opts.config?.maxTurns ?? 25;
+  const maxTurns = opts.config?.maxTurns ?? 40;
   const solver = await createIncrementalSolver();
   const session: AgentSession = {
     problem,
@@ -635,6 +702,19 @@ export async function runAgent(
   } finally {
     session.solver.dispose();
   }
+}
+
+/**
+ * Extract the symbol name(s) introduced by a declaration line. Supports
+ * (declare-const NAME ...), (declare-fun NAME ...), (declare-sort NAME ...),
+ * (define-fun NAME ...), (define-sort NAME ...). Used for duplicate
+ * detection when the agent batches declarations.
+ */
+function extractDeclaredNames(decl: string): string[] {
+  const m = decl.match(
+    /^\(\s*(?:declare-const|declare-fun|declare-sort|define-fun|define-sort|declare-datatypes?)\s+([A-Za-z_][A-Za-z0-9_!?\-]*)\b/,
+  );
+  return m ? [m[1]] : [];
 }
 
 function turnsToSteps(turns: TurnEntry[]): ReasoningStep[] {
