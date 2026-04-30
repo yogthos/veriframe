@@ -63,11 +63,22 @@ The response body has the usual `choices[].message.content` (the verified prose 
 
 `status` is `"completed"` (SAT, with model + uniqueness flag), `"unsat"` (constraints mutually inconsistent, with `unsatCore`), or `"failed"` (parse / retry exhaustion).
 
-### Agent mode (REPL-style)
+### How the harness loop works
 
-Add `"mode": "agent"` to the request body. The model issues one tool call per turn against a persistent Z3 solver — the way a programmer iterates against a REPL — instead of committing a full SMT encoding in a single step. Available tools: `add_smt`, `view_smt`, `retract`, `check_sat`, `eval`, `setup_planning`, `done`, `give_up`. Conversation history is maintained as proper multi-turn messages so the local LLM provider's KV cache extends across turns.
+The model issues one tool call per turn against a persistent Z3 solver — the way a programmer iterates against a REPL. Tools available:
 
-`setup_planning(spec)` is the canonical handle for state-transition planning problems (Tower of Hanoi-likes, river-crossings, scheduling). The agent provides a structured spec:
+- `add_smt({code})` — append SMT-LIB to the solver. Anything goes: declarations, assertions, multi-statement chunks. Use `(assert (! ... :named foo))` to make assertions retractable later.
+- `view_smt()` — show all chunks added so far.
+- `retract({name})` — remove the chunk containing the named assertion; solver is rebuilt from the remaining chunks.
+- `check_sat()` — runs `(check-sat)`. Returns `sat` plus the model, `unsat` plus the unsat core, or `unknown`.
+- `eval({expr})` — evaluate a variable in the current model (after a sat check).
+- `setup_planning({spec})` — generate the boilerplate for a bounded state-transition planning problem (per-timestep variables, transition disjunctions with frame axioms, invariants, initial/goal). The agent provides a structured spec; the harness lays down the universal planning machinery so the model only writes the legality predicates per action. Re-calling with a higher horizon auto-retracts the prior planning chunk, so the standard UNSAT-on-K iteration is just `setup_planning K=N → check_sat → setup_planning K=N+1`.
+- `done({answer})` — finalize. The harness then re-runs `(check-sat)` and a uniqueness probe (asserting the negation of the model in a temporary frame); the verification verdict is appended to the response.
+- `give_up({reason})` — stop with a stated reason.
+
+The conversation is maintained as proper multi-turn messages so the local LLM provider's KV cache extends across turns. There's no imposed workflow — the model uses the tools the way it would naturally use a REPL. See [docs/benchmark.md](docs/benchmark.md) for the case studies, especially problem 18 (modified Tower of Hanoi) where this approach is the only one that produces a correct + Z3-verified answer.
+
+#### `setup_planning` spec shape
 
 ```json
 {
@@ -86,9 +97,7 @@ Add `"mode": "agent"` to the request body. The model issues one tool call per tu
 }
 ```
 
-… and the harness emits the boilerplate (per-timestep variable replication, domain bounds, initial/goal assertions, per-timestep invariant expansion, transition disjunctions with explicit frame axioms). The agent only writes the legality predicates per action. Re-calling `setup_planning` with a higher horizon auto-retracts the prior encoding, so the standard UNSAT-on-K iteration loop is just: `setup_planning K=N` → `check_sat` → if UNSAT, `setup_planning K=N+1`.
-
-The default mode is `"harness"` (the original step-based loop) for backward compatibility. See [docs/benchmark.md](docs/benchmark.md) problem 18 for the case study where agent mode is the only approach that produces a correct + verified answer.
+In each action `predicate` and in `invariants`, reference state variables with the suffix `_t` (current state) and `_tp1` (next state). The harness substitutes the concrete timestep numbers and emits frame axioms `(= var_t var_tp1)` for each state var NOT in the action's `changes` list.
 
 ### Bypass the harness
 
@@ -141,7 +150,7 @@ Harness-loop knobs (set per-request via JSON body):
 
 | Field | Default | Notes |
 | --- | --- | --- |
-| `max_steps` | `20` | Hard cap on the harness's step iterations. |
+| `max_turns` | `40` | Hard cap on tool-call turns the agent gets before the run is failed as "exhausted". |
 | `raw` | `false` | Bypass the harness; call the model directly. |
 
 ## Tests
@@ -156,24 +165,24 @@ npm run typecheck
 
 ```
 src/
-  bin/server.ts        Entry: preload model + start HTTP server
-  server.ts            OpenAI-compatible HTTP routes
-  config.ts            env-var → ServerConfig
+  bin/server.ts          Entry: preload model + start HTTP server
+  server.ts              OpenAI-compatible HTTP routes
+  config.ts              env-var → ServerConfig
   harness/
-    harness.ts         Step loop, read-back, verification
-    solver.ts          Z3 incremental wrapper
-    parser.ts          JSON-from-prose extraction
-    prompts.ts         System + step + fix + read-back prompts
+    agent.ts             REPL-style tool-call loop, verification, persistent solver
+    agent-planning.ts    setup_planning skeleton generator
+    solver.ts            Z3 incremental wrapper
   llm/
-    local.ts           node-llama-cpp provider with KV-cache reuse
-    types.ts           ChatMessage, LLMResponse, etc.
-    tool-calls.ts      OpenAI tools ↔ llama.cpp functions bridge
+    local.ts             node-llama-cpp provider with KV-cache reuse
+    types.ts             ChatMessage, LLMResponse, etc.
+    tool-calls.ts        OpenAI tools ↔ llama.cpp functions bridge
 scripts/
-  compare.ts           Direct-vs-harness comparison driver
-  problems.ts          Benchmark problem registry
+  compare.ts             Direct-vs-harness comparison driver
+  agent-only.ts          Skip-direct driver for fast agent-only iteration
+  problems.ts            Benchmark problem registry
 docs/
-  benchmark.md         Per-problem benchmark write-up
-tests/                 Vitest unit tests for solver / parser / prompts
+  benchmark.md           Per-problem benchmark write-up
+tests/                   Vitest unit tests for solver and planning generator
 ```
 
 ## License

@@ -8,58 +8,18 @@ export interface IncrementalSolver {
   dispose(): void;
 }
 
-export interface Fact {
-  assertion: string;
-  name?: string;
-}
-
-export interface LLMStepOutput {
-  explanation: string;
-  assertions: string[];
-  complete: boolean;
-}
-
+/**
+ * One entry in the agent's per-turn trace. The agent emits a `toolCall`
+ * each turn (parsed from the model's response), and the harness fills
+ * in the `result`. We surface this as a flat ReasoningStep array on the
+ * RunResult for backward-compatible API shape.
+ */
 export interface ReasoningStep {
   stepNumber: number;
   explanation: string;
   assertions: string[];
   status: "accepted" | "rejected";
   unsatCore?: string[];
-}
-
-export interface HarnessState {
-  problem: string;
-  steps: ReasoningStep[];
-  currentStep: number;
-  status: "in_progress" | "completed" | "failed";
-  error?: string;
-}
-
-export interface HarnessConfig {
-  maxSteps: number;
-  maxRetries: number;
-  maxRetriesPerStep: number;
-  /**
-   * After the model marks the run complete, ask it to read its SMT-LIB
-   * encoding back into English and verify it matches the prompt. If it
-   * spots a discrepancy, the run is reset and re-attempted with the
-   * read-back feedback as a hint, up to this many extra attempts.
-   * Set to 0 to disable read-back verification.
-   */
-  maxReadBackRetries: number;
-}
-
-export const DEFAULT_HARNESS_CONFIG: HarnessConfig = {
-  maxSteps: 20,
-  maxRetries: 10,
-  maxRetriesPerStep: 3,
-  maxReadBackRetries: 1,
-};
-
-export interface LLMClient {
-  chat(
-    messages: { role: string; content: string }[]
-  ): Promise<{ content: string }>;
 }
 
 export interface SolutionVerification {
@@ -81,10 +41,8 @@ export type RunResult =
   | {
       /**
        * The encoded constraints are mutually inconsistent — Z3 proved
-       * the puzzle UNSAT and the model couldn't fix it after retries.
-       * This is a valid terminal answer ("the puzzle has no solution"),
-       * not a harness failure, when the unsat core covers the puzzle's
-       * own constraints rather than a slip in encoding.
+       * the puzzle UNSAT. This is a valid terminal answer ("the puzzle
+       * has no solution"), not a harness failure.
        */
       status: "unsat";
       steps: ReasoningStep[];

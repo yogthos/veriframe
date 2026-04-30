@@ -49,7 +49,6 @@ interface ChatResponse {
 async function ask(
   problem: Problem,
   raw: boolean,
-  mode: "harness" | "agent" = "harness",
 ): Promise<ChatResponse> {
   const res = await undiciFetch(ENDPOINT, {
     method: "POST",
@@ -58,8 +57,6 @@ async function ask(
       model: "local-model",
       messages: [{ role: "user", content: problem.prompt }],
       raw,
-      mode,
-      max_steps: problem.maxSteps ?? 12,
       max_turns: 40,
     }),
     dispatcher: longLivedAgent,
@@ -76,10 +73,8 @@ function hr(label: string): string {
 
 async function main(): Promise<void> {
   const id = process.argv[2];
-  const modeArg = process.argv[3];
-  const mode: "harness" | "agent" = modeArg === "agent" ? "agent" : "harness";
   if (!id || !PROBLEMS[id]) {
-    console.error(`Usage: tsx scripts/compare.ts <problem-id> [agent]`);
+    console.error(`Usage: tsx scripts/compare.ts <problem-id>`);
     console.error(`Known problems: ${Object.keys(PROBLEMS).join(", ")}`);
     process.exit(1);
   }
@@ -105,9 +100,9 @@ async function main(): Promise<void> {
   log(`(${(directMs / 1000).toFixed(1)}s)`);
   log(direct.choices[0].message.content);
 
-  log(hr(mode === "agent" ? "AGENT (REPL-style tool-call loop)" : "HARNESSED (Z3-verified loop)"));
+  log(hr("AGENT (REPL-style tool-call loop)"));
   const t2 = Date.now();
-  const harnessed = await ask(problem, false, mode);
+  const harnessed = await ask(problem, false);
   const harnessMs = Date.now() - t2;
   log(`(${(harnessMs / 1000).toFixed(1)}s)`);
   log(harnessed.choices[0].message.content);
