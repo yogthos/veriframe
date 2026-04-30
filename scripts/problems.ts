@@ -129,6 +129,25 @@ Determine, for each house 1..5, the colour, nationality, drink, cigar, and pet. 
     maxSteps: 25,
   },
 
+  "hanoi-4-d2-locked": {
+    id: "hanoi-4-d2-locked",
+    type: "Modified 4-disk Tower of Hanoi (D2 forbidden from peg B; non-standard solution)",
+    difficulty: "very-hard",
+    prompt: `Standard 4-disk Tower of Hanoi: disks D1 (smallest), D2, D3, and D4 (largest) start stacked on peg A in size order (D4 at the bottom, D1 on top). The goal is to move all four disks to peg C in the same order. There are three pegs: A, B, and C. Standard rules apply:
+- Move one disk at a time.
+- Only the top disk of any peg can be moved.
+- A larger disk may never be placed on top of a smaller disk.
+
+ADDITIONAL RESTRICTION: disk D2 (the second-smallest) may never rest on peg B at any point during the solution. (D2 may be on peg A or peg C only.)
+
+Determine whether this puzzle can be solved under both the standard rules and the restriction. If yes, give the minimum number of moves and a valid move sequence. If no, prove the puzzle is impossible.
+
+Show your reasoning step by step. State the answer as either a single integer (minimum moves) followed by the sequence, or "IMPOSSIBLE" with justification.`,
+    expectedAnswer:
+      "Solvable, minimum to be determined by Z3 (likely 15-25 moves; standard 4-disk takes 15, the D2 restriction adds overhead). Direct LLMs commonly pattern-match to the standard 15-move recursive solution and emit illegal moves where D2 visits B; only the agent's setup_planning + UNSAT-on-K iteration finds the genuine optimum.",
+    maxSteps: 30,
+  },
+
   "hanoi-d2-locked": {
     id: "hanoi-d2-locked",
     type: "Modified Tower of Hanoi (forbidden-peg restriction; non-standard solution)",

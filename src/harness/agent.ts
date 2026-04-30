@@ -25,6 +25,7 @@ import {
   PlanningSpecError,
   type PlanningSpec,
 } from "./agent-planning.js";
+import { runPrologSolver } from "./prolog.js";
 
 export interface AgentRunOptions {
   config?: { maxTurns?: number };
@@ -99,6 +100,16 @@ Free-form prose around the fence is allowed for your reasoning; only the first f
 **done** — \`{"answer": "..."}\`. Submit the human-readable final answer. The harness automatically runs a uniqueness probe (asserting the negation of the model in a temporary frame and rechecking); the verdict — UNIQUE or NOT UNIQUE with a counter-example — is appended to your answer. **You don't need to verify uniqueness yourself.** Just call \`done\` once \`check_sat\` returned sat and you're satisfied with the model.
 
 **give_up** — \`{"reason": "..."}\`. Stop with a stated reason.
+
+**prolog_solve** — \`{"program": "...", "query": "...", "maxInferences"?: number}\`. Run a Tau Prolog program and a goal in one shot; receive all answers as a list of binding maps.
+
+Prolog is the **relational / inductive reasoning** layer of this harness. It's the natural fit for problems expressible as facts and rules with backtracking enumeration over finite domains; it's a poor fit for dense arithmetic, multi-variable optimisation, or theory combinations.
+
+The SMT tools (\`add_smt\` / \`setup_planning\`) are the **constraint / arithmetic** layer. Use them when the problem reduces to checking a system of equations or doing an existence/uniqueness proof over a numerical theory.
+
+**Both engines coexist in this session.** Pick whichever fits each piece of the problem — many puzzles are purely one or the other; some have a relational shape with a numerical sub-problem and benefit from both. You decide.
+
+The \`program\` is the full Prolog source (facts and rules); the \`query\` is one goal. The harness returns every solution up to a 1000-answer / 200k-inference cap. No persistent state between \`prolog_solve\` calls — each call is independent.
 
 **setup_planning** — for state-transition planning problems (find a sequence of actions transforming initial state into goal state). Provide a structured spec; the harness generates the boilerplate SMT-LIB (per-timestep variables, transition disjunctions with frame axioms, initial/goal/invariants) and pushes it to the solver. Args:
 
@@ -410,12 +421,46 @@ async function runTool(
       }
     }
 
+    case "prolog_solve": {
+      const program = typeof args.program === "string" ? args.program : "";
+      const goal = typeof args.query === "string" ? args.query.trim() : "";
+      const maxInferences = typeof args.maxInferences === "number" && args.maxInferences > 0
+        ? Math.floor(args.maxInferences)
+        : undefined;
+      if (!program || !goal) {
+        return {
+          result: "[error] prolog_solve requires {program: string, query: string}",
+        };
+      }
+      const result = await runPrologSolver({ program, query: goal, maxInferences });
+      if (result.status === "error") {
+        return { result: `[prolog error] ${result.error}` };
+      }
+      if (result.answers.length === 0) {
+        return { result: "no answers (goal failed — Prolog returned empty)" };
+      }
+      const lines: string[] = [];
+      lines.push(`${result.answers.length} answer(s):`);
+      // Cap printed answers so we don't blow past the 4000-char tool
+      // result truncation. Show first 25 by default.
+      const PRINT_CAP = 25;
+      const shown = result.answers.slice(0, PRINT_CAP);
+      for (let i = 0; i < shown.length; i++) {
+        const a = shown[i];
+        lines.push(`  [${i + 1}] ${a.formatted}`);
+      }
+      if (result.answers.length > PRINT_CAP) {
+        lines.push(`  ... (${result.answers.length - PRINT_CAP} more not shown)`);
+      }
+      return { result: lines.join("\n") };
+    }
+
     case "__parse_error__":
       return { result: `Your tool-call JSON was invalid: ${call.parseError ?? "unknown"}` };
 
     default:
       return {
-        result: `[error] unknown tool "${name}". Valid: add_smt, view_smt, retract, check_sat, eval, probe_sat, setup_planning, done, give_up.`,
+        result: `[error] unknown tool "${name}". Valid: add_smt, view_smt, retract, check_sat, eval, probe_sat, setup_planning, prolog_solve, done, give_up.`,
       };
   }
 }
