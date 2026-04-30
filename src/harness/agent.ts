@@ -19,6 +19,12 @@ import {
   type RunResult,
   type SolutionVerification,
 } from "../types.js";
+import {
+  validatePlanningSpec,
+  generatePlanningSmt,
+  PlanningSpecError,
+  type PlanningSpec,
+} from "./agent-planning.js";
 
 export interface AgentRunOptions {
   config?: { maxTurns?: number };
@@ -92,6 +98,16 @@ Free-form prose around the fence is allowed for your reasoning; only the first f
 
 **give_up** — \`{"reason": "..."}\`. Stop with a stated reason.
 
+**setup_planning** — for state-transition planning problems (find a sequence of actions transforming initial state into goal state). Provide a structured spec; the harness generates the boilerplate SMT-LIB (per-timestep variables, transition disjunctions with frame axioms, initial/goal/invariants) and pushes it to the solver. Args:
+
+- \`horizon\`: number of transitions (K). Variables \`name_0\` … \`name_K\` are declared.
+- \`state_vars\`: \`[{name, sort, domain?}]\`. Sort is \`"Int"\` or \`"Bool"\`. \`domain\` is \`[min, max]\` for Int.
+- \`initial\`, \`goal\`: maps \`{var_name: value}\`.
+- \`invariants\` (optional): SMT-LIB strings asserted at every timestep. Reference state vars with the suffix \`_t\` (e.g. \`"(not (= flag_t 0))"\`); the harness substitutes the concrete timestep.
+- \`actions\`: \`[{name, changes, predicate}]\`. \`changes\` lists the base names of state vars this action modifies. \`predicate\` is the action's SMT-LIB precondition + change, referencing state with suffixes \`_t\` (current) and \`_tp1\` (next). Frame axioms (\`(= var_t var_tp1)\` for vars not in \`changes\`) are emitted automatically.
+
+After the tool succeeds, run \`check_sat\`. SAT → read off the action sequence by inspecting how state changed each timestep; UNSAT → either retract the planning chunk and re-call with a higher \`horizon\`, or conclude no plan of length ≤ K exists. (UNSAT at K does not mean impossible — only that K is too small.)
+
 That's it. There's no required workflow — use the tools the way you'd use a REPL.`;
 
 const TOOL_CALL_FENCE_RE = /```tool-call\s*\r?\n([\s\S]*?)```/;
@@ -140,6 +156,7 @@ function truncateToolResult(result: string): string {
     ? result.slice(0, 4000) + `\n... [truncated]`
     : result;
 }
+
 
 /** Find the chunk containing a named assertion, return its index or -1. */
 function findChunkByName(session: AgentSession, name: string): number {
@@ -285,12 +302,38 @@ async function runTool(
       return { result: "OK — abandoning.", gaveUp: true };
     }
 
+    case "setup_planning": {
+      let spec: PlanningSpec;
+      try {
+        spec = validatePlanningSpec(args);
+      } catch (e) {
+        if (e instanceof PlanningSpecError) return { result: `[error] ${e.message}` };
+        return { result: `[error] setup_planning: ${e instanceof Error ? e.message : String(e)}` };
+      }
+      const generated = generatePlanningSmt(spec);
+      try {
+        session.solver.assert(generated);
+        session.chunks.push(generated);
+        session.lastCheckResult = null;
+        session.cachedModel = null;
+        const lineCount = generated.split("\n").length;
+        const numVars = spec.state_vars.length * (spec.horizon + 1);
+        return {
+          result: `OK — planning skeleton generated and asserted (${lineCount} lines, ${numVars} state-var instances across timesteps 0..${spec.horizon}, ${spec.actions.length} action(s) per transition). Run check_sat next.`,
+        };
+      } catch (e) {
+        return {
+          result: `[error] solver rejected the generated planning encoding: ${e instanceof Error ? e.message : String(e)}\n\n--- generated SMT (first 1500 chars) ---\n${generated.slice(0, 1500)}`,
+        };
+      }
+    }
+
     case "__parse_error__":
       return { result: `Your tool-call JSON was invalid: ${call.parseError ?? "unknown"}` };
 
     default:
       return {
-        result: `[error] unknown tool "${name}". Valid: add_smt, view_smt, retract, check_sat, eval, done, give_up.`,
+        result: `[error] unknown tool "${name}". Valid: add_smt, view_smt, retract, check_sat, eval, setup_planning, done, give_up.`,
       };
   }
 }
