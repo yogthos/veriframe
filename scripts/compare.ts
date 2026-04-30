@@ -15,8 +15,8 @@ import { PROBLEMS, type Problem } from "./problems.js";
 // completes (no streaming). Hard problems can take 5–15 min, so the
 // default 300 s headersTimeout kills the connection. Bump it.
 const longLivedAgent = new Agent({
-  headersTimeout: 60 * 60 * 1000,
-  bodyTimeout: 60 * 60 * 1000,
+  headersTimeout: 3 * 60 * 60 * 1000,
+  bodyTimeout: 3 * 60 * 60 * 1000,
   connect: { timeout: 30 * 1000 },
 });
 
