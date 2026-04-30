@@ -106,7 +106,7 @@ Free-form prose around the fence is allowed for your reasoning; only the first f
 - \`invariants\` (optional): SMT-LIB strings asserted at every timestep. Reference state vars with the suffix \`_t\` (e.g. \`"(not (= flag_t 0))"\`); the harness substitutes the concrete timestep.
 - \`actions\`: \`[{name, changes, predicate}]\`. \`changes\` lists the base names of state vars this action modifies. \`predicate\` is the action's SMT-LIB precondition + change, referencing state with suffixes \`_t\` (current) and \`_tp1\` (next). Frame axioms (\`(= var_t var_tp1)\` for vars not in \`changes\`) are emitted automatically.
 
-After the tool succeeds, run \`check_sat\`. SAT → read off the action sequence by inspecting how state changed each timestep; UNSAT → either retract the planning chunk and re-call with a higher \`horizon\`, or conclude no plan of length ≤ K exists. (UNSAT at K does not mean impossible — only that K is too small.)
+After the tool succeeds, run \`check_sat\`. SAT → read off the action sequence by inspecting how state changed each timestep; UNSAT → just call \`setup_planning\` again with a larger \`horizon\` (the tool auto-retracts any prior planning chunk, so calling it repeatedly with increasing K is the standard iteration pattern). UNSAT at K does not mean impossible — only that K is too small.
 
 That's it. There's no required workflow — use the tools the way you'd use a REPL.`;
 
@@ -310,16 +310,35 @@ async function runTool(
         if (e instanceof PlanningSpecError) return { result: `[error] ${e.message}` };
         return { result: `[error] setup_planning: ${e instanceof Error ? e.message : String(e)}` };
       }
+      // Auto-retract any previous planning chunk so the agent can
+      // simply re-call setup_planning with a higher horizon when the
+      // current K is UNSAT. Without this, repeated calls accumulate
+      // contradictory horizon-K-and-horizon-K' constraints and the
+      // agent has to do a manual retract dance.
+      const priorPlanningIdx = session.chunks.findIndex((c) =>
+        c.startsWith(";; --- PLANNING_SETUP "),
+      );
+      const replaced = priorPlanningIdx >= 0;
+      if (replaced) session.chunks.splice(priorPlanningIdx, 1);
+
       const generated = generatePlanningSmt(spec);
       try {
+        if (replaced) {
+          // Solver state needs to be rebuilt from remaining chunks
+          // before we apply the new planning encoding.
+          await rebuildSolver(session);
+        }
         session.solver.assert(generated);
         session.chunks.push(generated);
         session.lastCheckResult = null;
         session.cachedModel = null;
         const lineCount = generated.split("\n").length;
         const numVars = spec.state_vars.length * (spec.horizon + 1);
+        const replacedNote = replaced
+          ? " (replaced prior planning chunk)"
+          : "";
         return {
-          result: `OK — planning skeleton generated and asserted (${lineCount} lines, ${numVars} state-var instances across timesteps 0..${spec.horizon}, ${spec.actions.length} action(s) per transition). Run check_sat next.`,
+          result: `OK — planning skeleton generated and asserted${replacedNote} (${lineCount} lines, ${numVars} state-var instances across timesteps 0..${spec.horizon}, ${spec.actions.length} action(s) per transition). Run check_sat next.`,
         };
       } catch (e) {
         return {

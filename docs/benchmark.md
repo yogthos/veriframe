@@ -30,7 +30,7 @@
 | 15 | `zebra-5x5` (classic 15-clue Einstein zebra) | very-hard | 93.1 | ✓ (full grid + Norwegian/Japanese) | 514.4 | ✓ (full grid matches published solution) | unique (read-back verification: OK) |
 | 16 | `bridge-torch` (4 people, times 1/2/6/10, non-greedy optimum) | hard | 90.0 | ✓ (17, with full schedule) | 2512.2 | ✓ (17, in prose; Z3 returned `unknown` on the planning encoding) | n/a (read-back: NEEDS_FIX → OK on 2nd attempt — first observed end-to-end self-correction) |
 | 17 | `n-queens-8` (find any valid 8-queens placement) | hard | 90.0 | ✓ (placement self-verified by row+col, row−col, row+col uniqueness) | 315.8 | ✓ (Z3 model independently valid) | NOT unique (8-queens has 92 solutions — non-uniqueness is correct here, not a bug) |
-| 18 | `hanoi-d2-locked` (3-disk Tower of Hanoi with D2 forbidden from peg B) | hard | 254.2 | ✗ (10 moves; sequence illegal at move 6) | 1446.5 (step-mode) | ✗ ("IMPOSSIBLE" — flawed argument) | agent mode (REPL): ✓ 11 moves, valid sequence (360.6 s) |
+| 18 | `hanoi-d2-locked` (3-disk Tower of Hanoi with D2 forbidden from peg B) | hard | 254.2 | ✗ (10 moves; sequence illegal at move 6) | step-mode 1446.5: ✗ ("IMPOSSIBLE" — flawed argument); agent v1 360.6: ✓ in prose, no Z3 cert; agent v2 ✗; **agent v3 + `setup_planning` 613.2: ✓ 11 moves** | unique (Z3 confirmed on negation, agent v3 only) |
 
 Direct Qwen 3.6 35B got most solvable puzzles right. **The most interesting failure case turned out to be problem 18 (modified Tower of Hanoi), where the puzzle has a tempting impossibility argument that's actually wrong — and only the REPL-style agent loop (added on the `repl-style` branch) escaped the trap.**
 
@@ -40,13 +40,15 @@ We ran a curated set of "puzzles models commonly fail on" sourced from the *Easy
 
 **Problem 15 (Zebra 5×5)** was originally a harness failure (off-by-one in categorical-to-integer mapping caught by the uniqueness check but not corrected). After adding a **back-translation read-back pass** before finalizing, the harness now solves it correctly with all 25 cells matching the published solution and uniqueness proven.
 
-**Problem 18 (Hanoi with locked D2)** is the case study where every approach failed differently and only the REPL-style agent succeeded:
+**Problem 18 (Hanoi with locked D2)** is the case study where every approach failed differently except the REPL-style agent equipped with a planning skeleton tool:
 
-- *Direct (254 s)*: pattern-matched to a standard 3-disk Hanoi and emitted a confident **"10 moves"** answer with a self-described "verification". Move 6 of the sequence is illegal (it moves D2 while D1 sits on top). The verification step only checked which pegs D2 visited, missing the move-legality violation entirely.
-- *Step-based harness (1447 s)*: produced a clean impossibility argument in prose: "to move D3 from A to C, C must be empty and D1, D2 must be elsewhere; D2 forbidden from B forces D2 onto A or C; either case blocks D3." This argument **looks** correct but rests on a hidden assumption — that D3 must move A→C directly. Since D3 can go A→B then B→C, the argument is wrong. The harness's "IMPOSSIBLE" verdict is wrong.
-- *Agent loop (REPL-style, 360 s)*: emitted **"11 moves" with a valid sequence**: D1:A→B, D2:A→C, D1:B→C, D3:A→B, D1:C→B, D2:C→A, D1:B→A, D3:B→C, D1:A→B, D2:A→C, D1:B→C. Hand-verified: every move is legal under the standard rules, and D2 visits C, A, C — never B. **The puzzle is solvable in 11 moves**; the agent is the only approach that got it right.
+- *Direct (254 s)*: pattern-matched to a standard 3-disk Hanoi and emitted a confident **"10 moves"** answer with a self-described "verification" that only checked which pegs D2 visited (missing that move 6 of the sequence is illegal — D2 moved while D1 sits on top).
+- *Step-based harness (1447 s)*: produced a clean impossibility argument in prose: "to move D3 from A to C, C must be empty and D1, D2 must be elsewhere; D2 forbidden from B forces D2 onto A or C; either case blocks D3." Looks correct but silently assumes D3 moves A→C *directly*. Since D3 can go A→B then B→C, the argument is wrong; "IMPOSSIBLE" is wrong.
+- *Agent v1 (heavy prompt, 360 s)*: emitted "11 moves" in prose, but barely engaged the SMT solver — declared one placeholder variable and dumped the answer into `done`. Hand-verifiable as correct, but no machine-checkable certificate.
+- *Agent v2 (minimal prompt, 7 tools)*: regressed — wrote a one-step horizon with initial *and* goal both asserted, Z3 returned vacuous SAT, agent submitted "5" out of nowhere.
+- *Agent v3 (minimal prompt + `setup_planning` tool, 613 s)*: **solved it correctly with full Z3 verification**. Iterated K = 9, 10, 11 (UNSAT, UNSAT, SAT), produced an 11-move sequence Z3 confirmed unique on negation. Every move hand-verifiable as legal; D2 visits only pegs A and C.
 
-This puts the headline finding in a different light. The step-based harness's "win" on Hanoi turned out to be wrong by coincidence — it matched a flawed impossibility argument that I (the human) had also been making about the puzzle. The agent's REPL-style framing apparently nudged the model into more careful move-by-move reasoning, where it caught the indirect routing of D3 through B that both other approaches missed.
+The pattern: the model reliably *fills in a planning spec* but doesn't reliably *write the spec scaffolding from scratch*. Once `setup_planning` provided the universal planning machinery (per-timestep variables, transition disjunctions, frame axioms, K-iteration), the agent finished the rest cleanly.
 
 ## Problem 1 — `knights-3` (easy)
 
@@ -369,7 +371,7 @@ The read-back mechanism is now the harness's defense-in-depth against encoding-f
 
 **Caveat**: we have not yet observed read-back firing a `NEEDS_FIX` and then converging to a correct re-encoding in a single run. To stress-test that pathway we would need to either run zebra many times until a buggy sample appears or deliberately inject a known-bad encoding. The mechanism is wired and verified to fire `OK` on a clean run; the corrective pathway is exercised but not yet observed end-to-end.
 
-## Problem 18 — `hanoi-d2-locked` (hard, three different failure modes)
+## Problem 18 — `hanoi-d2-locked` (hard, four approaches, only the agent + `setup_planning` succeeds)
 
 **Prompt**: 3-disk Tower of Hanoi from peg A to peg C, standard rules, with the additional restriction that disk D2 (medium) may never rest on peg B.
 
@@ -406,19 +408,61 @@ This argument silently assumes "D3 leaves peg A by moving A→C directly," which
 
 This is the **most embarrassing case** for the step-based harness in the benchmark: it gave a *machine-checkable warning that something was wrong with verification*, but the underlying reasoning is incorrect.
 
-### REPL-style agent (360.6 s) — gets it right
+### REPL-style agent v1 (heavy prompt, 15 tools) — gets the right answer in prose, but no Z3 verification
 
-Two turns: declared a placeholder variable, then called `done` with the correct 11-move sequence. The agent didn't actually use the SMT solver to verify its answer (the post-`done` verification correctly noted the lack of an encoded model and warned the user), so the win here isn't from formal verification — it's from the agent's framing prompting the model to think through each move carefully before submitting.
+An earlier agent design with a verbose system prompt and 15 fine-grained tools produced a correct 11-move sequence in 360.6 s, but only declared one placeholder variable then dumped the answer into `done`. The SMT solver wasn't meaningfully engaged. Hand-verifiable as legal, but no machine-checkable certificate.
 
-The proposed sequence is hand-verifiable as legal (every move is the top disk; no larger-on-smaller; D2 never on B; final stack matches goal).
+Hypothesized then: the win came from the agent framing's effect on *thinking*, not from formal verification. Confirmed by subsequent runs that the heavy prompt was actively interfering with encoding work.
 
-**Why the agent succeeded where the others failed:** the system prompt for the agent loop walks through tools step-by-step ("declare variables, add constraints incrementally, run check() often, retract if wrong, ..."). On a planning puzzle that the model knows it cannot encode in one shot, this framing apparently shifted reasoning effort toward concrete move-by-move analysis instead of the high-level recursive-template / impossibility-template pattern matching that direct and step-mode each fell into.
+### REPL-style agent v2 (minimal Amp-style prompt, 7 tools) — regresses
 
-**Caveat**: the agent's win here is from improved *thinking*, not improved *formal verification* — the SMT solver wasn't meaningfully engaged. A future improvement is to pre-load a Hanoi-style state-transition encoding (or route planning problems to a planner backend) so the agent's tool calls actually exercise machine-checked verification on this class.
+After rebuilding the agent following the recipe in [Amp's *How to Build an Agent*](https://ampcode.com/notes/how-to-build-an-agent) — terse system prompt, 7 single-purpose tools, no imposed workflow — the agent on a hanoi run wrote a one-step horizon (just t=0 and t=1, single transition) with initial AND goal both asserted. Z3 returned vacuous SAT (everything teleporting from peg 0 to peg 2 in one step) and the agent submitted "5" out of nowhere. Worse than v1.
+
+The cause is general to LLM autoformalization of bounded planning: the model knows how to write SMT-LIB constraints when they're a direct translation of natural language, but doesn't reliably autonomously generate the multi-timestep state replication, transition disjunctions, and frame axioms that bounded planning requires. Prompt engineering can nudge but doesn't fix this — the literature converges on the same conclusion.
+
+### REPL-style agent v3 (minimal prompt, 7 tools + `setup_planning`) — solves it cleanly
+
+The fix: a domain-agnostic 8th tool, `setup_planning(spec)`. The agent provides a structured spec — horizon K, state variables with sorts and domains, initial/goal assignments, invariants, action specs (each carrying its own legality predicate via `_t` / `_tp1` suffix templates and a list of state-vars it changes) — and the harness emits the boilerplate SMT-LIB the model kept skipping (per-timestep declarations, domain bounds, initial/goal assertions, per-timestep invariants, transition disjunctions with explicit frame axioms). The model only writes the legality predicates per action.
+
+On hanoi-d2-locked, in 11 turns / 613.2 s:
+
+1. `setup_planning` with horizon K=9 → UNSAT
+2. `check_sat` (confirms)
+3. `setup_planning` K=10 (chunks accumulate; still UNSAT)
+4-8. retract dance to clear leftover chunks from prior horizons
+9. `setup_planning` K=11
+10. `check_sat` → **SAT**
+11. `done` with answer "11"
+
+Decoded Z3 model (d1, d2, d3 = peg of each disk at each timestep):
+
+| t | d1 | d2 | d3 | move |
+|---|----|----|----|------|
+| 0 | 0 | 0 | 0 | initial — all on A |
+| 1 | 1 | 0 | 0 | D1: A→B |
+| 2 | 1 | 2 | 0 | D2: A→C |
+| 3 | 2 | 2 | 0 | D1: B→C |
+| 4 | 2 | 2 | 1 | D3: A→B |
+| 5 | 1 | 2 | 1 | D1: C→B |
+| 6 | 1 | 0 | 1 | D2: C→A |
+| 7 | 0 | 0 | 1 | D1: B→A |
+| 8 | 0 | 0 | 2 | D3: B→C |
+| 9 | 1 | 0 | 2 | D1: A→B |
+| 10 | 1 | 2 | 2 | D2: A→C |
+| 11 | 2 | 2 | 2 | D1: B→C — goal |
+
+Hand-verified: every move is on the top disk, no larger-on-smaller, D2 visits {0, 2} only (never peg 1 = B), final state matches goal. **Z3 confirmed UNIQUE on negation.**
+
+The agent figured out the K-iteration logic on its own (tried 9, then 10, then 11). The retract-between-iterations dance was clumsy — current `setup_planning` should auto-retract any prior planning chunks so the agent can just re-call with a higher horizon.
 
 ### Cross-cutting takeaway
 
-This problem is a perfect example of why "the puzzle has a clean impossibility argument" is **not** the same as "the puzzle is impossible." Both I and the step-mode harness's prose reached the impossibility verdict via a superficially-tight argument that turned out to silently smuggle in an unjustified assumption. Direct fell into the opposite failure (pattern-match to known solution, ignore the modification). The agent's incremental framing was the only one that escaped both traps, despite engaging Z3 the least.
+The factoring that finally works: **the model brings the domain content** (what state matters, what actions exist, what each action's preconditions and effects look like, what invariants hold, how to interpret "legal move" for this particular puzzle); **the harness brings the universal planning machinery** (variables across timesteps, transition disjunctions, frame axioms, domain bounds, K-iteration). Neither half was sufficient alone:
+
+- Pure prompting (v1, v2): model writes uneven encodings — sometimes too rich (`define-fun` chains pushing Z3 to `unknown`), sometimes too sparse (one-step horizon, no transitions).
+- Pure tool injection without domain content: would just be a hard-coded planner, not a general system.
+
+The split mirrors the autoformalization literature's recommendation: **factor the universal structure into tools and let the model do the domain interpretation**.
 
 ## Problem 16 — `bridge-torch` (hard, the non-greedy optimum trap)
 
