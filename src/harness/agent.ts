@@ -94,7 +94,9 @@ Free-form prose around the fence is allowed for your reasoning; only the first f
 
 **eval** — \`{"expr": "..."}\`. Evaluate an expression in the current model (after a sat check_sat). Useful for sanity-checking a derived value.
 
-**done** — \`{"answer": "..."}\`. Submit the human-readable final answer. The harness re-runs check_sat and a uniqueness probe (asserting the negation of the model in a temporary frame); the verification verdict is appended to your answer.
+**probe_sat** — \`{"code": "..."}\`. Push a temporary frame, assert the code, run check_sat, pop. Use to test a "what if" hypothesis (e.g. "is the current state still sat if I additionally constrain x > 5?") without permanently committing the assertion. The frame is always popped afterward, so the solver returns to its current state. Don't use \`add_smt\` for what-if exploration — that contaminates the solver state and breaks the post-\`done\` verification.
+
+**done** — \`{"answer": "..."}\`. Submit the human-readable final answer. The harness automatically runs a uniqueness probe (asserting the negation of the model in a temporary frame and rechecking); the verdict — UNIQUE or NOT UNIQUE with a counter-example — is appended to your answer. **You don't need to verify uniqueness yourself.** Just call \`done\` once \`check_sat\` returned sat and you're satisfied with the model.
 
 **give_up** — \`{"reason": "..."}\`. Stop with a stated reason.
 
@@ -298,6 +300,43 @@ async function runTool(
       };
     }
 
+    case "probe_sat": {
+      const code = typeof args.code === "string" ? args.code.trim() : "";
+      if (!code) return { result: "[error] probe_sat requires {code: string}" };
+      try {
+        session.solver.push();
+      } catch (e) {
+        return {
+          result: `[error] probe_sat could not push frame: ${e instanceof Error ? e.message : String(e)}`,
+        };
+      }
+      try {
+        try {
+          session.solver.assert(code);
+        } catch (e) {
+          return {
+            result: `[error] probe_sat: solver rejected the assertion: ${e instanceof Error ? e.message : String(e)}`,
+          };
+        }
+        const r = await session.solver.check();
+        if (r === "sat") return { result: "probe sat (frame popped, no permanent change)" };
+        if (r === "unsat") return { result: "probe unsat (frame popped, no permanent change)" };
+        return { result: `probe ${r} (frame popped, no permanent change)` };
+      } finally {
+        try {
+          session.solver.pop();
+        } catch {
+          // best-effort; rebuild on inconsistency below if needed
+        }
+        // The probe's check call clobbered the solver's internal
+        // lastCheckResult; clear our cached state so subsequent
+        // operations refresh it. The chunks themselves are unchanged
+        // because we only used push/pop.
+        session.lastCheckResult = null;
+        session.cachedModel = null;
+      }
+    }
+
     case "done": {
       // Strict: answer must be a non-empty string. Previously this
       // accepted `done({})` because JSON.stringify("") returns the
@@ -376,7 +415,7 @@ async function runTool(
 
     default:
       return {
-        result: `[error] unknown tool "${name}". Valid: add_smt, view_smt, retract, check_sat, eval, setup_planning, done, give_up.`,
+        result: `[error] unknown tool "${name}". Valid: add_smt, view_smt, retract, check_sat, eval, probe_sat, setup_planning, done, give_up.`,
       };
   }
 }
