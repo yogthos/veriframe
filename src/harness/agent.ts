@@ -97,19 +97,7 @@ Free-form prose around the fence is allowed for your reasoning; only the first f
 
 **probe_sat** — \`{"code": "..."}\`. Push a temporary frame, assert the code, run check_sat, pop. Use to test a "what if" hypothesis (e.g. "is the current state still sat if I additionally constrain x > 5?") without permanently committing the assertion. The frame is always popped afterward, so the solver returns to its current state. Don't use \`add_smt\` for what-if exploration — that contaminates the solver state and breaks the post-\`done\` verification.
 
-**done** — \`{"answer": "..."}\`. Submit the human-readable final answer. The harness automatically runs a uniqueness probe (asserting the negation of the model in a temporary frame and rechecking); the verdict — UNIQUE or NOT UNIQUE with a counter-example — is appended to your answer. **You don't need to verify uniqueness yourself.** Just call \`done\` once \`check_sat\` returned sat and you're satisfied with the model.
-
-**give_up** — \`{"reason": "..."}\`. Stop with a stated reason.
-
-**prolog_solve** — \`{"program": "...", "query": "...", "maxInferences"?: number}\`. Run a Tau Prolog program and a goal in one shot; receive all answers as a list of binding maps.
-
-Prolog is the **relational / inductive reasoning** layer of this harness. It's the natural fit for problems expressible as facts and rules with backtracking enumeration over finite domains; it's a poor fit for dense arithmetic, multi-variable optimisation, or theory combinations.
-
-The SMT tools (\`add_smt\` / \`setup_planning\`) are the **constraint / arithmetic** layer. Use them when the problem reduces to checking a system of equations or doing an existence/uniqueness proof over a numerical theory.
-
-**Both engines coexist in this session.** Pick whichever fits each piece of the problem — many puzzles are purely one or the other; some have a relational shape with a numerical sub-problem and benefit from both. You decide.
-
-The \`program\` is the full Prolog source (facts and rules); the \`query\` is one goal. The harness returns every solution up to a 1000-answer / 200k-inference cap. No persistent state between \`prolog_solve\` calls — each call is independent.
+## Higher-level abstractions
 
 **setup_planning** — for state-transition planning problems (find a sequence of actions transforming initial state into goal state). Provide a structured spec; the harness generates the boilerplate SMT-LIB (per-timestep variables, transition disjunctions with frame axioms, initial/goal/invariants) and pushes it to the solver. Args:
 
@@ -120,6 +108,22 @@ The \`program\` is the full Prolog source (facts and rules); the \`query\` is on
 - \`actions\`: \`[{name, changes, predicate}]\`. \`changes\` lists the base names of state vars this action modifies. \`predicate\` is the action's SMT-LIB precondition + change, referencing state with suffixes \`_t\` (current) and \`_tp1\` (next). Frame axioms (\`(= var_t var_tp1)\` for vars not in \`changes\`) are emitted automatically.
 
 After the tool succeeds, run \`check_sat\`. SAT → read off the action sequence by inspecting how state changed each timestep; UNSAT → just call \`setup_planning\` again with a larger \`horizon\` (the tool auto-retracts any prior planning chunk, so calling it repeatedly with increasing K is the standard iteration pattern). UNSAT at K does not mean impossible — only that K is too small.
+
+**prolog_solve** — \`{"program": "...", "query": "...", "maxInferences"?: number}\`. Run a Tau Prolog program and a goal in one shot; receive all answers as a list of binding maps.
+
+Prolog is the **relational / inductive reasoning** layer of this harness — natural for problems expressible as facts and rules with backtracking enumeration over finite domains; a poor fit for dense arithmetic, multi-variable optimisation, or theory combinations.
+
+The SMT tools (\`add_smt\` / \`setup_planning\` / etc.) are the **constraint / arithmetic** layer. Use them when the problem reduces to checking a system of equations or doing an existence/uniqueness proof over a numerical theory.
+
+**Both engines coexist in this session.** Pick whichever fits each piece of the problem — many puzzles are purely one or the other; some have a relational shape with a numerical sub-problem and benefit from both. You decide.
+
+The \`program\` is the full Prolog source (facts and rules); the \`query\` is one goal. The harness returns every solution up to a 1000-answer / 200k-inference cap. **No persistent state between \`prolog_solve\` calls** — each call gets a fresh session, so include the full program every time you want to query it.
+
+## Control
+
+**done** — \`{"answer": "..."}\`. Submit the human-readable final answer. The harness automatically runs a uniqueness probe (asserting the negation of the model in a temporary frame and rechecking); the verdict — UNIQUE or NOT UNIQUE with a counter-example — is appended to your answer. **You don't need to verify uniqueness yourself.** Just call \`done\` once \`check_sat\` returned sat and you're satisfied with the model.
+
+**give_up** — \`{"reason": "..."}\`. Stop with a stated reason.
 
 That's it. There's no required workflow — use the tools the way you'd use a REPL.`;
 
@@ -197,6 +201,7 @@ async function rebuildSolver(session: AgentSession): Promise<void> {
 async function runTool(
   session: AgentSession,
   call: ToolCall,
+  signal?: AbortSignal,
 ): Promise<{ result: string; done?: boolean; gaveUp?: boolean }> {
   const { name, args } = call;
   switch (name) {
@@ -422,35 +427,54 @@ async function runTool(
     }
 
     case "prolog_solve": {
-      const program = typeof args.program === "string" ? args.program : "";
+      const programRaw = typeof args.program === "string" ? args.program : "";
+      const program = programRaw.trim();
       const goal = typeof args.query === "string" ? args.query.trim() : "";
-      const maxInferences = typeof args.maxInferences === "number" && args.maxInferences > 0
-        ? Math.floor(args.maxInferences)
-        : undefined;
+      // maxInferences must be a positive integer; reject 0 / negatives /
+      // fractional values explicitly so the model gets a clear signal
+      // rather than silent fallback to default.
+      let maxInferences: number | undefined;
+      if (args.maxInferences !== undefined) {
+        if (typeof args.maxInferences !== "number" || !Number.isFinite(args.maxInferences) || args.maxInferences <= 0) {
+          return {
+            result: "[error] prolog_solve maxInferences must be a positive number",
+          };
+        }
+        maxInferences = Math.floor(args.maxInferences);
+      }
       if (!program || !goal) {
         return {
           result: "[error] prolog_solve requires {program: string, query: string}",
         };
       }
-      const result = await runPrologSolver({ program, query: goal, maxInferences });
+      const result = await runPrologSolver({ program, query: goal, maxInferences, signal });
       if (result.status === "error") {
         return { result: `[prolog error] ${result.error}` };
       }
       if (result.answers.length === 0) {
         return { result: "no answers (goal failed — Prolog returned empty)" };
       }
-      const lines: string[] = [];
-      lines.push(`${result.answers.length} answer(s):`);
-      // Cap printed answers so we don't blow past the 4000-char tool
-      // result truncation. Show first 25 by default.
-      const PRINT_CAP = 25;
-      const shown = result.answers.slice(0, PRINT_CAP);
-      for (let i = 0; i < shown.length; i++) {
-        const a = shown[i];
-        lines.push(`  [${i + 1}] ${a.formatted}`);
+      // Size-bounded printing instead of a hard answer count: keep
+      // adding answers until we'd push past the soft budget, then stop
+      // and report how many remain. Always show at least the first 5
+      // so even big answers (long lists) get some surface area. The
+      // overall result is still capped by the agent's truncateToolResult
+      // (4000 chars) — this just keeps us from spending the whole
+      // budget on a single huge answer with nothing left for the rest.
+      const SOFT_BUDGET = 3500;
+      const MIN_ANSWERS = 5;
+      const lines: string[] = [`${result.answers.length} answer(s):`];
+      let usedChars = lines[0].length;
+      let shown = 0;
+      for (let i = 0; i < result.answers.length; i++) {
+        const line = `  [${i + 1}] ${result.answers[i].formatted}`;
+        if (shown >= MIN_ANSWERS && usedChars + line.length > SOFT_BUDGET) break;
+        lines.push(line);
+        usedChars += line.length + 1; // +1 for the join newline
+        shown++;
       }
-      if (result.answers.length > PRINT_CAP) {
-        lines.push(`  ... (${result.answers.length - PRINT_CAP} more not shown)`);
+      if (shown < result.answers.length) {
+        lines.push(`  ... (${result.answers.length - shown} more not shown)`);
       }
       return { result: lines.join("\n") };
     }
@@ -536,7 +560,7 @@ export async function runAgent(
         continue;
       }
 
-      const { result, done, gaveUp } = await runTool(session, call);
+      const { result, done, gaveUp } = await runTool(session, call, opts.signal);
       session.messages.push({ role: "user", content: truncateToolResult(result) });
       const entry: TurnEntry = { turn, toolCall: call, result };
       session.turns.push(entry);

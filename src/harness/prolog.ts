@@ -43,6 +43,12 @@ export interface PrologInput {
    * that walk large search spaces; lower for adversarial input.
    */
   maxInferences?: number;
+  /**
+   * Cancellation signal — checked between answer iterations. Tau
+   * Prolog is single-threaded JS and can't be interrupted mid-call,
+   * but we can stop enumerating between answers to be cooperative.
+   */
+  signal?: AbortSignal;
 }
 
 function consult(
@@ -86,13 +92,16 @@ function formatError(
   session: ReturnType<typeof pl.create>,
   err: unknown,
 ): string {
+  // Tau Prolog throws Prolog *terms* (e.g. error(syntax_error(...),...))
+  // on parse / type failures; format_answer prints them readably.
+  // Anything else falls back to the JS error message.
   try {
     if (err && typeof err === "object" && "toString" in err) {
       const formatted = session.format_answer(err as never);
       if (formatted) return formatted;
     }
   } catch {
-    /* fall through */
+    /* fall through to plain stringification */
   }
   return err instanceof Error ? err.message : String(err);
 }
@@ -118,6 +127,9 @@ export async function runPrologSolver(
   const answers: PrologAnswer[] = [];
   try {
     for (let i = 0; i < MAX_ANSWERS; i++) {
+      if (input.signal?.aborted) {
+        return { status: "error", error: "aborted" };
+      }
       const ans = await nextAnswer(session);
       if (ans === null) break;
 
@@ -129,7 +141,11 @@ export async function runPrologSolver(
           bindings[name] = t.toString?.() ?? t.id ?? String(term);
         }
       }
-      const formatted = pl.format_answer(ans as never) ?? "";
+      // format_answer can return null/undefined on edge inputs; fall
+      // back to a JSON-rendering of the bindings so the answer is
+      // never opaque to the caller.
+      const formatted = pl.format_answer(ans as never)
+        || formatBindingsAsFallback(bindings);
       answers.push({ bindings, formatted });
     }
   } catch (e: unknown) {
@@ -137,4 +153,10 @@ export async function runPrologSolver(
   }
 
   return { status: "success", answers };
+}
+
+function formatBindingsAsFallback(bindings: Record<string, string>): string {
+  const entries = Object.entries(bindings);
+  if (entries.length === 0) return "true";
+  return entries.map(([k, v]) => `${k} = ${v}`).join(", ");
 }
