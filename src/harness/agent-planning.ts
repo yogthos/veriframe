@@ -227,29 +227,62 @@ function escapeRegExp(s: string): string {
 }
 
 /**
+ * Pre-compiled regex patterns for time substitution. Built once per
+ * planning spec by `buildSubstPatterns`, reused across every
+ * substitution call. Avoids recompiling 2N regexes per timestep on
+ * every transition / invariant expansion.
+ */
+interface SubstPatterns {
+  tp1: Array<{ re: RegExp; name: string }>;
+  t: Array<{ re: RegExp; name: string }>;
+}
+
+function buildSubstPatterns(vars: StateVarSpec[]): SubstPatterns {
+  return {
+    tp1: vars.map((v) => ({
+      re: new RegExp(`\\b${escapeRegExp(v.name)}_tp1\\b`, "g"),
+      name: v.name,
+    })),
+    t: vars.map((v) => ({
+      re: new RegExp(`\\b${escapeRegExp(v.name)}_t\\b`, "g"),
+      name: v.name,
+    })),
+  };
+}
+
+function substituteWithPatterns(
+  template: string,
+  patterns: SubstPatterns,
+  t: number,
+): string {
+  let out = template;
+  // _tp1 first so the more specific suffix doesn't get mangled by the
+  // _t pattern (which would otherwise match `name_t` inside `name_tp1`).
+  for (const { re, name } of patterns.tp1) {
+    out = out.replace(re, `${name}_${t + 1}`);
+  }
+  for (const { re, name } of patterns.t) {
+    out = out.replace(re, `${name}_${t}`);
+  }
+  return out;
+}
+
+/**
  * Substitute time suffixes for a single transition T → T+1.
  * For each state var name, replaces `<name>_tp1` with `<name>_<T+1>`
  * and `<name>_t` with `<name>_<T>`. Order matters: _tp1 first.
+ *
+ * Public form — recompiles patterns on each call. Internal callers
+ * inside `generatePlanningSmt` use `substituteWithPatterns` directly
+ * with shared pre-compiled patterns. Kept exported for tests and any
+ * external use.
  */
 export function substituteTime(
   template: string,
   vars: StateVarSpec[],
   t: number,
 ): string {
-  let out = template;
-  for (const v of vars) {
-    out = out.replace(
-      new RegExp(`\\b${escapeRegExp(v.name)}_tp1\\b`, "g"),
-      `${v.name}_${t + 1}`,
-    );
-  }
-  for (const v of vars) {
-    out = out.replace(
-      new RegExp(`\\b${escapeRegExp(v.name)}_t\\b`, "g"),
-      `${v.name}_${t}`,
-    );
-  }
-  return out;
+  return substituteWithPatterns(template, buildSubstPatterns(vars), t);
 }
 
 function smtValue(v: number | boolean, sort: "Int" | "Bool"): string {
@@ -307,6 +340,20 @@ export function generatePlanningSmt(spec: PlanningSpec): string {
     );
   }
 
+  // Compile substitution patterns once and reuse across all
+  // invariant + action expansions (instead of recompiling 2N regexes
+  // per timestep on every call).
+  const patterns = buildSubstPatterns(state_vars);
+
+  // Pre-compute frame-axiom term strings per action (independent of t,
+  // up to the timestep substitution), so the inner transition loop
+  // doesn't recompute the changedSet or frame-term list per timestep.
+  const actionFrameSpecs = actions.map((a) => {
+    const changedSet = new Set(a.changes);
+    const framedVars = state_vars.filter((v) => !changedSet.has(v.name));
+    return { action: a, framedVars };
+  });
+
   // Invariants — expanded per timestep
   if (invariants && invariants.length > 0) {
     lines.push("");
@@ -314,7 +361,7 @@ export function generatePlanningSmt(spec: PlanningSpec): string {
     for (let i = 0; i < invariants.length; i++) {
       const inv = invariants[i];
       for (let t = 0; t <= K; t++) {
-        const expanded = substituteTime(inv, state_vars, t);
+        const expanded = substituteWithPatterns(inv, patterns, t);
         lines.push(`(assert (! ${expanded} :named inv_${i}_t${t}))`);
       }
     }
@@ -327,15 +374,12 @@ export function generatePlanningSmt(spec: PlanningSpec): string {
   lines.push(";; transitions");
   for (let t = 0; t < K; t++) {
     const disjuncts: string[] = [];
-    for (const a of actions) {
-      const changedSet = new Set(a.changes);
+    for (const { action: a, framedVars } of actionFrameSpecs) {
       const frameTerms: string[] = [];
-      for (const v of state_vars) {
-        if (!changedSet.has(v.name)) {
-          frameTerms.push(`(= ${v.name}_${t} ${v.name}_${t + 1})`);
-        }
+      for (const v of framedVars) {
+        frameTerms.push(`(= ${v.name}_${t} ${v.name}_${t + 1})`);
       }
-      const predicateAtT = substituteTime(a.predicate, state_vars, t);
+      const predicateAtT = substituteWithPatterns(a.predicate, patterns, t);
       const conjuncts = [predicateAtT, ...frameTerms];
       disjuncts.push(`(and ${conjuncts.join(" ")})`);
     }

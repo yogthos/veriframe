@@ -474,10 +474,20 @@ async function verifyOnDone(
   session: AgentSession,
 ): Promise<SolutionVerification | undefined> {
   try {
-    const checkResult = await session.solver.check();
-    if (checkResult !== "sat") return undefined;
-    const model = session.solver.getModel();
-    if (Object.keys(model).length === 0) return undefined;
+    // Reuse the cached check_sat result if the model just ran check_sat
+    // and the solver state hasn't been mutated since (any chunk change
+    // resets lastCheckResult to null). Saves one Z3 round-trip per
+    // typical agent run, which always ends with check_sat → done.
+    let model: Record<string, string> | undefined;
+    if (session.lastCheckResult === "sat" && session.cachedModel) {
+      model = session.cachedModel;
+    } else {
+      const checkResult = await session.solver.check();
+      if (checkResult !== "sat") return undefined;
+      model = session.solver.getModel();
+    }
+    if (!model || Object.keys(model).length === 0) return undefined;
+
     const clauses = Object.entries(model).map(([n, v]) => `(not (= ${n} ${v}))`);
     const negation = clauses.length === 1 ? clauses[0] : `(or ${clauses.join(" ")})`;
     session.solver.push();
