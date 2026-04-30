@@ -15,8 +15,8 @@ import { PROBLEMS, type Problem } from "./problems.js";
 // completes (no streaming). Hard problems can take 5–15 min, so the
 // default 300 s headersTimeout kills the connection. Bump it.
 const longLivedAgent = new Agent({
-  headersTimeout: 60 * 60 * 1000,
-  bodyTimeout: 60 * 60 * 1000,
+  headersTimeout: 3 * 60 * 60 * 1000,
+  bodyTimeout: 3 * 60 * 60 * 1000,
   connect: { timeout: 30 * 1000 },
 });
 
@@ -46,7 +46,11 @@ interface ChatResponse {
   };
 }
 
-async function ask(problem: Problem, raw: boolean): Promise<ChatResponse> {
+async function ask(
+  problem: Problem,
+  raw: boolean,
+  mode: "harness" | "agent" = "harness",
+): Promise<ChatResponse> {
   const res = await undiciFetch(ENDPOINT, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
@@ -54,7 +58,9 @@ async function ask(problem: Problem, raw: boolean): Promise<ChatResponse> {
       model: "local-model",
       messages: [{ role: "user", content: problem.prompt }],
       raw,
+      mode,
       max_steps: problem.maxSteps ?? 12,
+      max_turns: 40,
     }),
     dispatcher: longLivedAgent,
   });
@@ -70,8 +76,10 @@ function hr(label: string): string {
 
 async function main(): Promise<void> {
   const id = process.argv[2];
+  const modeArg = process.argv[3];
+  const mode: "harness" | "agent" = modeArg === "agent" ? "agent" : "harness";
   if (!id || !PROBLEMS[id]) {
-    console.error(`Usage: tsx scripts/compare.ts <problem-id>`);
+    console.error(`Usage: tsx scripts/compare.ts <problem-id> [agent]`);
     console.error(`Known problems: ${Object.keys(PROBLEMS).join(", ")}`);
     process.exit(1);
   }
@@ -97,9 +105,9 @@ async function main(): Promise<void> {
   log(`(${(directMs / 1000).toFixed(1)}s)`);
   log(direct.choices[0].message.content);
 
-  log(hr("HARNESSED (Z3-verified loop)"));
+  log(hr(mode === "agent" ? "AGENT (REPL-style tool-call loop)" : "HARNESSED (Z3-verified loop)"));
   const t2 = Date.now();
-  const harnessed = await ask(problem, false);
+  const harnessed = await ask(problem, false, mode);
   const harnessMs = Date.now() - t2;
   log(`(${(harnessMs / 1000).toFixed(1)}s)`);
   log(harnessed.choices[0].message.content);
