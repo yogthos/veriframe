@@ -197,6 +197,10 @@ async function runTool(
         session.cachedModel = null;
         return { result: `OK — added (${session.chunks.length} chunk(s) total).` };
       } catch (e) {
+        // Solver may have applied this chunk partially before throwing.
+        // Rebuild from the existing chunks so chunks ↔ solver state
+        // stay in sync; the rejected code is NOT added.
+        await rebuildSolver(session).catch(() => { /* best-effort */ });
         return {
           result: `[error] solver rejected the code: ${e instanceof Error ? e.message : String(e)}`,
         };
@@ -230,6 +234,7 @@ async function runTool(
       try {
         const result = await session.solver.check();
         session.lastCheckResult = result;
+        session.cachedModel = null;
         if (result === "sat") {
           let model: Record<string, string>;
           try {
@@ -263,6 +268,10 @@ async function runTool(
         }
         return { result: "unknown" };
       } catch (e) {
+        // Don't let a failed check leave a stale "sat" cached result
+        // that subsequent eval calls would mistakenly trust.
+        session.lastCheckResult = null;
+        session.cachedModel = null;
         return {
           result: `[error] check_sat failed: ${e instanceof Error ? e.message : String(e)}`,
         };
@@ -290,9 +299,13 @@ async function runTool(
     }
 
     case "done": {
-      const answer = typeof args.answer === "string" ? args.answer : JSON.stringify(args.answer ?? "");
-      if (!answer) return { result: "[error] done requires {answer: string}" };
-      session.finalAnswer = answer;
+      // Strict: answer must be a non-empty string. Previously this
+      // accepted `done({})` because JSON.stringify("") returns the
+      // 2-char literal `""` which is truthy.
+      if (typeof args.answer !== "string" || args.answer.trim().length === 0) {
+        return { result: "[error] done requires {answer: string} — your final human-readable answer." };
+      }
+      session.finalAnswer = args.answer;
       return { result: "OK — finalizing.", done: true };
     }
 
@@ -319,6 +332,7 @@ async function runTool(
         c.startsWith(";; --- PLANNING_SETUP "),
       );
       const replaced = priorPlanningIdx >= 0;
+      const priorChunk = replaced ? session.chunks[priorPlanningIdx] : null;
       if (replaced) session.chunks.splice(priorPlanningIdx, 1);
 
       const generated = generatePlanningSmt(spec);
@@ -341,8 +355,18 @@ async function runTool(
           result: `OK — planning skeleton generated and asserted${replacedNote} (${lineCount} lines, ${numVars} state-var instances across timesteps 0..${spec.horizon}, ${spec.actions.length} action(s) per transition). Run check_sat next.`,
         };
       } catch (e) {
+        // If the new encoding was rejected, restore the prior planning
+        // chunk so the agent doesn't lose work. Rebuild the solver
+        // either way to ensure chunks ↔ solver state stay in sync.
+        if (priorChunk !== null) {
+          session.chunks.splice(priorPlanningIdx, 0, priorChunk);
+        }
+        await rebuildSolver(session).catch(() => { /* best-effort */ });
+        const restoredNote = priorChunk !== null
+          ? " (prior planning chunk restored)"
+          : "";
         return {
-          result: `[error] solver rejected the generated planning encoding: ${e instanceof Error ? e.message : String(e)}\n\n--- generated SMT (first 1500 chars) ---\n${generated.slice(0, 1500)}`,
+          result: `[error] solver rejected the generated planning encoding${restoredNote}: ${e instanceof Error ? e.message : String(e)}\n\n--- generated SMT (first 1500 chars) ---\n${generated.slice(0, 1500)}`,
         };
       }
     }
