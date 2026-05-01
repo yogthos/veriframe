@@ -34,6 +34,13 @@ import {
   extractSearchHints,
   type SearchResult,
 } from "./lean-search.js";
+import {
+  startSession,
+  applyStep,
+  closeSession,
+  renderSession,
+  type ProofSession,
+} from "./lean-proof.js";
 
 export interface AgentRunOptions {
   config?: { maxTurns?: number };
@@ -77,6 +84,9 @@ interface AgentSession {
   /** Marks turns where we already injected the hint, so we don't
    *  spam it every turn while the model recovers. */
   hintCooldownTurns: number;
+  /** Active stepwise Lean proof session, if any. At most one open at
+   *  a time — see lean-proof.ts for rationale. */
+  leanProof: ProofSession | null;
   messages: ChatMessage[];
 }
 
@@ -117,6 +127,16 @@ If verification PASSES, the step is proved; the next turn picks up from there. I
 **verify_lean** — \`{"claim": "...", "lean": "..."}\`. Same shape, but the check is a **Lean 4 snippet** evaluated against Mathlib. Use this for genuine mathematical theorems: real/complex analysis (continuity, limits, ε-δ proofs), inequalities, number theory (primes, divisibility), algebra (group/ring/field theory), basic geometry, anything with named lemmas in Mathlib. The harness reports VERIFIED if Lean accepts the proof; NOT VERIFIED with up to 3 error lines (line numbers, "unsolved goals" messages, etc.) when it doesn't. \`import Mathlib\` is auto-prepended if you don't include it. Use \`example\` for one-off claims and \`theorem name\` if you want to assert a name and reuse it later via \`add_rule\`. **On a failed verify, the harness automatically searches Mathlib for relevant lemmas** and appends the top-3 results — read them.
 
 **lean_search** — \`{"query": "...", "top_k"?: number}\`. Search Mathlib's ~235k declarations for lemmas matching a query. The query can be a partial name (\`sqrt_nonneg\`), a phrase (\`Real square root non-negative\`), or a concept (\`AM-GM inequality\`). Returns up to \`top_k\` (default 8, max 20) ranked hits with name, signature, doc snippet, and source location. Use this *before* writing a proof when you don't know the canonical lemma name, or *during* a stuck step to find a relevant tool. Mathlib naming convention: snake_case + dot-namespace (e.g. \`Real.sqrt_le_sqrt\`, \`Nat.add_comm\`, \`Finset.sum_pow\`).
+
+**proof_start** — \`{"claim": "...", "theorem": "...", "name"?: string}\`. Open a *stateful* Lean proof session — the same as a human entering tactic mode in a Lean editor. Pick this over \`verify_lean\` whenever the proof has multiple steps (induction, case analysis, contradiction, chained rewrites). \`theorem\` is the Lean type expression (e.g. \`∀ n : ℕ, 2 * (∑ i ∈ Finset.range n, i) = n * (n - 1)\`); \`claim\` is your one-sentence NL articulation. Returns the initial goal. Only one session can be open at a time — close or abandon before starting another.
+
+**proof_step** — \`{"tactic": "...", "claim"?: string}\`. Apply ONE Lean tactic to the active proof. The harness re-runs the accumulated tactic list and reports either: (a) STEP ACCEPTED with the *new* goal state if open goals remain, (b) STEP ACCEPTED + closed if the proof is complete, or (c) STEP REJECTED — the bad tactic is automatically popped, the session stays in its previous state, and Lean's diagnostic is surfaced. Use this for each move in your proof: \`intro n\`, \`induction n with | zero => ?_ | succ k ih => ?_\`, \`apply Nat.le_of_lt\`, \`rw [Nat.add_comm]\`, \`exact ih\`, etc.
+
+**proof_state** — \`{}\`. Show the current proof's tactics so far + remaining goals, without running Lean. Cheap.
+
+**proof_close** — \`{}\`. Verify the active proof actually closes. Required to mark the proof as complete. If goals remain, the harness reports them.
+
+**proof_abandon** — \`{}\`. Drop the active proof session. Use when you want to start over with a different theorem statement or proof strategy.
 
 **assume** — \`{"name": "...", "fact": "..."}\`. Open a *named hypothetical scope*. \`fact\` is Prolog code asserted while the scope is open. Anything you \`verify\` afterward is conditional on this assumption. Used for "assume A, derive B; therefore A → B" reasoning.
 
@@ -165,6 +185,57 @@ NOT VERIFIED is a green light to **rethink the step**. Re-examine your reasoning
 - UNKNOWN means Z3 couldn't decide — try simpler arithmetic or a different encoding.
 
 \`verify_lean\` returns VERIFIED or NOT VERIFIED with diagnostics. Lean is a real proof assistant — the proof must compile against Mathlib. Useful tactics to know: \`norm_num\` (arithmetic identities), \`linarith\` / \`nlinarith\` / \`polyrith\` (linear/nonlinear inequalities), \`ring\` (ring identities), \`field_simp\` (field simplification), \`decide\` (decidable propositions), \`omega\` (linear integer/nat arithmetic), \`positivity\` (positivity of expressions), \`exact?\` / \`apply?\` / \`hint\` (Mathlib search & suggestion). Combine with \`intro\`, \`cases\`, \`rcases\`, \`induction\`, \`refine\`, \`have\`, \`show\`, \`use\`, \`rw\`. If a tactic fails on a side-condition, fall back to manual steps — but try the hammers first.
+
+## Stepwise Lean proofs — when verify_lean isn't enough
+
+For multi-step math proofs (induction, contradiction, chained rewrites, case splits) prefer the *stateful* proof tools over a single \`verify_lean\` call. The stateful flow lets you see the goal state after every tactic — exactly how a human writes a proof in Lean's tactic mode.
+
+**Example — inductive proof (∀ n : ℕ, 2 ∣ n^2 + n):**
+
+\`\`\`tool-call
+{"name": "proof_start", "args": {
+  "claim": "n² + n is always even",
+  "theorem": "∀ n : ℕ, 2 ∣ n^2 + n"
+}}
+\`\`\`
+
+Then:
+
+\`\`\`tool-call
+{"name": "proof_step", "args": {
+  "tactic": "intro n",
+  "claim": "fix an arbitrary natural n"
+}}
+\`\`\`
+
+(harness reports new goal: \`⊢ 2 ∣ n^2 + n\`)
+
+\`\`\`tool-call
+{"name": "proof_step", "args": {
+  "tactic": "induction n with | zero => ?_ | succ k ih => ?_",
+  "claim": "induct on n"
+}}
+\`\`\`
+
+(harness reports two goals: P(0) and the inductive step)
+
+\`\`\`tool-call
+{"name": "proof_step", "args": {
+  "tactic": "case zero => norm_num",
+  "claim": "base case: 0² + 0 = 0 is divisible by 2"
+}}
+\`\`\`
+
+…and so on, one tactic per turn, until proof closes. Then \`proof_close\`. **The proof technique (induction, contradiction, etc.) is your call** — the tools just give you stepwise execution.
+
+When to pick \`verify_lean\` over \`proof_start\`:
+- One-shot proofs that fit in a single tactic block (\`nlinarith [sq_nonneg (x - y)]\`)
+- Sanity-checks of a known lemma identity
+
+When to pick \`proof_start\` over \`verify_lean\`:
+- Anything that benefits from intermediate goal inspection
+- Multi-step inductive / case-analysis proofs
+- When you need to back out of one approach and try another mid-proof
 
 ## When to use \`assume\` / \`discharge\`
 
@@ -548,6 +619,162 @@ async function runTool(
       return { result: formatSmtResult(claim, r.verdict) + hint };
     }
 
+    case "proof_start": {
+      const claim = typeof args.claim === "string" ? args.claim.trim() : "";
+      const theorem =
+        typeof args.theorem === "string" ? args.theorem.trim() : "";
+      const name = typeof args.name === "string" ? args.name.trim() : undefined;
+      if (!claim || !theorem) {
+        return {
+          result:
+            "[error] proof_start requires {claim: string, theorem: string, name?: string}. `claim` is your one-sentence NL articulation; `theorem` is the Lean type expression you're proving (e.g. `∀ n : ℕ, n + 0 = n`).",
+        };
+      }
+      if (session.leanProof && session.leanProof.status === "open") {
+        return {
+          result: `[error] a proof is already open ("${session.leanProof.claim}"). Close it with proof_close (if all goals discharged) or drop it with proof_abandon before starting another.`,
+        };
+      }
+      try {
+        const ps = startSession({ claim, theorem, name });
+        session.leanProof = ps;
+        return {
+          result: `OK — proof session opened.\n${renderSession(ps)}\n\nApply tactics via proof_step. The model writes one tactic at a time; the harness re-runs the accumulated proof and reports the new goal state (or the next error to fix).`,
+        };
+      } catch (e) {
+        return {
+          result: `[proof_start error] ${e instanceof Error ? e.message : String(e)}`,
+        };
+      }
+    }
+
+    case "proof_step": {
+      const tactic =
+        typeof args.tactic === "string" ? args.tactic.trim() : "";
+      const tacticClaim =
+        typeof args.claim === "string" ? args.claim.trim() : "";
+      if (!tactic) {
+        return {
+          result:
+            "[error] proof_step requires {tactic: string, claim?: string}. The `tactic` is one Lean tactic (e.g. `intro n`, `induction n`, `nlinarith [sq_nonneg x]`). Optional `claim` articulates what this step achieves in NL.",
+        };
+      }
+      if (!session.leanProof) {
+        return {
+          result:
+            "[error] no active proof session — open one with proof_start first.",
+        };
+      }
+      const ps = session.leanProof;
+      const stepResult = await applyStep(ps, tactic, {});
+      // Track verify history for stuck detection. We treat "closed"
+      // and "open" as forward progress; "tactic_error" as not-progress.
+      const verifyClaim = tacticClaim || `step: ${tactic}`;
+      const outcome: VerifyOutcome =
+        stepResult.status === "tactic_error" ? "not_verified" : "verified";
+      recordVerify(session, verifyClaim, outcome);
+      const stuck = checkStuckHint(session);
+      const lines: string[] = [];
+      if (stepResult.status === "closed") {
+        lines.push(
+          `STEP ACCEPTED — proof closed in ${stepResult.tacticCount} tactic(s).`,
+        );
+        lines.push("Call proof_close to finalise.");
+      } else if (stepResult.status === "open") {
+        lines.push(
+          `STEP ACCEPTED — ${stepResult.tacticCount} tactic(s) applied.`,
+        );
+        lines.push("New goals:");
+        for (const line of stepResult.goals.split("\n")) {
+          lines.push("  " + line);
+        }
+      } else {
+        lines.push(
+          `STEP REJECTED — Lean rejected the tactic; it has been popped from the session (current count: ${stepResult.tacticCount}).`,
+        );
+        for (const e of stepResult.errors.slice(0, 2)) {
+          const where = e.line > 0 ? ` (line ${e.line})` : "";
+          lines.push(
+            `  •${where} ${e.message.split("\n").join(" / ").slice(0, 800)}`,
+          );
+        }
+        if (ps.goals) {
+          lines.push("Goals are unchanged:");
+          for (const line of ps.goals.split("\n")) lines.push("  " + line);
+        }
+      }
+      // On rejection, surface relevant Mathlib lemmas via the goal.
+      let suggestion = "";
+      if (stepResult.status === "tactic_error" && stepResult.errors.length > 0) {
+        try {
+          const hints = extractSearchHints(stepResult.errors);
+          if (hints.length > 0) {
+            const sugLines = ["", "Relevant Mathlib lemmas:"];
+            for (const h of hints.slice(0, 2)) {
+              const hits = await searchLemmas(h.query, 4);
+              if (hits.length === 0) continue;
+              sugLines.push(
+                `  via ${h.source} "${h.query.slice(0, 80)}":`,
+              );
+              for (const hit of hits) {
+                sugLines.push(`    [${hit.score}] ${formatLemma(hit.lemma)}`);
+              }
+            }
+            if (sugLines.length > 2) suggestion = sugLines.join("\n");
+          }
+        } catch {
+          /* best-effort */
+        }
+      }
+      return {
+        result: lines.join("\n") + suggestion + stuck,
+      };
+    }
+
+    case "proof_state": {
+      if (!session.leanProof) {
+        return {
+          result:
+            "[error] no active proof session — open one with proof_start first.",
+        };
+      }
+      return { result: renderSession(session.leanProof) };
+    }
+
+    case "proof_close": {
+      if (!session.leanProof) {
+        return {
+          result: "[error] no active proof session to close.",
+        };
+      }
+      const ps = session.leanProof;
+      const r = await closeSession(ps);
+      if (r.status === "closed") {
+        const summary = `Proof of "${ps.claim}" CLOSED — ${ps.tactics.length} tactic(s):\n${ps.tactics.map((t, i) => `  [${i + 1}] ${t}`).join("\n")}`;
+        // For now we don't auto-register the proof as a citable fact
+        // — that's Phase 3c. Keep the closed session readable by
+        // proof_state until proof_abandon or another proof_start.
+        return { result: summary };
+      }
+      if (r.status === "open") {
+        return {
+          result: `proof_close: still ${r.goals.split("\n").length} goal(s) open. Apply more tactics via proof_step:\n  ${r.goals.split("\n").join("\n  ")}`,
+        };
+      }
+      return { result: `[proof_close error] ${r.error}` };
+    }
+
+    case "proof_abandon": {
+      if (!session.leanProof) {
+        return {
+          result: "[error] no active proof session to abandon.",
+        };
+      }
+      const claim = session.leanProof.claim;
+      session.leanProof = null;
+      return { result: `proof "${claim}" abandoned.` };
+    }
+
     case "lean_search": {
       const query = typeof args.query === "string" ? args.query.trim() : "";
       let topK = 8;
@@ -703,7 +930,7 @@ async function runTool(
 
     default:
       return {
-        result: `[error] unknown tool "${name}". Valid: add_rule, retract_rule, commit, verify, verify_smt, verify_lean, lean_search, assume, discharge, done, give_up.`,
+        result: `[error] unknown tool "${name}". Valid: add_rule, retract_rule, commit, verify, verify_smt, verify_lean, lean_search, proof_start, proof_step, proof_state, proof_close, proof_abandon, assume, discharge, done, give_up.`,
       };
   }
 }
@@ -723,6 +950,7 @@ export async function runAgent(
     assertedBytes: 0,
     verifyHistory: [],
     hintCooldownTurns: 0,
+    leanProof: null,
     messages: [{ role: "user", content: buildInitialUserMessage(problem) }],
   };
 
