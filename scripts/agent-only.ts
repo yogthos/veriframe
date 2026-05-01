@@ -39,7 +39,7 @@ async function main(): Promise<void> {
       model: "local-model",
       messages: [{ role: "user", content: problem.prompt }],
       mode: "agent",
-      max_turns: 40,
+      max_turns: 80,
     }),
     dispatcher: agentDispatcher,
   });

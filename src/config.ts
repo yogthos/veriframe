@@ -16,9 +16,13 @@ export interface ServerConfig {
 }
 
 function pickProvider(envProvider: string | undefined): ProviderType {
-  if (envProvider && ["local", "openai", "deepseek", "ollama"].includes(envProvider)) {
+  if (
+    envProvider &&
+    ["local", "openai", "deepseek", "ollama", "glm"].includes(envProvider)
+  ) {
     return envProvider as ProviderType;
   }
+  if (process.env.ZHIPU_API_KEY && !process.env.HARNESS_MODEL_PATH) return "glm";
   if (process.env.HARNESS_MODEL_PATH) return "local";
   return "local";
 }
@@ -44,6 +48,10 @@ export function loadConfig(overrides?: Partial<ServerConfig>): ServerConfig {
   const modelPath =
     process.env.HARNESS_MODEL_PATH ?? overrides?.llm?.modelPath;
 
+  // Pick a sensible default model name when GLM is selected so the
+  // wire payload has a real model id; user can override via HARNESS_MODEL.
+  const defaultModel = provider === "glm" ? "glm-5.1" : "local-model";
+
   return {
     port: num(process.env.HARNESS_PORT) ?? overrides?.port ?? 3000,
     host: process.env.HARNESS_HOST ?? overrides?.host ?? "0.0.0.0",
@@ -51,9 +59,9 @@ export function loadConfig(overrides?: Partial<ServerConfig>): ServerConfig {
       provider,
       modelPath,
       baseUrl: process.env.HARNESS_BASE_URL ?? overrides?.llm?.baseUrl,
-      apiKey: overrides?.llm?.apiKey,
+      apiKey: overrides?.llm?.apiKey ?? process.env.ZHIPU_API_KEY,
       model:
-        process.env.HARNESS_MODEL ?? overrides?.llm?.model ?? "local-model",
+        process.env.HARNESS_MODEL ?? overrides?.llm?.model ?? defaultModel,
       maxTokens:
         num(process.env.HARNESS_MAX_TOKENS) ??
         overrides?.llm?.maxTokens ??

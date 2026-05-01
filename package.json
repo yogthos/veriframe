@@ -37,7 +37,6 @@
   },
   "dependencies": {
     "node-llama-cpp": "^3.18.1",
-    "tau-prolog": "^0.3.4",
-    "z3-solver": "^4.16.0"
+    "prolog-wasm-full": "^0.2.0"
   }
 }

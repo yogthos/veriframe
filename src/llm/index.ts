@@ -11,12 +11,14 @@
 
 import type { LLMConfig, LLMClient, ProviderType } from "./types.js";
 import { createLocalProvider } from "./local.js";
+import { createGLMProvider } from "./glm.js";
 
 export {
   createLocalProvider,
   disposeLocalProvider,
   preloadLocalModel,
 } from "./local.js";
+export { createGLMProvider } from "./glm.js";
 
 export type {
   LLMConfig,
@@ -38,6 +40,8 @@ export function createLLMClient(config: LLMConfig): LLMClient {
   switch (provider) {
     case "local":
       return createLocalProvider(config);
+    case "glm":
+      return createGLMProvider(config);
     case "openai":
     case "ollama":
     case "deepseek":

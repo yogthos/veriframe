@@ -3,7 +3,7 @@
  * so the same local/openai/ollama implementations can be reused.
  */
 
-export type ProviderType = "local" | "openai" | "ollama" | "deepseek";
+export type ProviderType = "local" | "openai" | "ollama" | "deepseek" | "glm";
 
 export interface LLMConfig {
   provider?: ProviderType;

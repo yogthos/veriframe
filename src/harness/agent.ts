@@ -1,31 +1,32 @@
 /**
- * Minimal REPL-style agent loop — model issues one tool call per turn
- * against a persistent Z3 solver, the way a programmer iterates against
- * a REPL.
+ * REPL-style agent loop with a persistent SWI-Prolog session.
  *
- * Design follows Amp's "How to Build an Agent" recipe:
- *   - tiny tool surface (7 tools), each does one thing
- *   - no workflow imposed; the model decides what to call when
- *   - terse system prompt; tool descriptions carry the weight
- *   - tool-call format is markdown-fenced JSON (kept in lieu of native
- *     tool-use because Qwen's <think> block gets suppressed by the
- *     grammar that native tool-use installs)
+ * The agent solves problems intuition-first: it reasons step by step
+ * in natural language, forms a hypothesis at each step, then verifies
+ * the hypothesis against the puzzle rules using Prolog. Verified
+ * facts get asserted into the session for later steps to build on.
+ * This matches the way a human solves a logic puzzle (or writes a
+ * proof) with the help of a checker.
+ *
+ * Tools the model sees:
+ *   - prolog_assert(code): add facts/rules to the session
+ *   - prolog_query(goal): run a verification query
+ *   - done(answer): submit
+ *   - give_up(reason): bail
+ *
+ * Design rationale: published research (ZebraLogic, the 2025
+ * "Training LMs to Use Prolog" paper) shows base LLMs struggle to
+ * write whole correct Prolog programs in one shot. Splitting the
+ * generation into small, separately-verifiable assertions fits the
+ * "generate-then-validate" pattern the literature endorses, and lets
+ * the model use its strong natural-language reasoning to drive the
+ * structure while Prolog acts as the proof oracle.
  */
 
 import type { LLMClient, ChatMessage } from "../llm/types.js";
-import { createIncrementalSolver } from "./solver.js";
-import {
-  type ReasoningStep,
-  type RunResult,
-  type SolutionVerification,
-} from "../types.js";
-import {
-  validatePlanningSpec,
-  generatePlanningSmt,
-  PlanningSpecError,
-  type PlanningSpec,
-} from "./agent-planning.js";
-import { runPrologSolver } from "./prolog.js";
+import { type ReasoningStep, type RunResult } from "../types.js";
+import { createSession, type PrologSession } from "./prolog.js";
+import { runSmt } from "./smt.js";
 
 export interface AgentRunOptions {
   config?: { maxTurns?: number };
@@ -45,35 +46,34 @@ export interface ToolCall {
   parseError?: string;
 }
 
+type VerifyOutcome = "verified" | "not_verified" | "error";
+
+interface VerifyEvent {
+  claim: string;
+  outcome: VerifyOutcome;
+}
+
 interface AgentSession {
   problem: string;
-  solver: Awaited<ReturnType<typeof createIncrementalSolver>>;
-  /**
-   * Each entry is a raw chunk of SMT-LIB the model added via add_smt.
-   * Tracking chunks (rather than individual declarations / assertions)
-   * lets the model write multi-statement chunks the way it would at a
-   * REPL, without imposing a declare-vs-assert distinction.
-   */
-  chunks: string[];
-  /** Last solver.check() result, for eval guarding. */
-  lastCheckResult: "sat" | "unsat" | "unknown" | null;
-  cachedModel: Record<string, string> | null;
   finalAnswer: string | null;
   turns: TurnEntry[];
+  prolog: PrologSession;
+  /** Number of bytes asserted so far — surfaced to the model so it
+   *  can sense when the session has accumulated a lot of state. */
+  assertedBytes: number;
   /**
-   * Multi-turn conversation history (excluding the system prompt). Each
-   * turn appends one assistant message (the model's response, including
-   * its tool-call fence) and one user message (the tool result). This
-   * lets the local LLM provider reuse its KV cache across turns —
-   * `canReuseSession` checks that incoming priorHistory is a strict
-   * prefix-extension of the active session's history, which only holds
-   * if we send the conversation as proper alternating messages instead
-   * of cramming everything into one user message per turn.
+   * Recent verify history. Used to detect "stuck on a step" patterns
+   * — three failed/repeated verifications in a row triggers a hint
+   *  appended to the next tool result. Capped at the last 8 entries.
    */
+  verifyHistory: VerifyEvent[];
+  /** Marks turns where we already injected the hint, so we don't
+   *  spam it every turn while the model recovers. */
+  hintCooldownTurns: number;
   messages: ChatMessage[];
 }
 
-const SYSTEM_PROMPT = `You have an interactive Z3 SMT solver. Solve the user's problem by translating it to SMT-LIB and using the solver to verify your answer. Call \`done\` when finished.
+const SYSTEM_PROMPT = `You're solving a problem the way a mathematician proves a theorem: by reasoning out the next step in natural language, then verifying that one step with Prolog. **You are not writing a Prolog solver.** You are deriving the answer step by step, with Prolog as the proof checker for each derivation.
 
 Each turn, emit ONE tool call inside a fenced block:
 
@@ -83,49 +83,132 @@ Each turn, emit ONE tool call inside a fenced block:
 
 Free-form prose around the fence is allowed for your reasoning; only the first fence is parsed.
 
+## The flow — every turn answers two questions
+
+1. **What is the next step I need to prove?** State it in one sentence in your prose. Examples: "House 1 is yellow." "If A is a knight, then B is a knight." "Move D1 from peg A to peg B is legal in the initial state."
+
+2. **What's the smallest Prolog check that confirms this step?** Write it as the \`check\` field of \`verify\`. The Prolog runs against rules you've added so far + library(lists) + library(clpfd).
+
+If verification PASSES, the step is proved; the next turn picks up from there. If it FAILS, your claim was wrong or your encoding incomplete — rethink the *step* (not the encoding) before trying a different formulation.
+
 ## Tools
 
-**add_smt** — \`{"code": "..."}\`. Append SMT-LIB to the solver. The code can be one or many statements; declarations and assertions are both fine. Use \`(assert (! ... :named foo))\` if you want to be able to retract this assertion by name later.
+**add_rule** — \`{"name"?: string, "code": "..."}\`. Append Prolog rules/facts to the persistent session.
+- **With \`name\`** (recommended for new rules): the rule is **tentative** — you can \`retract_rule({"name": ...})\` it if it turns out to be wrong, or \`commit({"name": ...})\` to lock it in once you're confident. This is your safety net against rule conflicts.
+- **Without \`name\`**: anonymous and permanent. Use only for things you're certain about (e.g., the puzzle's literal clues).
 
-**view_smt** — show every chunk you've added so far, in the order added.
+**Keep each \`add_rule\` small** — one or a few related clauses. Don't write a full solver. Name your rules so you have an undo button.
 
-**retract** — \`{"name": "..."}\`. Remove the chunk that contains the named assertion. The solver is rebuilt from the remaining chunks.
+**retract_rule** — \`{"name": "..."}\`. Undo a previously-named tentative rule. Errors if the name doesn't exist or has been committed.
 
-**check_sat** — run \`(check-sat)\`. Returns \`sat\` plus the model, \`unsat\` plus the unsat core (named assertions involved), or \`unknown\`.
+**commit** — \`{"name": "..."}\`. Lock in a named tentative rule — it can no longer be retracted. Use after you've verified the rule is sound and want to build on it without risk of accidentally undoing it.
 
-**eval** — \`{"expr": "..."}\`. Evaluate an expression in the current model (after a sat check_sat). Useful for sanity-checking a derived value.
+**verify** — \`{"claim": "...", "check": "..."}\`. Both fields required. \`claim\` is your one-sentence natural-language statement of what you're proving this turn. \`check\` is the Prolog goal that succeeds iff the claim holds. The harness reports VERIFIED (claim supported, with bindings) or NOT VERIFIED (no answers — rethink).
 
-**probe_sat** — \`{"code": "..."}\`. Push a temporary frame, assert the code, run check_sat, pop. Use to test a "what if" hypothesis (e.g. "is the current state still sat if I additionally constrain x > 5?") without permanently committing the assertion. The frame is always popped afterward, so the solver returns to its current state. Don't use \`add_smt\` for what-if exploration — that contaminates the solver state and breaks the post-\`done\` verification.
+**verify_smt** — \`{"claim": "...", "smtlib": "..."}\`. Same shape as \`verify\` but the check is SMT-LIB code, executed by Z3 4.15. Use this when Prolog/CLP(FD) isn't enough: real arithmetic, nonlinear arithmetic, large bitvectors, theory combinations, optimisation. The harness reports SAT / UNSAT / UNKNOWN — read the description below for proof semantics. Don't include \`(check-sat)\`; the harness appends it.
 
-## Higher-level abstractions
+**assume** — \`{"name": "...", "fact": "..."}\`. Open a *named hypothetical scope*. \`fact\` is Prolog code asserted while the scope is open. Anything you \`verify\` afterward is conditional on this assumption. Used for "assume A, derive B; therefore A → B" reasoning.
 
-**setup_planning** — for state-transition planning problems (find a sequence of actions transforming initial state into goal state). Provide a structured spec; the harness generates the boilerplate SMT-LIB (per-timestep variables, transition disjunctions with frame axioms, initial/goal/invariants) and pushes it to the solver. Args:
+**discharge** — \`{"name": "..."}\`. Close a previously-opened scope, retracting its assumption. Whatever you proved while it was open now stands as a conditional ("under hypothesis X, conclusion Y holds").
 
-- \`horizon\`: number of transitions (K). Variables \`name_0\` … \`name_K\` are declared.
-- \`state_vars\`: \`[{name, sort, domain?}]\`. Sort is \`"Int"\` or \`"Bool"\`. \`domain\` is \`[min, max]\` for Int.
-- \`initial\`, \`goal\`: maps \`{var_name: value}\`.
-- \`invariants\` (optional): SMT-LIB strings asserted at every timestep. Reference state vars with the suffix \`_t\` (e.g. \`"(not (= flag_t 0))"\`); the harness substitutes the concrete timestep.
-- \`actions\`: \`[{name, changes, predicate}]\`. \`changes\` lists the base names of state vars this action modifies. \`predicate\` is the action's SMT-LIB precondition + change, referencing state with suffixes \`_t\` (current) and \`_tp1\` (next). Frame axioms (\`(= var_t var_tp1)\` for vars not in \`changes\`) are emitted automatically.
-
-After the tool succeeds, run \`check_sat\`. SAT → read off the action sequence by inspecting how state changed each timestep; UNSAT → just call \`setup_planning\` again with a larger \`horizon\` (the tool auto-retracts any prior planning chunk, so calling it repeatedly with increasing K is the standard iteration pattern). UNSAT at K does not mean impossible — only that K is too small.
-
-**prolog_solve** — \`{"program": "...", "query": "...", "maxInferences"?: number}\`. Run a Tau Prolog program and a goal in one shot; receive all answers as a list of binding maps.
-
-Prolog is the **relational / inductive reasoning** layer of this harness — natural for problems expressible as facts and rules with backtracking enumeration over finite domains; a poor fit for dense arithmetic, multi-variable optimisation, or theory combinations.
-
-The SMT tools (\`add_smt\` / \`setup_planning\` / etc.) are the **constraint / arithmetic** layer. Use them when the problem reduces to checking a system of equations or doing an existence/uniqueness proof over a numerical theory.
-
-**Both engines coexist in this session.** Pick whichever fits each piece of the problem — many puzzles are purely one or the other; some have a relational shape with a numerical sub-problem and benefit from both. You decide.
-
-The \`program\` is the full Prolog source (facts and rules); the \`query\` is one goal. The harness returns every solution up to a 1000-answer / 200k-inference cap. **No persistent state between \`prolog_solve\` calls** — each call gets a fresh session, so include the full program every time you want to query it.
-
-## Control
-
-**done** — \`{"answer": "..."}\`. Submit the human-readable final answer. The harness automatically runs a uniqueness probe (asserting the negation of the model in a temporary frame and rechecking); the verdict — UNIQUE or NOT UNIQUE with a counter-example — is appended to your answer. **You don't need to verify uniqueness yourself.** Just call \`done\` once \`check_sat\` returned sat and you're satisfied with the model.
+**done** — \`{"answer": "..."}\`. Submit the human-readable final answer once you've derived it.
 
 **give_up** — \`{"reason": "..."}\`. Stop with a stated reason.
 
-That's it. There's no required workflow — use the tools the way you'd use a REPL.`;
+## Anti-patterns — read carefully
+
+- **Don't write the whole puzzle solver as one giant \`add_rule\`.** That's the failure mode this harness is designed against. If you find yourself writing 30+ lines in one assert, you're not doing TDD — you're back to one-shot solving.
+- **Don't \`verify\` a goal you wrote without first writing a one-sentence claim.** The whole point is to commit to the *idea* before writing the *check*. Skipping the claim collapses back into "write Prolog and hope."
+- **Don't use \`write\`, \`format\`, \`nl\`, or other side-effects in queries.** The harness reads variable bindings; stdout is invisible.
+- **Don't run unbounded search.** Each query has a 50,000,000-inference budget (~5-15s). If you hit it, narrow the goal — don't widen it.
+
+## Output format
+
+\`verify\` returns one of:
+
+\`\`\`
+VERIFIED — 3 answer(s):
+  [1] X = a
+  [2] X = b
+  [3] X = c
+\`\`\`
+
+or
+
+\`\`\`
+NOT VERIFIED — 0 answers (the check failed under your current rules).
+\`\`\`
+
+or
+
+\`\`\`
+[error] query exceeded inference limit ...
+\`\`\`
+
+NOT VERIFIED is a green light to **rethink the step**. Re-examine your reasoning, not your code. Maybe the claim was wrong, or you're missing a rule you haven't encoded yet.
+
+\`verify_smt\` returns SAT, UNSAT, or UNKNOWN. **Pick your encoding to match the question:**
+
+- To prove "P holds for all values," assert \`(not P)\` and look for **UNSAT** (no counter-example exists).
+- To prove "there exists x such that P(x)," assert \`P(x)\` and look for **SAT** (a witness exists).
+- UNKNOWN means Z3 couldn't decide — try simpler arithmetic or a different encoding.
+
+## When to use \`assume\` / \`discharge\`
+
+Use these when the claim is conditional ("if A, then B"). The pattern is:
+
+1. \`assume\` the antecedent into a named scope.
+2. \`verify\` the consequent (it can use the assumption as a premise).
+3. \`discharge\` the scope. The proven step now reads "under assumption A, B holds."
+
+Without \`assume\`/\`discharge\`, you can't cleanly prove implications — every \`verify\` is in the *current* (unconditional) context, so a hypothetical fact would either pollute later steps (if asserted via \`add_rule\`) or be unavailable (if not asserted at all).
+
+## Preloaded libraries
+
+- \`library(lists)\`: \`member/2\`, \`append/3\`, \`length/2\`, \`reverse/2\`, \`permutation/2\`, \`maplist/2..8\`, \`select/3\`, \`nth0/3\`, \`nth1/3\`, \`last/2\`, \`sum_list/2\`, \`max_list/2\`, \`min_list/2\`, \`include/3\`, \`exclude/3\`, \`foldl/4..7\`, \`msort/2\`.
+- \`library(clpfd)\`: \`#=\`, \`#\\=\`, \`#<\`, \`#>\`, \`#=<\`, \`#>=\`, \`ins\`, \`in\`, \`all_distinct\`, \`all_different\`, \`label\`, \`labeling\`, \`#==>\`, \`#<==>\`.
+
+\`format/2\`, \`format/3\` are SWI built-ins.
+
+## Worked example — a small deduction
+
+Problem: "Among A, B, C, exactly one is a liar. A says B is the liar. If A is the liar, what does that mean for B?"
+
+**Turn 1** — set up the basic types:
+
+prose: "I'll encode the type domain so I can reason about who's a liar."
+
+\`\`\`tool-call
+{"name": "add_rule", "args": {"code": "type(liar). type(truth_teller)."}}
+\`\`\`
+
+**Turn 2** — first deductive step. Claim: "A liar's statement is false."
+
+prose: "By definition, a liar lies. A says 'B is the liar.' If A is the liar, A's statement is false, so B is *not* the liar. Let me check this with a small predicate."
+
+\`\`\`tool-call
+{"name": "verify", "args": {
+  "claim": "If A is the liar, then B is not the liar.",
+  "check": "(member(A, [liar, truth_teller]), member(B, [liar, truth_teller]), A = liar, (A = liar -> \\\\+ B = liar ; B = liar))"
+}}
+\`\`\`
+
+The harness reports VERIFIED with A=liar, B=truth_teller (or similar). Now I have a building block.
+
+**Turn 3** — combine with the "exactly one liar" constraint:
+
+prose: "Since exactly one of {A, B, C} is a liar, and A=liar implies B is a truth-teller, then C must also be a truth-teller. Let me check."
+
+\`\`\`tool-call
+{"name": "verify", "args": {
+  "claim": "If A is the liar, both B and C are truth-tellers.",
+  "check": "..."
+}}
+\`\`\`
+
+…and so on. Each step is one sentence + one small check. Build incrementally.
+
+That's it — claim, check, accept, next. The flow is the proof.`;
 
 const TOOL_CALL_FENCE_RE = /```tool-call\s*\r?\n([\s\S]*?)```/;
 
@@ -174,28 +257,88 @@ function truncateToolResult(result: string): string {
     : result;
 }
 
-
-/** Find the chunk containing a named assertion, return its index or -1. */
-function findChunkByName(session: AgentSession, name: string): number {
-  const re = new RegExp(`:named\\s+${escapeRegExp(name)}\\b`);
-  for (let i = 0; i < session.chunks.length; i++) {
-    if (re.test(session.chunks[i])) return i;
+function formatVerifyResult(
+  claim: string,
+  answers: { formatted: string }[],
+): string {
+  const header = `claim: "${claim}"`;
+  if (answers.length === 0) {
+    return `${header}\nNOT VERIFIED — 0 answers under the current rules. Rethink the *step*: was the claim wrong, or are you missing a rule?`;
   }
-  return -1;
+  const SOFT_BUDGET = 3500;
+  const MIN_ANSWERS = 5;
+  const lines: string[] = [header, `VERIFIED — ${answers.length} answer(s):`];
+  let usedChars = lines[0].length + lines[1].length;
+  let shown = 0;
+  for (let i = 0; i < answers.length; i++) {
+    const line = `  [${i + 1}] ${answers[i].formatted}`;
+    if (shown >= MIN_ANSWERS && usedChars + line.length > SOFT_BUDGET) break;
+    lines.push(line);
+    usedChars += line.length + 1;
+    shown++;
+  }
+  if (shown < answers.length) {
+    lines.push(`  ... (${answers.length - shown} more not shown)`);
+  }
+  return lines.join("\n");
 }
 
-function escapeRegExp(s: string): string {
-  return s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+function recordVerify(
+  session: AgentSession,
+  claim: string,
+  outcome: VerifyOutcome,
+): void {
+  session.verifyHistory.push({ claim, outcome });
+  if (session.verifyHistory.length > 8) {
+    session.verifyHistory.splice(0, session.verifyHistory.length - 8);
+  }
 }
 
-async function rebuildSolver(session: AgentSession): Promise<void> {
-  session.solver.dispose();
-  session.solver = await createIncrementalSolver();
-  for (const chunk of session.chunks) {
-    session.solver.assert(chunk);
+function isSimilarClaim(a: string, b: string): boolean {
+  const ax = a.toLowerCase().replace(/[^a-z0-9 ]/g, "").trim();
+  const bx = b.toLowerCase().replace(/[^a-z0-9 ]/g, "").trim();
+  if (!ax || !bx) return false;
+  if (ax === bx) return true;
+  // Prefix overlap of >= 30 chars indicates the same step framing.
+  const minLen = Math.min(ax.length, bx.length);
+  if (minLen < 30) return ax === bx;
+  return ax.slice(0, 30) === bx.slice(0, 30);
+}
+
+const STUCK_HINT = `\n\n⚠ Heads up: the last 3 verifications haven't moved you forward — they failed, errored, or restated a similar claim. Step back before writing more Prolog:\n  • Is the *claim* too ambitious for one step? Decompose it (one-fact-per-claim).\n  • Did a recent rule break things? \`retract_rule({"name": "..."})\` to undo a tentative \`add_rule\` you named.\n  • Is the encoding shape wrong? Form a different hypothesis instead of patching this one.`;
+
+function checkStuckHint(session: AgentSession): string {
+  if (session.hintCooldownTurns > 0) return "";
+  const recent = session.verifyHistory.slice(-3);
+  if (recent.length < 3) return "";
+  // Pattern 1: three non-passing in a row.
+  const allFailed = recent.every(
+    (e) => e.outcome === "not_verified" || e.outcome === "error",
+  );
+  // Pattern 2: three verifies on similar claims (regardless of outcome) —
+  // model is grinding the same step.
+  const allSimilar =
+    isSimilarClaim(recent[0].claim, recent[1].claim) &&
+    isSimilarClaim(recent[1].claim, recent[2].claim);
+  if (allFailed || allSimilar) {
+    session.hintCooldownTurns = 4; // skip next 4 verifies before re-hinting
+    return STUCK_HINT;
   }
-  session.lastCheckResult = null;
-  session.cachedModel = null;
+  return "";
+}
+
+function formatSmtResult(claim: string, verdict: "sat" | "unsat" | "unknown"): string {
+  const header = `claim: "${claim}"`;
+  // SMT semantics differ from Prolog. We report the raw verdict and
+  // remind the model what each one means so it doesn't misread.
+  switch (verdict) {
+    case "unsat":
+      return `${header}\nUNSAT — the formula is unsatisfiable. If you encoded \`(assert (not P))\`, this proves P holds for all values (claim VERIFIED). If you encoded \`(assert P)\` directly, UNSAT means P is impossible (claim DISPROVED).`;
+    case "sat":
+      return `${header}\nSAT — the formula is satisfiable. Means a model exists. If you encoded \`(assert (not P))\`, SAT shows P is NOT universally true (counter-example exists). If you encoded \`(assert P)\` directly, SAT confirms P is achievable.`;
+    case "unknown":
+      return `${header}\nUNKNOWN — Z3 couldn't decide. The formula may be undecidable in this fragment (e.g., nonlinear arithmetic over reals) or hit an internal limit. Try a stronger encoding or simpler claim.`;
+  }
 }
 
 async function runTool(
@@ -205,286 +348,183 @@ async function runTool(
 ): Promise<{ result: string; done?: boolean; gaveUp?: boolean }> {
   const { name, args } = call;
   switch (name) {
-    case "add_smt": {
+    case "add_rule": {
       const code = typeof args.code === "string" ? args.code.trim() : "";
-      if (!code) return { result: "[error] add_smt requires {code: string}" };
-      try {
-        session.solver.assert(code);
-        session.chunks.push(code);
-        session.lastCheckResult = null;
-        session.cachedModel = null;
-        return { result: `OK — added (${session.chunks.length} chunk(s) total).` };
-      } catch (e) {
-        // Solver may have applied this chunk partially before throwing.
-        // Rebuild from the existing chunks so chunks ↔ solver state
-        // stay in sync; the rejected code is NOT added.
-        await rebuildSolver(session).catch(() => { /* best-effort */ });
-        return {
-          result: `[error] solver rejected the code: ${e instanceof Error ? e.message : String(e)}`,
-        };
+      const name =
+        typeof args.name === "string" ? args.name.trim() : undefined;
+      if (!code) {
+        return { result: "[error] add_rule requires {code: string, name?: string}" };
       }
-    }
-
-    case "view_smt": {
-      if (session.chunks.length === 0) return { result: "(empty)" };
-      return { result: session.chunks.join("\n\n") };
-    }
-
-    case "retract": {
-      const name = typeof args.name === "string" ? args.name.trim() : "";
-      if (!name) return { result: "[error] retract requires {name: string}" };
-      const idx = findChunkByName(session, name);
-      if (idx < 0) {
-        return { result: `[error] no chunk contains an assertion named "${name}".` };
+      const r = name
+        ? await session.prolog.addNamed(name, code)
+        : await session.prolog.assert(code);
+      if (r.status === "error") {
+        return { result: `[add_rule error] ${r.error}` };
       }
-      session.chunks.splice(idx, 1);
-      try {
-        await rebuildSolver(session);
-        return { result: `OK — retracted "${name}" and rebuilt solver (${session.chunks.length} chunk(s) remain).` };
-      } catch (e) {
-        return {
-          result: `[error] solver rebuild failed: ${e instanceof Error ? e.message : String(e)}`,
-        };
-      }
-    }
-
-    case "check_sat": {
-      try {
-        const result = await session.solver.check();
-        session.lastCheckResult = result;
-        session.cachedModel = null;
-        if (result === "sat") {
-          let model: Record<string, string>;
-          try {
-            model = session.solver.getModel();
-          } catch {
-            return { result: "sat (could not extract model)" };
-          }
-          session.cachedModel = model;
-          const lines = Object.entries(model)
-            .sort(([a], [b]) => a.localeCompare(b))
-            .map(([k, v]) => `  ${k} = ${v}`);
-          return {
-            result: lines.length === 0
-              ? "sat (model is empty — no constants declared)"
-              : `sat\nmodel:\n${lines.join("\n")}`,
-          };
-        }
-        if (result === "unsat") {
-          let core: string[] = [];
-          try {
-            core = session.solver.unsatCore();
-          } catch {
-            // ignore
-          }
-          if (core.length === 0) {
-            return { result: "unsat (no :named assertions in conflict — try adding :named labels)" };
-          }
-          return {
-            result: `unsat\nconflicting set:\n${core.map((c) => `  - ${c}`).join("\n")}`,
-          };
-        }
-        return { result: "unknown" };
-      } catch (e) {
-        // Don't let a failed check leave a stale "sat" cached result
-        // that subsequent eval calls would mistakenly trust.
-        session.lastCheckResult = null;
-        session.cachedModel = null;
-        return {
-          result: `[error] check_sat failed: ${e instanceof Error ? e.message : String(e)}`,
-        };
-      }
-    }
-
-    case "eval": {
-      const expr = typeof args.expr === "string" ? args.expr.trim() : "";
-      if (!expr) return { result: "[error] eval requires {expr: string}" };
-      if (session.lastCheckResult !== "sat") {
-        return { result: `[error] eval needs sat (last check was ${session.lastCheckResult ?? "no check yet"}).` };
-      }
-      if (!session.cachedModel) {
-        try {
-          session.cachedModel = session.solver.getModel();
-        } catch {
-          return { result: "[error] could not extract a model" };
-        }
-      }
-      const v = session.cachedModel[expr];
-      if (v !== undefined) return { result: `${expr} = ${v}` };
+      session.assertedBytes += code.length;
+      const named = name
+        ? ` as "${name}" (tentative — retract or commit later)`
+        : " (anonymous, permanent)";
       return {
-        result: `[hint] eval looks up bare variable names in the model. Available: ${Object.keys(session.cachedModel).join(", ") || "(none)"}`,
+        result: `OK — rule added${named} (${code.length} chars; ${session.assertedBytes} total in session).`,
       };
     }
 
-    case "probe_sat": {
-      const code = typeof args.code === "string" ? args.code.trim() : "";
-      if (!code) return { result: "[error] probe_sat requires {code: string}" };
-      try {
-        session.solver.push();
-      } catch (e) {
+    case "retract_rule": {
+      const name = typeof args.name === "string" ? args.name.trim() : "";
+      if (!name) {
         return {
-          result: `[error] probe_sat could not push frame: ${e instanceof Error ? e.message : String(e)}`,
+          result: "[error] retract_rule requires {name: string}",
         };
       }
-      try {
-        try {
-          session.solver.assert(code);
-        } catch (e) {
-          return {
-            result: `[error] probe_sat: solver rejected the assertion: ${e instanceof Error ? e.message : String(e)}`,
-          };
-        }
-        const r = await session.solver.check();
-        if (r === "sat") return { result: "probe sat (frame popped, no permanent change)" };
-        if (r === "unsat") return { result: "probe unsat (frame popped, no permanent change)" };
-        return { result: `probe ${r} (frame popped, no permanent change)` };
-      } finally {
-        try {
-          session.solver.pop();
-        } catch {
-          // best-effort; rebuild on inconsistency below if needed
-        }
-        // The probe's check call clobbered the solver's internal
-        // lastCheckResult; clear our cached state so subsequent
-        // operations refresh it. The chunks themselves are unchanged
-        // because we only used push/pop.
-        session.lastCheckResult = null;
-        session.cachedModel = null;
+      const r = await session.prolog.retract(name);
+      if (r.status === "error") {
+        return { result: `[retract_rule error] ${r.error}` };
       }
+      return { result: `OK — "${name}" retracted; its rules no longer apply.` };
+    }
+
+    case "commit": {
+      const name = typeof args.name === "string" ? args.name.trim() : "";
+      if (!name) {
+        return { result: "[error] commit requires {name: string}" };
+      }
+      const r = await session.prolog.commit(name);
+      if (r.status === "error") {
+        return { result: `[commit error] ${r.error}` };
+      }
+      return {
+        result: `OK — "${name}" committed; rules now permanent and cannot be retracted.`,
+      };
+    }
+
+    case "verify": {
+      const claim = typeof args.claim === "string" ? args.claim.trim() : "";
+      const check = typeof args.check === "string" ? args.check.trim() : "";
+      if (!claim) {
+        return {
+          result:
+            '[error] verify requires {claim: string, check: string}. The `claim` is your one-sentence natural-language statement of what you are proving this turn — commit to it before writing the Prolog check.',
+        };
+      }
+      if (!check) {
+        return {
+          result:
+            "[error] verify requires {claim: string, check: string}. The `check` is the Prolog goal that succeeds iff the claim holds.",
+        };
+      }
+      const r = await session.prolog.query(check, signal);
+      if (r.status === "error") {
+        recordVerify(session, claim, "error");
+        const hint = checkStuckHint(session);
+        return { result: `claim: "${claim}"\n[verify error] ${r.error}${hint}` };
+      }
+      const outcome: VerifyOutcome = r.answers.length > 0 ? "verified" : "not_verified";
+      recordVerify(session, claim, outcome);
+      const hint = checkStuckHint(session);
+      return { result: formatVerifyResult(claim, r.answers) + hint };
+    }
+
+    case "verify_smt": {
+      const claim = typeof args.claim === "string" ? args.claim.trim() : "";
+      const smtlib =
+        typeof args.smtlib === "string" ? args.smtlib.trim() : "";
+      if (!claim) {
+        return {
+          result:
+            "[error] verify_smt requires {claim: string, smtlib: string}. State the one-sentence claim before writing SMT.",
+        };
+      }
+      if (!smtlib) {
+        return {
+          result:
+            "[error] verify_smt requires {claim: string, smtlib: string}. The `smtlib` is the SMT-LIB code; the harness appends `(check-sat)` if you don't.",
+        };
+      }
+      const r = runSmt(smtlib);
+      if (r.status === "error") {
+        recordVerify(session, claim, "error");
+        const hint = checkStuckHint(session);
+        return {
+          result: `claim: "${claim}"\n[verify_smt error] ${r.error}${hint}`,
+        };
+      }
+      // Treat sat/unsat as "the engine answered" — interpretation is the
+      // model's job. Only `unknown` and errors count as not-progressing.
+      const outcome: VerifyOutcome = r.verdict === "unknown" ? "not_verified" : "verified";
+      recordVerify(session, claim, outcome);
+      const hint = checkStuckHint(session);
+      return { result: formatSmtResult(claim, r.verdict) + hint };
+    }
+
+    case "assume": {
+      const name = typeof args.name === "string" ? args.name.trim() : "";
+      const fact = typeof args.fact === "string" ? args.fact.trim() : "";
+      if (!name) {
+        return {
+          result:
+            "[error] assume requires {name: string, fact: string}. `name` identifies this hypothetical scope so you can `discharge` it later.",
+        };
+      }
+      if (!fact) {
+        return {
+          result:
+            "[error] assume requires {name: string, fact: string}. `fact` is Prolog code (asserted while this scope is open).",
+        };
+      }
+      // Assume uses the same named-scope mechanism as a tentative add_rule.
+      const r = await session.prolog.addNamed(name, fact);
+      if (r.status === "error") {
+        return { result: `[assume error] ${r.error}` };
+      }
+      return {
+        result: `OK — assumption "${name}" introduced. Verify under this assumption, then call \`discharge\` with the same name to close the scope.`,
+      };
+    }
+
+    case "discharge": {
+      const name = typeof args.name === "string" ? args.name.trim() : "";
+      if (!name) {
+        return {
+          result:
+            "[error] discharge requires {name: string} naming the assumption frame to close.",
+        };
+      }
+      const r = await session.prolog.retract(name);
+      if (r.status === "error") {
+        return { result: `[discharge error] ${r.error}` };
+      }
+      return {
+        result: `OK — assumption "${name}" discharged. Anything you proved while it was active now stands as a conditional ("if ${name}-fact, then …").`,
+      };
     }
 
     case "done": {
-      // Strict: answer must be a non-empty string. Previously this
-      // accepted `done({})` because JSON.stringify("") returns the
-      // 2-char literal `""` which is truthy.
       if (typeof args.answer !== "string" || args.answer.trim().length === 0) {
-        return { result: "[error] done requires {answer: string} — your final human-readable answer." };
+        return {
+          result:
+            "[error] done requires {answer: string} — your final human-readable answer.",
+        };
       }
       session.finalAnswer = args.answer;
       return { result: "OK — finalizing.", done: true };
     }
 
     case "give_up": {
-      const reason = typeof args.reason === "string" ? args.reason : "(no reason given)";
+      const reason =
+        typeof args.reason === "string" ? args.reason : "(no reason given)";
       session.finalAnswer = `[gave up: ${reason}]`;
       return { result: "OK — abandoning.", gaveUp: true };
     }
 
-    case "setup_planning": {
-      let spec: PlanningSpec;
-      try {
-        spec = validatePlanningSpec(args);
-      } catch (e) {
-        if (e instanceof PlanningSpecError) return { result: `[error] ${e.message}` };
-        return { result: `[error] setup_planning: ${e instanceof Error ? e.message : String(e)}` };
-      }
-      // Auto-retract any previous planning chunk so the agent can
-      // simply re-call setup_planning with a higher horizon when the
-      // current K is UNSAT. Without this, repeated calls accumulate
-      // contradictory horizon-K-and-horizon-K' constraints and the
-      // agent has to do a manual retract dance.
-      const priorPlanningIdx = session.chunks.findIndex((c) =>
-        c.startsWith(";; --- PLANNING_SETUP "),
-      );
-      const replaced = priorPlanningIdx >= 0;
-      const priorChunk = replaced ? session.chunks[priorPlanningIdx] : null;
-      if (replaced) session.chunks.splice(priorPlanningIdx, 1);
-
-      const generated = generatePlanningSmt(spec);
-      try {
-        if (replaced) {
-          // Solver state needs to be rebuilt from remaining chunks
-          // before we apply the new planning encoding.
-          await rebuildSolver(session);
-        }
-        session.solver.assert(generated);
-        session.chunks.push(generated);
-        session.lastCheckResult = null;
-        session.cachedModel = null;
-        const lineCount = generated.split("\n").length;
-        const numVars = spec.state_vars.length * (spec.horizon + 1);
-        const replacedNote = replaced
-          ? " (replaced prior planning chunk)"
-          : "";
-        return {
-          result: `OK — planning skeleton generated and asserted${replacedNote} (${lineCount} lines, ${numVars} state-var instances across timesteps 0..${spec.horizon}, ${spec.actions.length} action(s) per transition). Run check_sat next.`,
-        };
-      } catch (e) {
-        // If the new encoding was rejected, restore the prior planning
-        // chunk so the agent doesn't lose work. Rebuild the solver
-        // either way to ensure chunks ↔ solver state stay in sync.
-        if (priorChunk !== null) {
-          session.chunks.splice(priorPlanningIdx, 0, priorChunk);
-        }
-        await rebuildSolver(session).catch(() => { /* best-effort */ });
-        const restoredNote = priorChunk !== null
-          ? " (prior planning chunk restored)"
-          : "";
-        return {
-          result: `[error] solver rejected the generated planning encoding${restoredNote}: ${e instanceof Error ? e.message : String(e)}\n\n--- generated SMT (first 1500 chars) ---\n${generated.slice(0, 1500)}`,
-        };
-      }
-    }
-
-    case "prolog_solve": {
-      const programRaw = typeof args.program === "string" ? args.program : "";
-      const program = programRaw.trim();
-      const goal = typeof args.query === "string" ? args.query.trim() : "";
-      // maxInferences must be a positive integer; reject 0 / negatives /
-      // fractional values explicitly so the model gets a clear signal
-      // rather than silent fallback to default.
-      let maxInferences: number | undefined;
-      if (args.maxInferences !== undefined) {
-        if (typeof args.maxInferences !== "number" || !Number.isFinite(args.maxInferences) || args.maxInferences <= 0) {
-          return {
-            result: "[error] prolog_solve maxInferences must be a positive number",
-          };
-        }
-        maxInferences = Math.floor(args.maxInferences);
-      }
-      if (!program || !goal) {
-        return {
-          result: "[error] prolog_solve requires {program: string, query: string}",
-        };
-      }
-      const result = await runPrologSolver({ program, query: goal, maxInferences, signal });
-      if (result.status === "error") {
-        return { result: `[prolog error] ${result.error}` };
-      }
-      if (result.answers.length === 0) {
-        return { result: "no answers (goal failed — Prolog returned empty)" };
-      }
-      // Size-bounded printing instead of a hard answer count: keep
-      // adding answers until we'd push past the soft budget, then stop
-      // and report how many remain. Always show at least the first 5
-      // so even big answers (long lists) get some surface area. The
-      // overall result is still capped by the agent's truncateToolResult
-      // (4000 chars) — this just keeps us from spending the whole
-      // budget on a single huge answer with nothing left for the rest.
-      const SOFT_BUDGET = 3500;
-      const MIN_ANSWERS = 5;
-      const lines: string[] = [`${result.answers.length} answer(s):`];
-      let usedChars = lines[0].length;
-      let shown = 0;
-      for (let i = 0; i < result.answers.length; i++) {
-        const line = `  [${i + 1}] ${result.answers[i].formatted}`;
-        if (shown >= MIN_ANSWERS && usedChars + line.length > SOFT_BUDGET) break;
-        lines.push(line);
-        usedChars += line.length + 1; // +1 for the join newline
-        shown++;
-      }
-      if (shown < result.answers.length) {
-        lines.push(`  ... (${result.answers.length - shown} more not shown)`);
-      }
-      return { result: lines.join("\n") };
-    }
-
     case "__parse_error__":
-      return { result: `Your tool-call JSON was invalid: ${call.parseError ?? "unknown"}` };
+      return {
+        result: `Your tool-call JSON was invalid: ${call.parseError ?? "unknown"}`,
+      };
 
     default:
       return {
-        result: `[error] unknown tool "${name}". Valid: add_smt, view_smt, retract, check_sat, eval, probe_sat, setup_planning, prolog_solve, done, give_up.`,
+        result: `[error] unknown tool "${name}". Valid: add_rule, retract_rule, commit, verify, verify_smt, assume, discharge, done, give_up.`,
       };
   }
 }
@@ -495,18 +535,16 @@ export async function runAgent(
   opts: AgentRunOptions = {},
 ): Promise<RunResult> {
   const maxTurns = opts.config?.maxTurns ?? 40;
-  const solver = await createIncrementalSolver();
+  const prolog = await createSession();
   const session: AgentSession = {
     problem,
-    solver,
-    chunks: [],
-    lastCheckResult: null,
-    cachedModel: null,
     finalAnswer: null,
     turns: [],
-    messages: [
-      { role: "user", content: buildInitialUserMessage(problem) },
-    ],
+    prolog,
+    assertedBytes: 0,
+    verifyHistory: [],
+    hintCooldownTurns: 0,
+    messages: [{ role: "user", content: buildInitialUserMessage(problem) }],
   };
 
   let turn = 0;
@@ -515,16 +553,12 @@ export async function runAgent(
   try {
     while (turn < maxTurns) {
       turn++;
+      if (session.hintCooldownTurns > 0) session.hintCooldownTurns--;
       if (opts.signal?.aborted) {
         outcome = "gave_up";
         session.finalAnswer = "[aborted]";
         break;
       }
-      // Send system prompt + the running conversation. The local LLM
-      // provider's canReuseSession check sees this as a prefix-
-      // extension of the previous turn's conversation and only
-      // processes the newly appended messages — KV cache stays warm
-      // across the whole agent run.
       const messages: ChatMessage[] = [
         { role: "system", content: SYSTEM_PROMPT },
         ...session.messages,
@@ -541,14 +575,12 @@ export async function runAgent(
         };
       }
 
-      // Always record the assistant turn into the running conversation,
-      // even if parsing the tool call fails — the model needs to see
-      // its own prior output for any retry to make sense.
       session.messages.push({ role: "assistant", content: response });
 
       const call = parseToolCall(response);
       if (!call) {
-        const noCallMsg = "Your previous response had no ```tool-call fence. Emit one tool call per turn.";
+        const noCallMsg =
+          "Your previous response had no ```tool-call fence. Emit one tool call per turn.";
         session.messages.push({ role: "user", content: noCallMsg });
         const entry: TurnEntry = {
           turn,
@@ -575,74 +607,29 @@ export async function runAgent(
         break;
       }
     }
+  } finally {
+    await session.prolog.dispose();
+  }
 
-    if (outcome === "done") {
-      const verification = await verifyOnDone(session);
-      return {
-        status: "completed",
-        steps: turnsToSteps(session.turns),
-        finalAnswer: renderFinalAnswer(session, verification),
-        verification,
-      };
-    }
-    if (outcome === "gave_up") {
-      return {
-        status: "failed",
-        steps: turnsToSteps(session.turns),
-        error: session.finalAnswer ?? "[gave up]",
-      };
-    }
+  if (outcome === "done") {
+    return {
+      status: "completed",
+      steps: turnsToSteps(session.turns),
+      finalAnswer: renderFinalAnswer(session),
+    };
+  }
+  if (outcome === "gave_up") {
     return {
       status: "failed",
       steps: turnsToSteps(session.turns),
-      error: `Turn budget (${maxTurns}) exhausted without calling done() or give_up().`,
+      error: session.finalAnswer ?? "[gave up]",
     };
-  } finally {
-    session.solver.dispose();
   }
-}
-
-async function verifyOnDone(
-  session: AgentSession,
-): Promise<SolutionVerification | undefined> {
-  try {
-    // Reuse the cached check_sat result if the model just ran check_sat
-    // and the solver state hasn't been mutated since (any chunk change
-    // resets lastCheckResult to null). Saves one Z3 round-trip per
-    // typical agent run, which always ends with check_sat → done.
-    let model: Record<string, string> | undefined;
-    if (session.lastCheckResult === "sat" && session.cachedModel) {
-      model = session.cachedModel;
-    } else {
-      const checkResult = await session.solver.check();
-      if (checkResult !== "sat") return undefined;
-      model = session.solver.getModel();
-    }
-    if (!model || Object.keys(model).length === 0) return undefined;
-
-    const clauses = Object.entries(model).map(([n, v]) => `(not (= ${n} ${v}))`);
-    const negation = clauses.length === 1 ? clauses[0] : `(or ${clauses.join(" ")})`;
-    session.solver.push();
-    try {
-      session.solver.assert(negation);
-      const r = await session.solver.check();
-      if (r === "unsat") return { model, unique: true };
-      if (r === "sat") {
-        let counterExample: Record<string, string> | undefined;
-        try {
-          counterExample = session.solver.getModel();
-        } catch {
-          /* ignore */
-        }
-        return { model, unique: false, counterExample };
-      }
-      return { model, unique: false };
-    } finally {
-      session.solver.pop();
-    }
-  } catch {
-    return undefined;
-  }
+  return {
+    status: "failed",
+    steps: turnsToSteps(session.turns),
+    error: `Turn budget (${maxTurns}) exhausted without calling done() or give_up().`,
+  };
 }
 
 function turnsToSteps(turns: TurnEntry[]): ReasoningStep[] {
@@ -658,32 +645,10 @@ function turnsToSteps(turns: TurnEntry[]): ReasoningStep[] {
   }));
 }
 
-function renderFinalAnswer(
-  session: AgentSession,
-  verification: SolutionVerification | undefined,
-): string {
+function renderFinalAnswer(session: AgentSession): string {
   const lines: string[] = [];
   lines.push("Final answer (model-claimed):");
   lines.push(session.finalAnswer ?? "(none)");
-  lines.push("");
-  if (verification) {
-    if (verification.unique) {
-      lines.push("Z3-verified assignment (UNIQUE — proven by UNSAT on negation):");
-    } else {
-      lines.push("⚠ Z3 model is NOT UNIQUE — multiple assignments satisfy the constraints.");
-    }
-    for (const [k, v] of Object.entries(verification.model)) {
-      lines.push(`  ${k} = ${v}`);
-    }
-    if (!verification.unique && verification.counterExample) {
-      lines.push("Counter-example:");
-      for (const [k, v] of Object.entries(verification.counterExample)) {
-        lines.push(`  ${k} = ${v}`);
-      }
-    }
-  } else {
-    lines.push("⚠ No Z3 verification was performed — done was called without leaving the solver in a SAT state with extractable variables.");
-  }
   lines.push("");
   lines.push(`(${session.turns.length} turns)`);
   return lines.join("\n");

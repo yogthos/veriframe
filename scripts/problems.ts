@@ -144,7 +144,7 @@ Determine whether this puzzle can be solved under both the standard rules and th
 
 Show your reasoning step by step. State the answer as either a single integer (minimum moves) followed by the sequence, or "IMPOSSIBLE" with justification.`,
     expectedAnswer:
-      "Solvable, minimum to be determined by Z3 (likely 15-25 moves; standard 4-disk takes 15, the D2 restriction adds overhead). Direct LLMs commonly pattern-match to the standard 15-move recursive solution and emit illegal moves where D2 visits B; only the agent's setup_planning + UNSAT-on-K iteration finds the genuine optimum.",
+      "Solvable; direct LLMs in prior runs found 35 moves. Direct LLMs commonly pattern-match to the standard 15-move recursive solution and emit illegal moves where D2 visits B; the agent must use Prolog/CLP(FD) iterative deepening to find the genuine optimum.",
     maxSteps: 30,
   },
 
