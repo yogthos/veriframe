@@ -28,6 +28,12 @@ import { type ReasoningStep, type RunResult } from "../types.js";
 import { createSession, type PrologSession } from "./prolog.js";
 import { runSmt } from "./smt.js";
 import { runLean } from "./lean.js";
+import {
+  searchLemmas,
+  formatLemma,
+  extractSearchHints,
+  type SearchResult,
+} from "./lean-search.js";
 
 export interface AgentRunOptions {
   config?: { maxTurns?: number };
@@ -108,7 +114,9 @@ If verification PASSES, the step is proved; the next turn picks up from there. I
 
 **verify_smt** — \`{"claim": "...", "smtlib": "..."}\`. Same shape as \`verify\` but the check is SMT-LIB code, executed by Z3 4.15. Use this when Prolog/CLP(FD) isn't enough: real arithmetic, nonlinear arithmetic, large bitvectors, theory combinations, optimisation. The harness reports SAT / UNSAT / UNKNOWN — read the description below for proof semantics. Don't include \`(check-sat)\`; the harness appends it.
 
-**verify_lean** — \`{"claim": "...", "lean": "..."}\`. Same shape, but the check is a **Lean 4 snippet** evaluated against Mathlib. Use this for genuine mathematical theorems: real/complex analysis (continuity, limits, ε-δ proofs), inequalities, number theory (primes, divisibility), algebra (group/ring/field theory), basic geometry, anything with named lemmas in Mathlib. The harness reports VERIFIED if Lean accepts the proof; NOT VERIFIED with up to 3 error lines (line numbers, "unsolved goals" messages, etc.) when it doesn't. \`import Mathlib\` is auto-prepended if you don't include it. Use \`example\` for one-off claims and \`theorem name\` if you want to assert a name and reuse it later via \`add_rule\`.
+**verify_lean** — \`{"claim": "...", "lean": "..."}\`. Same shape, but the check is a **Lean 4 snippet** evaluated against Mathlib. Use this for genuine mathematical theorems: real/complex analysis (continuity, limits, ε-δ proofs), inequalities, number theory (primes, divisibility), algebra (group/ring/field theory), basic geometry, anything with named lemmas in Mathlib. The harness reports VERIFIED if Lean accepts the proof; NOT VERIFIED with up to 3 error lines (line numbers, "unsolved goals" messages, etc.) when it doesn't. \`import Mathlib\` is auto-prepended if you don't include it. Use \`example\` for one-off claims and \`theorem name\` if you want to assert a name and reuse it later via \`add_rule\`. **On a failed verify, the harness automatically searches Mathlib for relevant lemmas** and appends the top-3 results — read them.
+
+**lean_search** — \`{"query": "...", "top_k"?: number}\`. Search Mathlib's ~235k declarations for lemmas matching a query. The query can be a partial name (\`sqrt_nonneg\`), a phrase (\`Real square root non-negative\`), or a concept (\`AM-GM inequality\`). Returns up to \`top_k\` (default 8, max 20) ranked hits with name, signature, doc snippet, and source location. Use this *before* writing a proof when you don't know the canonical lemma name, or *during* a stuck step to find a relevant tool. Mathlib naming convention: snake_case + dot-namespace (e.g. \`Real.sqrt_le_sqrt\`, \`Nat.add_comm\`, \`Finset.sum_pow\`).
 
 **assume** — \`{"name": "...", "fact": "..."}\`. Open a *named hypothetical scope*. \`fact\` is Prolog code asserted while the scope is open. Anything you \`verify\` afterward is conditional on this assumption. Used for "assume A, derive B; therefore A → B" reasoning.
 
@@ -368,6 +376,17 @@ function classifyLeanFailure(
   return looksLikeProofGap ? "not_verified" : "error";
 }
 
+function formatSearchResults(query: string, hits: SearchResult[]): string {
+  if (hits.length === 0) {
+    return `lean_search "${query}": no results. Try a shorter / different keyword (Mathlib names follow a snake_case + dot-namespace convention).`;
+  }
+  const lines: string[] = [`lean_search "${query}" — ${hits.length} hit(s):`];
+  for (const h of hits) {
+    lines.push(`  [${h.score}] ${formatLemma(h.lemma)}`);
+  }
+  return lines.join("\n");
+}
+
 function formatLeanResult(
   claim: string,
   r: Awaited<ReturnType<typeof runLean>>,
@@ -529,6 +548,28 @@ async function runTool(
       return { result: formatSmtResult(claim, r.verdict) + hint };
     }
 
+    case "lean_search": {
+      const query = typeof args.query === "string" ? args.query.trim() : "";
+      let topK = 8;
+      if (typeof args.top_k === "number" && Number.isFinite(args.top_k)) {
+        topK = Math.max(1, Math.min(20, Math.floor(args.top_k)));
+      }
+      if (!query) {
+        return {
+          result:
+            "[error] lean_search requires {query: string, top_k?: number}. The query can be a partial lemma name (`sqrt_nonneg`) or a phrase (`Real sqrt non-negative`).",
+        };
+      }
+      try {
+        const hits = await searchLemmas(query, topK);
+        return { result: formatSearchResults(query, hits) };
+      } catch (e) {
+        return {
+          result: `[lean_search error] ${e instanceof Error ? e.message : String(e)}`,
+        };
+      }
+    }
+
     case "verify_lean": {
       const claim = typeof args.claim === "string" ? args.claim.trim() : "";
       const lean = typeof args.lean === "string" ? args.lean.trim() : "";
@@ -551,19 +592,47 @@ async function runTool(
         ? lean
         : `import Mathlib\n\n${lean}`;
       const r = await runLean(snippet);
-      // Distinguish syntax/environment errors from "proof script ran
-      // but goal still open" — the model needs different reactions
-      // for the two, and the stuck-detection heuristic shouldn't
-      // count syntax-typo retries as the same step as proof-strategy
-      // retries.
       const outcome: VerifyOutcome =
         r.status === "ok"
           ? "verified"
           : classifyLeanFailure(r);
       recordVerify(session, claim, outcome);
       const hint = checkStuckHint(session);
+      // On NOT VERIFIED or compile-error, auto-surface relevant
+      // Mathlib lemmas — Phase 2 retrieval. We extract hints from the
+      // failed Lean diagnostics (the unsolved goal text, an unknown
+      // identifier, an expected type), not from the natural-language
+      // claim. This matches the ReProver / Magnushammer signal: the
+      // model needs lemmas about *the actual proof obligation*, not
+      // its high-level summary.
+      let suggestion = "";
+      if (r.status === "error") {
+        try {
+          const hints = extractSearchHints(r.diagnostics);
+          if (hints.length > 0) {
+            const lines: string[] = [
+              "",
+              "Relevant Mathlib lemmas (retrieval from the failed goal/identifier):",
+            ];
+            // Cap total queries at 2 to avoid spam; 4 results each.
+            for (const h of hints.slice(0, 2)) {
+              const hits = await searchLemmas(h.query, 4);
+              if (hits.length === 0) continue;
+              lines.push(
+                `  via ${h.source} "${h.query.slice(0, 80)}":`,
+              );
+              for (const hit of hits) {
+                lines.push(`    [${hit.score}] ${formatLemma(hit.lemma)}`);
+              }
+            }
+            if (lines.length > 2) suggestion = lines.join("\n");
+          }
+        } catch {
+          /* best-effort */
+        }
+      }
       return {
-        result: formatLeanResult(claim, r) + hint,
+        result: formatLeanResult(claim, r) + suggestion + hint,
       };
     }
 
@@ -634,7 +703,7 @@ async function runTool(
 
     default:
       return {
-        result: `[error] unknown tool "${name}". Valid: add_rule, retract_rule, commit, verify, verify_smt, verify_lean, assume, discharge, done, give_up.`,
+        result: `[error] unknown tool "${name}". Valid: add_rule, retract_rule, commit, verify, verify_smt, verify_lean, lean_search, assume, discharge, done, give_up.`,
       };
   }
 }

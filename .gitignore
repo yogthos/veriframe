@@ -11,3 +11,7 @@ models/
 # .lake locally with `lake update`.
 tools/lean-workspace/.lake/
 tools/lean-workspace/build/
+
+# Generated index caches (Mathlib lemma index, future embedding
+# indices). ~80MB and rebuildable from the lake source on first run.
+.cache/
