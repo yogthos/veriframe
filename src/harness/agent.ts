@@ -88,6 +88,14 @@ interface AgentSession {
   /** Active stepwise Lean proof session, if any. At most one open at
    *  a time — see lean-proof.ts for rationale. */
   leanProof: ProofSession | null;
+  /**
+   * Last successful Lean proof snippet — set whenever verify_lean
+   * accepts a snippet, OR when a proof_start session reaches "closed"
+   * status. Surfaced verbatim in the final answer so the user
+   * receives the actual Lean code that verified, not just the
+   * model's natural-language summary.
+   */
+  lastVerifiedLean: string | null;
   messages: ChatMessage[];
 }
 
@@ -686,13 +694,15 @@ async function runTool(
         lines.push(
           `STEP ACCEPTED — proof CLOSED in ${stepResult.tacticCount} tactic(s).`,
         );
+        const proofText = buildLeanProofText(ps);
         lines.push(`Proof of "${ps.claim}":`);
-        lines.push(`  theorem ${ps.name} : ${ps.theorem} := by`);
-        for (const tactic of ps.tactics) {
-          lines.push(`    ${tactic}`);
+        for (const line of proofText.split("\n")) {
+          lines.push("  " + line);
         }
         lines.push("");
         lines.push("(proof_close is optional — you can call `done` next.)");
+        // Stash the verified proof for inclusion in the final answer.
+        session.lastVerifiedLean = `import Mathlib\n\n${proofText}\n`;
       } else if (stepResult.status === "open") {
         lines.push(
           `STEP ACCEPTED — ${stepResult.tacticCount} tactic(s) applied.`,
@@ -867,6 +877,12 @@ async function runTool(
           ? "verified"
           : classifyLeanFailure(r);
       recordVerify(session, claim, outcome);
+      if (r.status === "ok") {
+        // Capture the verified snippet so the final answer can include
+        // the actual Lean proof that compiled, not just the model's
+        // natural-language summary.
+        session.lastVerifiedLean = snippet;
+      }
       const hint = checkStuckHint(session);
       // On NOT VERIFIED or compile-error, auto-surface relevant
       // Mathlib lemmas — Phase 2 retrieval. We extract hints from the
@@ -994,6 +1010,7 @@ export async function runAgent(
     verifyHistory: [],
     hintCooldownTurns: 0,
     leanProof: null,
+    lastVerifiedLean: null,
     messages: [{ role: "user", content: buildInitialUserMessage(problem) }],
   };
 
@@ -1095,10 +1112,42 @@ function turnsToSteps(turns: TurnEntry[]): ReasoningStep[] {
   }));
 }
 
+/**
+ * Build the readable Lean source for a stepwise proof session,
+ * suitable for inclusion in the final answer or for stashing in
+ * `session.lastVerifiedLean`. The output is a single
+ * `theorem <name> : <type> := by ...` block, ready to paste into a
+ * Lean file (after `import Mathlib`).
+ */
+function buildLeanProofText(ps: ProofSession): string {
+  const lines = [`theorem ${ps.name} : ${ps.theorem} := by`];
+  for (const tactic of ps.tactics) lines.push(`  ${tactic}`);
+  return lines.join("\n");
+}
+
 function renderFinalAnswer(session: AgentSession): string {
   const lines: string[] = [];
   lines.push("Final answer (model-claimed):");
   lines.push(session.finalAnswer ?? "(none)");
+
+  // Surface the actual verified Lean proof if we have one — preferring
+  // a closed stepwise session (richer; includes intermediate tactics)
+  // over a one-shot verify_lean snippet, but falling back to whatever
+  // the run last verified.
+  let proof: string | null = null;
+  if (session.leanProof?.status === "closed") {
+    proof = `import Mathlib\n\n${buildLeanProofText(session.leanProof)}\n`;
+  } else if (session.lastVerifiedLean) {
+    proof = session.lastVerifiedLean;
+  }
+  if (proof) {
+    lines.push("");
+    lines.push("Verified Lean proof:");
+    lines.push("```lean");
+    lines.push(proof.trimEnd());
+    lines.push("```");
+  }
+
   lines.push("");
   lines.push(`(${session.turns.length} turns)`);
   return lines.join("\n");
