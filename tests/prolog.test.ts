@@ -406,6 +406,9 @@ describe("prolog session (persistent)", () => {
     // between/3 over 10^9 with an unsatisfiable secondary constraint
     // would otherwise grind for hours. With the harness wrapper in
     // place this should fail fast with an inference-limit error.
+    // CI (Ubuntu x86_64) takes ~10-30s to hit 50M inferences; M-series
+    // local is ~3-5s. The vitest timeout below has to cover the slow
+    // path or this test pops on CI for the wrong reason.
     const session = await createSession();
     try {
       const t0 = Date.now();
@@ -416,10 +419,10 @@ describe("prolog session (persistent)", () => {
       expect(r.status).toBe("error");
       if (r.status !== "error") return;
       expect(r.error).toMatch(/inference limit/);
-      // Should bail well under 60s; on M-series ~5-10s for 50M.
+      // Should bail well under 60s; verify the cap is doing its job.
       expect(elapsed).toBeLessThan(60_000);
     } finally {
       await session.dispose();
     }
-  });
+  }, 60_000);
 });
