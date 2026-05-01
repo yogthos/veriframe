@@ -332,9 +332,45 @@ function checkStuckHint(session: AgentSession): string {
   return "";
 }
 
+/**
+ * True when the snippet already contains a top-level `import` line.
+ * Multiline scan (so a comment / blank-line preamble doesn't fool us
+ * into double-prepending). Doesn't strip comments — a leading
+ * `-- import Mathlib` would still match, but that's a degenerate
+ * input we accept rather than complicate the parser.
+ */
+export function leanSnippetHasImport(snippet: string): boolean {
+  return /^\s*import\s+\S/m.test(snippet);
+}
+
+/**
+ * Classify Lean's structured failure for the stuck-detection heuristic.
+ * "error" = compile/syntax/lake-level (model wrote something that
+ *   doesn't even parse, or workspace is broken).
+ * "not_verified" = compiled fine but the proof script didn't close
+ *   the goal (model's *strategy* is wrong, not their syntax).
+ * The two warrant different reactions from the model.
+ */
+function classifyLeanFailure(
+  r: { status: "error"; error: string; diagnostics: { kind?: string; message: string }[] },
+): "error" | "not_verified" {
+  // Tactic.unsolvedGoals and friends mean the proof ran but didn't
+  // discharge — that's a strategy issue the model can usually iterate
+  // on. Anything else (syntax errors, undefined symbols, lake errors)
+  // is a harder failure.
+  const tacticFailureKind = /^Tactic\./;
+  const tacticFailureMsg = /unsolved goals|tactic .* failed|failed to (close|prove)/i;
+  const looksLikeProofGap = r.diagnostics.some(
+    (d) =>
+      (d.kind && tacticFailureKind.test(d.kind)) ||
+      tacticFailureMsg.test(d.message),
+  );
+  return looksLikeProofGap ? "not_verified" : "error";
+}
+
 function formatLeanResult(
   claim: string,
-  r: ReturnType<typeof runLean>,
+  r: Awaited<ReturnType<typeof runLean>>,
 ): string {
   const header = `claim: "${claim}"`;
   if (r.status === "ok") {
@@ -344,15 +380,18 @@ function formatLeanResult(
       : "";
     return `${header}\nVERIFIED — Lean accepted the proof.${warnNote}`;
   }
-  // Surface up to 3 errors so the model can react.
   const errs = r.diagnostics.filter((d) => d.severity === "error");
-  const lines: string[] = [
-    header,
-    `NOT VERIFIED — ${r.error}`,
-  ];
+  const failKind = classifyLeanFailure(r);
+  const verdict =
+    failKind === "not_verified"
+      ? "NOT VERIFIED — proof script didn't close the goal."
+      : "ERROR — Lean rejected the snippet (syntax / undefined symbol / environment).";
+  const lines: string[] = [header, verdict, r.error];
+  // Bumped from 400 → 1200 so the actual goal state Lean prints
+  // (often the most useful debugging info) survives intact.
   for (const e of errs.slice(0, 3)) {
     const where = e.line > 0 ? ` (line ${e.line})` : "";
-    lines.push(`  •${where} ${e.message.split("\n").join(" / ").slice(0, 400)}`);
+    lines.push(`  •${where} ${e.message.split("\n").join(" / ").slice(0, 1200)}`);
   }
   if (errs.length > 3) {
     lines.push(`  ... and ${errs.length - 3} more error(s).`);
@@ -506,13 +545,21 @@ async function runTool(
         };
       }
       // Auto-prepend `import Mathlib` if the model forgot, so most
-      // tactics are immediately available.
-      const snippet = /^\s*import\s+/.test(lean)
+      // tactics are immediately available. Multiline match so a
+      // comment-prefix doesn't fool us into double-prepending.
+      const snippet = leanSnippetHasImport(lean)
         ? lean
         : `import Mathlib\n\n${lean}`;
-      const r = runLean(snippet);
+      const r = await runLean(snippet);
+      // Distinguish syntax/environment errors from "proof script ran
+      // but goal still open" — the model needs different reactions
+      // for the two, and the stuck-detection heuristic shouldn't
+      // count syntax-typo retries as the same step as proof-strategy
+      // retries.
       const outcome: VerifyOutcome =
-        r.status === "ok" ? "verified" : "not_verified";
+        r.status === "ok"
+          ? "verified"
+          : classifyLeanFailure(r);
       recordVerify(session, claim, outcome);
       const hint = checkStuckHint(session);
       return {
