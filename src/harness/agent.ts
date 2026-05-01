@@ -130,7 +130,7 @@ If verification PASSES, the step is proved; the next turn picks up from there. I
 
 **proof_start** — \`{"claim": "...", "theorem": "...", "name"?: string}\`. Open a *stateful* Lean proof session — the same as a human entering tactic mode in a Lean editor. Pick this over \`verify_lean\` whenever the proof has multiple steps (induction, case analysis, contradiction, chained rewrites). \`theorem\` is the Lean type expression (e.g. \`∀ n : ℕ, 2 * (∑ i ∈ Finset.range n, i) = n * (n - 1)\`); \`claim\` is your one-sentence NL articulation. Returns the initial goal. Only one session can be open at a time — close or abandon before starting another.
 
-**proof_step** — \`{"tactic": "...", "claim"?: string}\`. Apply ONE Lean tactic to the active proof. The harness re-runs the accumulated tactic list and reports either: (a) STEP ACCEPTED with the *new* goal state if open goals remain, (b) STEP ACCEPTED + closed if the proof is complete, or (c) STEP REJECTED — the bad tactic is automatically popped, the session stays in its previous state, and Lean's diagnostic is surfaced. Use this for each move in your proof: \`intro n\`, \`induction n with | zero => ?_ | succ k ih => ?_\`, \`apply Nat.le_of_lt\`, \`rw [Nat.add_comm]\`, \`exact ih\`, etc.
+**proof_step** — \`{"tactic": "...", "claim"?: string}\`. Apply ONE Lean tactic to the active proof. The harness sends the tactic to a long-lived Lean REPL (Mathlib stays loaded between steps — sub-second per call) and reports either: (a) STEP ACCEPTED with the *new* goal state if open goals remain, (b) STEP ACCEPTED + closed if the proof is complete, or (c) STEP REJECTED — the bad tactic is discarded, the session stays on the previous state, and Lean's diagnostic is surfaced (with auto-suggested Mathlib lemmas if the failure points at a missing identifier or unresolved goal). Use this for each move in your proof: \`intro n\`, \`induction n with | zero => ?_ | succ k ih => ?_\`, \`apply Nat.le_of_lt\`, \`rw [Nat.add_comm]\`, \`exact ih\`, etc.
 
 **proof_state** — \`{}\`. Show the current proof's tactics so far + remaining goals, without running Lean. Cheap.
 
@@ -636,10 +636,10 @@ async function runTool(
         };
       }
       try {
-        const ps = startSession({ claim, theorem, name });
+        const ps = await startSession({ claim, theorem, name });
         session.leanProof = ps;
         return {
-          result: `OK — proof session opened.\n${renderSession(ps)}\n\nApply tactics via proof_step. The model writes one tactic at a time; the harness re-runs the accumulated proof and reports the new goal state (or the next error to fix).`,
+          result: `OK — proof session opened (Lean REPL).\n${renderSession(ps)}\n\nApply tactics via proof_step. The harness sends each tactic to a long-lived Lean process; you'll see the new goal state (or an error) before deciding the next move.`,
         };
       } catch (e) {
         return {
@@ -690,13 +690,13 @@ async function runTool(
         }
       } else {
         lines.push(
-          `STEP REJECTED — Lean rejected the tactic; it has been popped from the session (current count: ${stepResult.tacticCount}).`,
+          `STEP REJECTED — Lean rejected the tactic; the session stays on the previous state (tactic count: ${stepResult.tacticCount}).`,
         );
         for (const e of stepResult.errors.slice(0, 2)) {
-          const where = e.line > 0 ? ` (line ${e.line})` : "";
-          lines.push(
-            `  •${where} ${e.message.split("\n").join(" / ").slice(0, 800)}`,
-          );
+          const line = e.pos?.line ?? 0;
+          const where = line > 0 ? ` (line ${line})` : "";
+          const msg = (e.data ?? "").split("\n").join(" / ").slice(0, 800);
+          lines.push(`  •${where} ${msg}`);
         }
         if (ps.goals) {
           lines.push("Goals are unchanged:");
@@ -707,7 +707,15 @@ async function runTool(
       let suggestion = "";
       if (stepResult.status === "tactic_error" && stepResult.errors.length > 0) {
         try {
-          const hints = extractSearchHints(stepResult.errors);
+          // Adapt ReplMessage to the shape extractSearchHints expects.
+          const adapted = stepResult.errors
+            .filter((e) => e.severity === "error")
+            .map((e) => ({
+              severity: "error" as const,
+              message: e.data ?? "",
+              kind: "",
+            }));
+          const hints = extractSearchHints(adapted);
           if (hints.length > 0) {
             const sugLines = ["", "Relevant Mathlib lemmas:"];
             for (const h of hints.slice(0, 2)) {

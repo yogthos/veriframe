@@ -343,6 +343,40 @@ Use the verify_lean tool: write the proof in Lean 4 with Mathlib. Useful tactics
     maxSteps: 8,
   },
 
+  "math-induction-square-plus-self-even": {
+    id: "math-induction-square-plus-self-even",
+    type: "Math theorem (induction: n² + n is even for all n : ℕ)",
+    difficulty: "medium",
+    prompt: `Prove by induction in Lean 4 + Mathlib that for every natural number n, n² + n is even. Formally:
+
+  ∀ n : ℕ, 2 ∣ n^2 + n
+
+This is a stepwise proof — use \`proof_start\` to open a session, then apply tactics one at a time via \`proof_step\` so the goal state evolves visibly. Pick any structure you like (induction, even/odd case split, etc.); the harness lets you see the goal after every tactic. When all goals close, call \`proof_close\`.
+
+Hints if you want them:
+- Induction on n is the most natural route.
+- Base case: \`norm_num\` or \`decide\` should handle 0² + 0.
+- Inductive step: from \`2 ∣ k^2 + k\`, derive \`2 ∣ (k+1)^2 + (k+1)\`. Note (k+1)² + (k+1) = k² + 3k + 2 = (k² + k) + 2(k + 1).
+- \`omega\` and \`ring_nf\` are useful tactics. \`Nat.dvd_add\` chains divisibilities.`,
+    expectedAnswer:
+      "Proved via induction on n; base case trivial, inductive step uses (k+1)² + (k+1) = (k² + k) + 2(k+1) and Nat.dvd_add.",
+    maxSteps: 25,
+  },
+
+  "math-infinitely-many-primes": {
+    id: "math-infinitely-many-primes",
+    type: "Math theorem (Euclid: infinitely many primes)",
+    difficulty: "hard",
+    prompt: `Prove Euclid's theorem in Lean 4 + Mathlib: for every natural number n, there exists a prime p with p > n. Formally:
+
+  ∀ n : ℕ, ∃ p, n < p ∧ Nat.Prime p
+
+This is a classic theorem; Mathlib has it. Use \`lean_search\` to find the canonical lemma name (it lives in \`Mathlib.NumberTheory\` somewhere). Then either cite it directly or write a short proof using \`Nat.exists_infinite_primes\`-style results. You may also try \`exact?\` or \`apply?\` inside the proof to let Lean suggest a closing tactic.`,
+    expectedAnswer:
+      "Proved via Mathlib's existing infinitude-of-primes lemma (Nat.exists_infinite_primes or similar).",
+    maxSteps: 12,
+  },
+
   "math-sum-evens": {
     id: "math-sum-evens",
     type: "Math theorem (sum of two evens is even)",

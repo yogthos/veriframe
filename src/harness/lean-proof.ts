@@ -1,30 +1,33 @@
 /**
- * Stateful Lean proof sessions — Phase 3a (naive replay backend).
+ * Stateful Lean proof sessions — Phase 3b backend.
  *
- * Implements the stepwise proof flow: the model declares a theorem,
- * then applies tactics one at a time, seeing the goal state after
- * each. Mirrors how a human writes a proof in tactic mode (induction,
- * contradiction, case analysis, direct — the technique is up to the
- * model; this layer only manages the proof state).
+ * The model declares a theorem, then applies tactics one at a time.
+ * Each tactic sees the goal state evolve, and the model picks the
+ * next move based on what's left. Mirrors how a human writes a proof
+ * in tactic mode (induction, contradiction, case analysis, direct,
+ * chained rewrites — the technique is up to the model; this layer
+ * only manages the proof state).
  *
- * MVP backend: each `proof_step` re-runs the *whole* accumulated
- * tactic list via `lake env lean --json`. Per-step cost is ~5-10s
- * (mathlib startup) — Phase 3b will swap to a long-lived
- * `leanprover-community/repl` subprocess for sub-second steps.
+ * Backend: long-lived `leanprover-community/repl` subprocess (see
+ * lean-repl.ts). Per-step latency is sub-second after the one-time
+ * Mathlib import warm-up. Replaces the Phase 3a naive replay backend
+ * which cost 5-15s per step.
  *
  * Design choices:
- *   - At most one active proof per agent run. Multi-session would
- *     complicate the tool surface for marginal benefit; if we need
- *     to interleave lemmas later, that's Phase 3c (theorem registry).
- *   - On a tactic error, the failed tactic is *automatically popped*
- *     so the session stays in a coherent state. The model sees the
- *     diagnostic and can try a different tactic.
- *   - The initial goal we surface to the model is the theorem
- *     statement itself (no Lean call needed); the first `proof_step`
- *     is what triggers actual checking.
+ *   - At most one active proof per agent run (multi-session would
+ *     complicate the tool surface for marginal benefit).
+ *   - On a tactic error, the proofState pointer stays on the previous
+ *     coherent state — the bad tactic is not retained. The model
+ *     sees the diagnostic and can try a different tactic.
+ *   - The initial goal we surface comes directly from the REPL (it
+ *     includes hypotheses + ⊢ goal — the most informative format).
  */
 
-import { runLean, type LeanDiagnostic } from "./lean.js";
+import {
+  openProof,
+  applyTactic,
+  type ReplMessage,
+} from "./lean-repl.js";
 
 export interface ProofSession {
   /** Natural-language claim the proof is establishing. */
@@ -33,12 +36,14 @@ export interface ProofSession {
   theorem: string;
   /** Identifier used in the generated `theorem <name> : ...` snippet. */
   name: string;
-  /** Tactics applied so far, in order. Replayed on each step. */
+  /** Tactics applied so far, in order. */
   tactics: string[];
-  /** Most recent state from Lean. */
-  status: "open" | "closed";
-  /** Pretty-printed goals when `status === "open"`. */
+  /** REPL-side proof state pointer for the *current* coherent state. */
+  proofState: number;
+  /** Most recent goal-state text from the REPL. */
   goals: string;
+  /** Status of the session. */
+  status: "open" | "closed";
 }
 
 export interface ProofStartArgs {
@@ -52,99 +57,54 @@ export interface ProofStepResult {
   /** New goal state (when "open") or last-known goals (after error). */
   goals: string;
   /** Diagnostics surfaced by Lean for this attempt. */
-  errors: LeanDiagnostic[];
-  /** Tactic count after the call (failed tactics are popped). */
+  errors: ReplMessage[];
+  /** Tactic count after the call (failed tactics aren't counted). */
   tacticCount: number;
 }
 
 const PROOF_NAME_RE = /^[A-Za-z_][A-Za-z0-9_'.]*$/;
 
-export function startSession(args: ProofStartArgs): ProofSession {
+export async function startSession(args: ProofStartArgs): Promise<ProofSession> {
   const name = args.name?.trim() || "_active_proof";
   if (!PROOF_NAME_RE.test(name)) {
     throw new Error(
       `proof name "${name}" must match ${PROOF_NAME_RE} (Lean identifier rules)`,
     );
   }
+  const claim = args.claim.trim();
+  const theorem = args.theorem.trim();
+  // Open the proof against the REPL — this types-checks the theorem
+  // statement and returns the initial goal/state. Errors here mean
+  // the type itself was malformed.
+  const opened = await openProof(name, theorem);
   return {
-    claim: args.claim.trim(),
-    theorem: args.theorem.trim(),
+    claim,
+    theorem,
     name,
     tactics: [],
+    proofState: opened.proofState,
+    goals: opened.goal,
     status: "open",
-    goals: `⊢ ${args.theorem.trim()}`,
   };
 }
 
-/**
- * Build the Lean snippet for the current session state. With zero
- * tactics we add `skip` so the snippet compiles to a state where Lean
- * reports "unsolved goals" (i.e., the initial goal).
- */
-function buildSnippet(s: ProofSession): string {
-  const body =
-    s.tactics.length === 0
-      ? "  skip"
-      : s.tactics.map((t) => "  " + t).join("\n");
-  return `import Mathlib\n\ntheorem ${s.name} : ${s.theorem} := by\n${body}\n`;
-}
-
-/**
- * Extract the readable goals payload from Lean diagnostics. Returns
- * the empty string if no unsolved-goals diagnostic was found (i.e.,
- * the proof closed cleanly).
- */
-function readGoals(diagnostics: LeanDiagnostic[]): string {
-  for (const d of diagnostics) {
-    if (d.severity !== "error") continue;
-    if (
-      d.kind === "Tactic.unsolvedGoals" ||
-      /^unsolved goals/i.test(d.message)
-    ) {
-      // Strip the leading "unsolved goals\n" if present.
-      return d.message.replace(/^unsolved goals\s*\n?/i, "").trim();
-    }
-  }
-  return "";
-}
-
-/**
- * Detect whether the diagnostics indicate a *tactic* error (vs a
- * mere unsolved-goals state). Tactic errors mean the latest tactic
- * was malformed or didn't apply — we pop it and report the error.
- */
-function hasTacticError(diagnostics: LeanDiagnostic[]): boolean {
-  return diagnostics.some(
-    (d) =>
-      d.severity === "error" &&
-      d.kind !== "Tactic.unsolvedGoals" &&
-      !/^unsolved goals/i.test(d.message),
-  );
-}
-
 export interface StepOptions {
-  /** Override the Lean call timeout. Defaults to runLean's default. */
+  /** Reserved for future use (per-call timeout etc.). */
   timeoutMs?: number;
 }
 
 export async function applyStep(
   session: ProofSession,
   tactic: string,
-  opts: StepOptions = {},
+  // eslint-disable-next-line @typescript-eslint/no-unused-vars
+  _opts: StepOptions = {},
 ): Promise<ProofStepResult> {
   const t = tactic.trim();
   if (!t) {
     return {
       status: "tactic_error",
       goals: session.goals,
-      errors: [
-        {
-          severity: "error",
-          message: "tactic is empty",
-          line: 0,
-          column: 0,
-        },
-      ],
+      errors: [{ severity: "error", data: "tactic is empty" }],
       tacticCount: session.tactics.length,
     };
   }
@@ -155,24 +115,18 @@ export async function applyStep(
       errors: [
         {
           severity: "error",
-          message:
-            "proof already closed — open a new proof_start to begin another",
-          line: 0,
-          column: 0,
+          data: "proof already closed — open a new proof_start to begin another",
         },
       ],
       tacticCount: session.tactics.length,
     };
   }
-  // Tentatively append, run, decide what to keep.
-  session.tactics.push(t);
-  const snippet = buildSnippet(session);
-  const r = await runLean(snippet, { timeoutMs: opts.timeoutMs });
-
-  if (r.status === "ok") {
-    // Lean accepted everything — proof is closed.
+  const r = await applyTactic(session.proofState, t);
+  if (r.status === "closed") {
     session.status = "closed";
     session.goals = "(no goals — proof closed)";
+    session.tactics.push(t);
+    if (r.proofState !== undefined) session.proofState = r.proofState;
     return {
       status: "closed",
       goals: session.goals,
@@ -180,66 +134,46 @@ export async function applyStep(
       tacticCount: session.tactics.length,
     };
   }
-  // r.status === "error"
-  const newGoals = readGoals(r.diagnostics);
-  const tacticErr = hasTacticError(r.diagnostics);
-  if (tacticErr) {
-    // The latest tactic broke the proof — pop it and surface error.
-    session.tactics.pop();
-    const errs = r.diagnostics.filter((d) => d.severity === "error");
+  if (r.status === "error") {
     return {
       status: "tactic_error",
-      goals: session.goals, // unchanged (we rolled back)
-      errors: errs,
+      goals: session.goals, // unchanged — REPL state pointer not advanced
+      errors: r.messages,
       tacticCount: session.tactics.length,
     };
   }
-  if (newGoals) {
-    session.goals = newGoals;
-    return {
-      status: "open",
-      goals: newGoals,
-      errors: [],
-      tacticCount: session.tactics.length,
-    };
-  }
-  // No tactic error but no unsolved-goals either — unusual; treat as
-  // ambiguous and surface the raw error.
-  const errs = r.diagnostics.filter((d) => d.severity === "error");
+  // status === "open"
+  session.tactics.push(t);
+  session.goals = r.goals;
+  if (r.proofState !== undefined) session.proofState = r.proofState;
   return {
-    status: "tactic_error",
-    goals: session.goals,
-    errors: errs,
+    status: "open",
+    goals: r.goals,
+    errors: [],
     tacticCount: session.tactics.length,
   };
 }
 
 /**
- * Verify the session is closed: re-run the accumulated tactics and
- * confirm Lean accepts. Returns OK or surfaces the remaining goals.
+ * Verify the session is closed. With the REPL backend this is
+ * effectively a no-op since `applyStep` already updated `status`
+ * the moment the proof closed; we keep this entrypoint as a clean
+ * place for callers to ask "are we actually done?".
  */
 export async function closeSession(
   session: ProofSession,
-  opts: StepOptions = {},
-): Promise<{ status: "closed"; snippet: string } | { status: "open"; goals: string } | { status: "error"; error: string }> {
+): Promise<
+  | { status: "closed" }
+  | { status: "open"; goals: string }
+  | { status: "error"; error: string }
+> {
+  if (session.status === "closed") {
+    return { status: "closed" };
+  }
   if (session.tactics.length === 0) {
     return { status: "open", goals: session.goals };
   }
-  const snippet = buildSnippet(session);
-  const r = await runLean(snippet, { timeoutMs: opts.timeoutMs });
-  if (r.status === "ok") {
-    session.status = "closed";
-    session.goals = "(no goals — proof closed)";
-    return { status: "closed", snippet };
-  }
-  const goals = readGoals(r.diagnostics);
-  if (goals) {
-    return { status: "open", goals };
-  }
-  return {
-    status: "error",
-    error: r.error || "Lean rejected the closing snippet",
-  };
+  return { status: "open", goals: session.goals };
 }
 
 /** Render the session for the model. */
@@ -255,6 +189,8 @@ export function renderSession(s: ProofSession): string {
     stmt,
     "tactics so far:",
     tact,
-    s.status === "closed" ? "STATUS: CLOSED ✓" : `current goals:\n  ${s.goals.split("\n").join("\n  ")}`,
+    s.status === "closed"
+      ? "STATUS: CLOSED ✓"
+      : `current goals:\n  ${s.goals.split("\n").join("\n  ")}`,
   ].join("\n");
 }

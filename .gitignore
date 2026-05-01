@@ -15,3 +15,7 @@ tools/lean-workspace/build/
 # Generated index caches (Mathlib lemma index, future embedding
 # indices). ~80MB and rebuildable from the lake source on first run.
 .cache/
+
+# leanprover-community/repl is fetched + built locally via
+# tools/setup-lean-repl.sh — we don't track its source in this repo.
+tools/lean-repl/
