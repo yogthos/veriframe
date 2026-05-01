@@ -343,6 +343,28 @@ Use the verify_lean tool: write the proof in Lean 4 with Mathlib. Useful tactics
     maxSteps: 8,
   },
 
+  "math-induction-pow2-gt-n": {
+    id: "math-induction-pow2-gt-n",
+    type: "Math theorem (induction: 2^n > n for all n : ℕ)",
+    difficulty: "medium",
+    prompt: `Prove that 2^n > n for every natural number n. Formally:
+
+  ∀ n : ℕ, n < 2 ^ n
+
+This is a stepwise inductive proof. Use \`proof_start\` to open a session, then apply tactics one at a time via \`proof_step\` so the goal state evolves visibly. You'll see the goal after every tactic — pick the next move based on what's left.
+
+Some hints (use them as you see fit):
+- Induction on n: base case n = 0 reduces to 0 < 1; inductive step needs n+1 < 2^(n+1) given ih : n < 2^n.
+- Useful tactics: \`intro n\`, \`induction n with | zero => ?_ | succ k ih => ?_\`, \`norm_num\`, \`omega\`, \`linarith\`, \`simp [pow_succ]\`, \`show <expr>\`, \`have h := ...\`.
+- \`pow_succ\` rewrites 2^(k+1) = 2^k * 2.
+- If you go down a wrong path, \`proof_undo\` rolls back tactics without restarting.
+
+Proof technique is your call. Start with \`proof_start\` and work step by step.`,
+    expectedAnswer:
+      "Proved by induction on n: base case n = 0 gives 0 < 1 (trivial); inductive step uses ih and pow_succ to derive n+1 < 2^(n+1).",
+    maxSteps: 30,
+  },
+
   "math-induction-square-plus-self-even": {
     id: "math-induction-square-plus-self-even",
     type: "Math theorem (induction: n² + n is even for all n : ℕ)",
