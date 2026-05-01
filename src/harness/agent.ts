@@ -39,6 +39,7 @@ import {
   applyStep,
   closeSession,
   renderSession,
+  undoStep,
   type ProofSession,
 } from "./lean-proof.js";
 
@@ -134,7 +135,9 @@ If verification PASSES, the step is proved; the next turn picks up from there. I
 
 **proof_state** — \`{}\`. Show the current proof's tactics so far + remaining goals, without running Lean. Cheap.
 
-**proof_close** — \`{}\`. Verify the active proof actually closes. Required to mark the proof as complete. If goals remain, the harness reports them.
+**proof_undo** — \`{"steps"?: number}\`. Roll back the last N tactics (default 1). The REPL retains earlier states so undo is sub-second; no re-execution. Use when you went down a wrong path mid-proof and want to back up rather than abandon. Re-opens the session if the undo passes a closing step.
+
+**proof_close** — \`{}\`. Optional explicit verification that the active proof closes. The harness already auto-finalises when \`proof_step\` reports CLOSED — \`proof_close\` exists for sanity-checking but isn't required before \`done\`.
 
 **proof_abandon** — \`{}\`. Drop the active proof session. Use when you want to start over with a different theorem statement or proof strategy.
 
@@ -667,19 +670,29 @@ async function runTool(
       }
       const ps = session.leanProof;
       const stepResult = await applyStep(ps, tactic, {});
-      // Track verify history for stuck detection. We treat "closed"
-      // and "open" as forward progress; "tactic_error" as not-progress.
-      const verifyClaim = tacticClaim || `step: ${tactic}`;
-      const outcome: VerifyOutcome =
-        stepResult.status === "tactic_error" ? "not_verified" : "verified";
-      recordVerify(session, verifyClaim, outcome);
-      const stuck = checkStuckHint(session);
+      // Phase-3b review item 4: don't count proof_step in the
+      // verifyHistory. Tactic-level exploration ("try A, no, try B")
+      // is normal mid-proof and shouldn't trigger the stuck-detection
+      // hint that's calibrated for high-level claim retries. The
+      // REPL's per-tactic goal-state feedback is the model's signal.
+      const stuck = "";
+      void tacticClaim;
       const lines: string[] = [];
       if (stepResult.status === "closed") {
+        // Auto-finalise (item 3): include the full proof summary so
+        // the model can go straight to `done` without a redundant
+        // proof_close round-trip. proof_close stays available for
+        // explicit verification but isn't required.
         lines.push(
-          `STEP ACCEPTED — proof closed in ${stepResult.tacticCount} tactic(s).`,
+          `STEP ACCEPTED — proof CLOSED in ${stepResult.tacticCount} tactic(s).`,
         );
-        lines.push("Call proof_close to finalise.");
+        lines.push(`Proof of "${ps.claim}":`);
+        lines.push(`  theorem ${ps.name} : ${ps.theorem} := by`);
+        for (const tactic of ps.tactics) {
+          lines.push(`    ${tactic}`);
+        }
+        lines.push("");
+        lines.push("(proof_close is optional — you can call `done` next.)");
       } else if (stepResult.status === "open") {
         lines.push(
           `STEP ACCEPTED — ${stepResult.tacticCount} tactic(s) applied.`,
@@ -747,6 +760,28 @@ async function runTool(
         };
       }
       return { result: renderSession(session.leanProof) };
+    }
+
+    case "proof_undo": {
+      if (!session.leanProof) {
+        return {
+          result: "[error] no active proof session — open one with proof_start first.",
+        };
+      }
+      let steps = 1;
+      if (typeof args.steps === "number" && Number.isFinite(args.steps)) {
+        steps = Math.max(1, Math.floor(args.steps));
+      }
+      const r = await undoStep(session.leanProof, steps);
+      if (r.status === "error") {
+        return { result: `[proof_undo error] ${r.error}` };
+      }
+      const lines: string[] = [
+        `OK — undid ${steps} tactic(s); ${r.tacticCount} remain.`,
+        "Current goals:",
+      ];
+      for (const line of r.goals.split("\n")) lines.push("  " + line);
+      return { result: lines.join("\n") };
     }
 
     case "proof_close": {
@@ -938,7 +973,7 @@ async function runTool(
 
     default:
       return {
-        result: `[error] unknown tool "${name}". Valid: add_rule, retract_rule, commit, verify, verify_smt, verify_lean, lean_search, proof_start, proof_step, proof_state, proof_close, proof_abandon, assume, discharge, done, give_up.`,
+        result: `[error] unknown tool "${name}". Valid: add_rule, retract_rule, commit, verify, verify_smt, verify_lean, lean_search, proof_start, proof_step, proof_state, proof_undo, proof_close, proof_abandon, assume, discharge, done, give_up.`,
       };
   }
 }

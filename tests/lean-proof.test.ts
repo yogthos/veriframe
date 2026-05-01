@@ -11,6 +11,7 @@ import {
   startSession,
   applyStep,
   closeSession,
+  undoStep,
 } from "../src/harness/lean-proof.js";
 import { stopRepl } from "../src/harness/lean-repl.js";
 
@@ -101,6 +102,87 @@ describe("lean-proof session (stepwise, REPL-backed)", () => {
     });
     const r = await closeSession(ps);
     expect(r.status).toBe("open");
+  }, 60_000);
+
+  it("undoStep rolls back tactics and restores the earlier goal state", async () => {
+    const ps = await startSession({
+      claim: "real ineq",
+      theorem: "∀ x : ℝ, x ≤ x + 1",
+    });
+    const goalAfterStart = ps.goals;
+    const r1 = await applyStep(ps, "intro x");
+    expect(r1.status).toBe("open");
+    const goalAfterIntro = ps.goals;
+    expect(goalAfterIntro).not.toBe(goalAfterStart);
+
+    // Undo by 1 → tactics empty, goal back to the post-start state.
+    const u = await undoStep(ps, 1);
+    expect(u.status).toBe("ok");
+    expect(ps.tactics).toEqual([]);
+    expect(ps.goals).toBe(goalAfterStart);
+    expect(ps.status).toBe("open");
+
+    // Re-apply intro then verify the proof can still close — the
+    // proofState pointer must still be valid after undo.
+    const r2 = await applyStep(ps, "intro x");
+    expect(r2.status).toBe("open");
+    const r3 = await applyStep(ps, "linarith");
+    expect(r3.status).toBe("closed");
+  }, 60_000);
+
+  it("undoStep can roll back a closed proof (un-close)", async () => {
+    const ps = await startSession({
+      claim: "trivial",
+      theorem: "1 + 1 = 2",
+    });
+    const r1 = await applyStep(ps, "norm_num");
+    expect(r1.status).toBe("closed");
+    expect(ps.status).toBe("closed");
+    const u = await undoStep(ps, 1);
+    expect(u.status).toBe("ok");
+    expect(ps.status).toBe("open");
+    expect(ps.tactics).toEqual([]);
+  }, 60_000);
+
+  it("undoStep with steps > tactics-applied returns an error", async () => {
+    const ps = await startSession({
+      claim: "trivial",
+      theorem: "1 + 1 = 2",
+    });
+    await applyStep(ps, "norm_num");
+    const u = await undoStep(ps, 5); // only 1 tactic applied
+    expect(u.status).toBe("error");
+  }, 60_000);
+
+  it("supports multiple sequential proof_start cycles without name collision", async () => {
+    // Round 1 of Phase 3b review — without auto-uniquification, the
+    // second proof_start would error because the REPL env still has
+    // `_active_proof` defined from the first call.
+    const ps1 = await startSession({ claim: "first", theorem: "1 + 1 = 2" });
+    const r1 = await applyStep(ps1, "norm_num");
+    expect(r1.status).toBe("closed");
+
+    const ps2 = await startSession({ claim: "second", theorem: "2 + 2 = 4" });
+    const r2 = await applyStep(ps2, "norm_num");
+    expect(r2.status).toBe("closed");
+
+    // Same again with the user supplying the *same* base name; the
+    // harness should still uniquify under the hood.
+    const ps3 = await startSession({
+      claim: "third",
+      theorem: "3 + 3 = 6",
+      name: "shared_basename",
+    });
+    const r3 = await applyStep(ps3, "norm_num");
+    expect(r3.status).toBe("closed");
+
+    const ps4 = await startSession({
+      claim: "fourth",
+      theorem: "4 + 4 = 8",
+      name: "shared_basename",
+    });
+    const r4 = await applyStep(ps4, "norm_num");
+    expect(r4.status).toBe("closed");
   }, 60_000);
 
   it("rejects a tactic applied to a closed session", async () => {

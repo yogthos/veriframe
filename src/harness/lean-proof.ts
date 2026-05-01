@@ -29,6 +29,18 @@ import {
   type ReplMessage,
 } from "./lean-repl.js";
 
+/**
+ * One checkpoint in the proof: the REPL-side proofState pointer and
+ * the goal-state text *at that point*. history[0] is the initial
+ * state (post-openProof, before any tactic). history[i+1] is the
+ * state after applying tactics[i]. Length invariant: history.length
+ * === tactics.length + 1.
+ */
+export interface ProofCheckpoint {
+  proofState: number;
+  goals: string;
+}
+
 export interface ProofSession {
   /** Natural-language claim the proof is establishing. */
   claim: string;
@@ -38,12 +50,14 @@ export interface ProofSession {
   name: string;
   /** Tactics applied so far, in order. */
   tactics: string[];
-  /** REPL-side proof state pointer for the *current* coherent state. */
-  proofState: number;
-  /** Most recent goal-state text from the REPL. */
-  goals: string;
+  /** Checkpoint after each tactic + the initial. Used for undo. */
+  history: ProofCheckpoint[];
   /** Status of the session. */
   status: "open" | "closed";
+  /** Convenience: REPL state pointer at the latest checkpoint. */
+  proofState: number;
+  /** Convenience: goal text at the latest checkpoint. */
+  goals: string;
 }
 
 export interface ProofStartArgs {
@@ -64,28 +78,52 @@ export interface ProofStepResult {
 
 const PROOF_NAME_RE = /^[A-Za-z_][A-Za-z0-9_'.]*$/;
 
+// Process-monotonic counter so every proof_start emits a unique
+// `theorem <name> : ...` declaration. The REPL env carries declared
+// names forward across calls; without uniquification, two sequential
+// proof_start calls (or even two within different runs of the same
+// long-lived agent process) would collide on "already declared".
+// Phase 3c will introduce a proper theorem registry; for now the
+// suffix is invisible to the model except as a debugging aid.
+let proofCounter = 0;
+
 export async function startSession(args: ProofStartArgs): Promise<ProofSession> {
-  const name = args.name?.trim() || "_active_proof";
-  if (!PROOF_NAME_RE.test(name)) {
+  const baseName = args.name?.trim() || "_active_proof";
+  if (!PROOF_NAME_RE.test(baseName)) {
     throw new Error(
-      `proof name "${name}" must match ${PROOF_NAME_RE} (Lean identifier rules)`,
+      `proof name "${baseName}" must match ${PROOF_NAME_RE} (Lean identifier rules)`,
     );
   }
+  const uniqueName = `${baseName}_${++proofCounter}`;
   const claim = args.claim.trim();
   const theorem = args.theorem.trim();
   // Open the proof against the REPL — this types-checks the theorem
   // statement and returns the initial goal/state. Errors here mean
   // the type itself was malformed.
-  const opened = await openProof(name, theorem);
+  const opened = await openProof(uniqueName, theorem);
+  const initial: ProofCheckpoint = {
+    proofState: opened.proofState,
+    goals: opened.goal,
+  };
   return {
     claim,
     theorem,
-    name,
+    name: uniqueName,
     tactics: [],
-    proofState: opened.proofState,
-    goals: opened.goal,
+    history: [initial],
     status: "open",
+    proofState: initial.proofState,
+    goals: initial.goals,
   };
+}
+
+/**
+ * Test hook — reset the uniquification counter. Production code
+ * should never need this; tests use it to keep names predictable
+ * across vitest workers when asserting against `session.name`.
+ */
+export function _resetProofCounterForTests(): void {
+  proofCounter = 0;
 }
 
 export interface StepOptions {
@@ -123,13 +161,16 @@ export async function applyStep(
   }
   const r = await applyTactic(session.proofState, t);
   if (r.status === "closed") {
+    const closedGoals = "(no goals — proof closed)";
+    const newProofState = r.proofState ?? session.proofState;
     session.status = "closed";
-    session.goals = "(no goals — proof closed)";
     session.tactics.push(t);
-    if (r.proofState !== undefined) session.proofState = r.proofState;
+    session.history.push({ proofState: newProofState, goals: closedGoals });
+    session.proofState = newProofState;
+    session.goals = closedGoals;
     return {
       status: "closed",
-      goals: session.goals,
+      goals: closedGoals,
       errors: [],
       tacticCount: session.tactics.length,
     };
@@ -143,15 +184,47 @@ export async function applyStep(
     };
   }
   // status === "open"
+  const newProofState = r.proofState ?? session.proofState;
   session.tactics.push(t);
+  session.history.push({ proofState: newProofState, goals: r.goals });
+  session.proofState = newProofState;
   session.goals = r.goals;
-  if (r.proofState !== undefined) session.proofState = r.proofState;
   return {
     status: "open",
     goals: r.goals,
     errors: [],
     tacticCount: session.tactics.length,
   };
+}
+
+/**
+ * Roll back the last `steps` tactics. The REPL retains earlier
+ * proofStates by integer ID, so resuming from one is cheap — no
+ * re-execution. Re-opens the session if it was closed by the rollback.
+ */
+export async function undoStep(
+  session: ProofSession,
+  steps: number = 1,
+): Promise<{ status: "ok"; tacticCount: number; goals: string } | { status: "error"; error: string }> {
+  if (!Number.isFinite(steps) || steps < 1) {
+    return { status: "error", error: "steps must be a positive integer" };
+  }
+  if (steps > session.tactics.length) {
+    return {
+      status: "error",
+      error: `cannot undo ${steps} step(s) — only ${session.tactics.length} tactic(s) applied`,
+    };
+  }
+  // Trim parallel arrays.
+  session.tactics.splice(session.tactics.length - steps, steps);
+  session.history.splice(session.history.length - steps, steps);
+  const last = session.history[session.history.length - 1];
+  session.proofState = last.proofState;
+  session.goals = last.goals;
+  // We're back in an open state — even if the rollback un-closed a
+  // proof, the rolled-back checkpoint was an open one.
+  session.status = "open";
+  return { status: "ok", tacticCount: session.tactics.length, goals: last.goals };
 }
 
 /**
