@@ -2,7 +2,8 @@
 # Run the harness against GLM (Zhipu BigModel coding endpoint).
 # Requires ZHIPU_API_KEY in your environment.
 #
-# Override HARNESS_MODEL to use a different GLM variant (default glm-4.6).
+# Override HARNESS_MODEL to use a different GLM variant (default glm-5.1).
+PATH="$HOME/.elan/bin:$PATH" \
 TMPDIR=/tmp \
   HARNESS_PROVIDER=glm \
   HARNESS_MODEL=${HARNESS_MODEL:-glm-5.1} \

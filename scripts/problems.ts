@@ -327,6 +327,35 @@ State whether the formula is SAT or UNSAT, with reasoning.`,
     maxSteps: 14,
   },
 
+  "math-amgm-2": {
+    id: "math-amgm-2",
+    type: "Math theorem (AM-GM for two non-negative reals)",
+    difficulty: "medium",
+    prompt: `Prove the AM-GM inequality for two non-negative real numbers: for all real x, y ≥ 0, the geometric mean does not exceed the arithmetic mean. Formally:
+
+  ∀ x y : ℝ, 0 ≤ x → 0 ≤ y → 2 * sqrt (x * y) ≤ x + y
+
+Equivalently (squaring both sides under non-negativity), 4·x·y ≤ (x + y)². You may prove either form.
+
+Use the verify_lean tool: write the proof in Lean 4 with Mathlib. Useful tactics: \`nlinarith\`, \`polyrith\`, \`Real.sqrt_le_sqrt\`, \`Real.sq_sqrt\`, \`Real.sqrt_mul_self\`. The simplest proof of the squared form takes one line with nlinarith and the fact (x - y)² ≥ 0.`,
+    expectedAnswer:
+      "Proved via nlinarith using (x - y)² ≥ 0 (equivalently 4xy ≤ (x+y)²).",
+    maxSteps: 8,
+  },
+
+  "math-sum-evens": {
+    id: "math-sum-evens",
+    type: "Math theorem (sum of two evens is even)",
+    difficulty: "easy",
+    prompt: `Prove that the sum of two even integers is even. Formally:
+
+  ∀ a b : ℤ, Even a → Even b → Even (a + b)
+
+Use verify_lean. The standard Mathlib proof unfolds Even as ∃ k, _ = k + k (or 2*k), then constructs the witness.`,
+    expectedAnswer: "Proved by destructuring the two Even hypotheses and using the witness ka + kb.",
+    maxSteps: 6,
+  },
+
   "einstein-4x4": {
     id: "einstein-4x4",
     type: "Einstein-style logic puzzle (4 houses, 4 attribute categories, 9 clues)",

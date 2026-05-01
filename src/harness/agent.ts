@@ -27,6 +27,7 @@ import type { LLMClient, ChatMessage } from "../llm/types.js";
 import { type ReasoningStep, type RunResult } from "../types.js";
 import { createSession, type PrologSession } from "./prolog.js";
 import { runSmt } from "./smt.js";
+import { runLean } from "./lean.js";
 
 export interface AgentRunOptions {
   config?: { maxTurns?: number };
@@ -107,6 +108,8 @@ If verification PASSES, the step is proved; the next turn picks up from there. I
 
 **verify_smt** — \`{"claim": "...", "smtlib": "..."}\`. Same shape as \`verify\` but the check is SMT-LIB code, executed by Z3 4.15. Use this when Prolog/CLP(FD) isn't enough: real arithmetic, nonlinear arithmetic, large bitvectors, theory combinations, optimisation. The harness reports SAT / UNSAT / UNKNOWN — read the description below for proof semantics. Don't include \`(check-sat)\`; the harness appends it.
 
+**verify_lean** — \`{"claim": "...", "lean": "..."}\`. Same shape, but the check is a **Lean 4 snippet** evaluated against Mathlib. Use this for genuine mathematical theorems: real/complex analysis (continuity, limits, ε-δ proofs), inequalities, number theory (primes, divisibility), algebra (group/ring/field theory), basic geometry, anything with named lemmas in Mathlib. The harness reports VERIFIED if Lean accepts the proof; NOT VERIFIED with up to 3 error lines (line numbers, "unsolved goals" messages, etc.) when it doesn't. \`import Mathlib\` is auto-prepended if you don't include it. Use \`example\` for one-off claims and \`theorem name\` if you want to assert a name and reuse it later via \`add_rule\`.
+
 **assume** — \`{"name": "...", "fact": "..."}\`. Open a *named hypothetical scope*. \`fact\` is Prolog code asserted while the scope is open. Anything you \`verify\` afterward is conditional on this assumption. Used for "assume A, derive B; therefore A → B" reasoning.
 
 **discharge** — \`{"name": "..."}\`. Close a previously-opened scope, retracting its assumption. Whatever you proved while it was open now stands as a conditional ("under hypothesis X, conclusion Y holds").
@@ -152,6 +155,8 @@ NOT VERIFIED is a green light to **rethink the step**. Re-examine your reasoning
 - To prove "P holds for all values," assert \`(not P)\` and look for **UNSAT** (no counter-example exists).
 - To prove "there exists x such that P(x)," assert \`P(x)\` and look for **SAT** (a witness exists).
 - UNKNOWN means Z3 couldn't decide — try simpler arithmetic or a different encoding.
+
+\`verify_lean\` returns VERIFIED or NOT VERIFIED with diagnostics. Lean is a real proof assistant — the proof must compile against Mathlib. Useful tactics to know: \`norm_num\` (arithmetic identities), \`linarith\` / \`nlinarith\` / \`polyrith\` (linear/nonlinear inequalities), \`ring\` (ring identities), \`field_simp\` (field simplification), \`decide\` (decidable propositions), \`omega\` (linear integer/nat arithmetic), \`positivity\` (positivity of expressions), \`exact?\` / \`apply?\` / \`hint\` (Mathlib search & suggestion). Combine with \`intro\`, \`cases\`, \`rcases\`, \`induction\`, \`refine\`, \`have\`, \`show\`, \`use\`, \`rw\`. If a tactic fails on a side-condition, fall back to manual steps — but try the hammers first.
 
 ## When to use \`assume\` / \`discharge\`
 
@@ -327,6 +332,34 @@ function checkStuckHint(session: AgentSession): string {
   return "";
 }
 
+function formatLeanResult(
+  claim: string,
+  r: ReturnType<typeof runLean>,
+): string {
+  const header = `claim: "${claim}"`;
+  if (r.status === "ok") {
+    const warns = r.diagnostics.filter((d) => d.severity === "warning");
+    const warnNote = warns.length > 0
+      ? `\n  (with ${warns.length} warning${warns.length > 1 ? "s" : ""}: ${warns.slice(0, 2).map((w) => w.message.split("\n")[0]).join("; ")})`
+      : "";
+    return `${header}\nVERIFIED — Lean accepted the proof.${warnNote}`;
+  }
+  // Surface up to 3 errors so the model can react.
+  const errs = r.diagnostics.filter((d) => d.severity === "error");
+  const lines: string[] = [
+    header,
+    `NOT VERIFIED — ${r.error}`,
+  ];
+  for (const e of errs.slice(0, 3)) {
+    const where = e.line > 0 ? ` (line ${e.line})` : "";
+    lines.push(`  •${where} ${e.message.split("\n").join(" / ").slice(0, 400)}`);
+  }
+  if (errs.length > 3) {
+    lines.push(`  ... and ${errs.length - 3} more error(s).`);
+  }
+  return lines.join("\n");
+}
+
 function formatSmtResult(claim: string, verdict: "sat" | "unsat" | "unknown"): string {
   const header = `claim: "${claim}"`;
   // SMT semantics differ from Prolog. We report the raw verdict and
@@ -457,6 +490,36 @@ async function runTool(
       return { result: formatSmtResult(claim, r.verdict) + hint };
     }
 
+    case "verify_lean": {
+      const claim = typeof args.claim === "string" ? args.claim.trim() : "";
+      const lean = typeof args.lean === "string" ? args.lean.trim() : "";
+      if (!claim) {
+        return {
+          result:
+            "[error] verify_lean requires {claim: string, lean: string}. State the one-sentence claim before writing Lean code.",
+        };
+      }
+      if (!lean) {
+        return {
+          result:
+            "[error] verify_lean requires {claim: string, lean: string}. The `lean` field is a Lean 4 snippet (typically `import Mathlib` followed by an `example` or `theorem` with a tactic-block proof).",
+        };
+      }
+      // Auto-prepend `import Mathlib` if the model forgot, so most
+      // tactics are immediately available.
+      const snippet = /^\s*import\s+/.test(lean)
+        ? lean
+        : `import Mathlib\n\n${lean}`;
+      const r = runLean(snippet);
+      const outcome: VerifyOutcome =
+        r.status === "ok" ? "verified" : "not_verified";
+      recordVerify(session, claim, outcome);
+      const hint = checkStuckHint(session);
+      return {
+        result: formatLeanResult(claim, r) + hint,
+      };
+    }
+
     case "assume": {
       const name = typeof args.name === "string" ? args.name.trim() : "";
       const fact = typeof args.fact === "string" ? args.fact.trim() : "";
@@ -524,7 +587,7 @@ async function runTool(
 
     default:
       return {
-        result: `[error] unknown tool "${name}". Valid: add_rule, retract_rule, commit, verify, verify_smt, assume, discharge, done, give_up.`,
+        result: `[error] unknown tool "${name}". Valid: add_rule, retract_rule, commit, verify, verify_smt, verify_lean, assume, discharge, done, give_up.`,
       };
   }
 }
