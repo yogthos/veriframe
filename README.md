@@ -79,9 +79,11 @@ brew install z3
 
 ### LLM provider
 
-**Local (Qwen via node-llama-cpp)**: drop a GGUF into `models/`. Default config expects `models/Qwen3.6-35B-A3B-Q8_0.gguf`. Run with `./start.sh`.
+Pick one:
 
-**GLM-5.1 (Zhipu BigModel)**: export `ZHIPU_API_KEY`, then `./start-glm.sh`.
+- **Local (Qwen via node-llama-cpp)** — drop a GGUF into `models/`. Default config expects `models/Qwen3.6-35B-A3B-Q8_0.gguf`. Run with `./start.sh`.
+- **GLM-5.1 (Zhipu BigModel)** — export `ZHIPU_API_KEY`, then `./start-glm.sh`. GLM-5.1 is a thinking model; the provider merges `reasoning_content` + `content` into `<think>...</think>` framing so the agent's tool-call fence parser sees the fence wherever the model emits it.
+- **DeepSeek** — export `DEEPSEEK_API_KEY`, then `./start-deepseek.sh`. Default model is `deepseek-chat`; set `HARNESS_MODEL=deepseek-reasoner` for the thinking variant (same `reasoning_content` handling as GLM).
 
 ## Run
 
@@ -130,10 +132,11 @@ curl -sS -X POST http://localhost:3001/v1/chat/completions \
 
 | Variable | Default | Notes |
 |---|---|---|
-| `HARNESS_PROVIDER` | `local` (or `glm` if `ZHIPU_API_KEY` is set) | `local` / `glm` |
+| `HARNESS_PROVIDER` | auto-detect | `local` / `glm` / `deepseek`. Auto-picks `glm` if `ZHIPU_API_KEY` is set, else `deepseek` if `DEEPSEEK_API_KEY` is set, else `local`. |
 | `HARNESS_MODEL_PATH` | — | GGUF path (local provider only) |
-| `HARNESS_MODEL` | `local-model` / `glm-5.1` | Model name for the wire payload |
+| `HARNESS_MODEL` | per-provider default | Model name for the wire payload (`local-model` / `glm-5.1` / `deepseek-chat`) |
 | `ZHIPU_API_KEY` | — | Required when `HARNESS_PROVIDER=glm` |
+| `DEEPSEEK_API_KEY` | — | Required when `HARNESS_PROVIDER=deepseek` |
 | `HARNESS_PORT` | `3000` | HTTP port |
 | `HARNESS_MAX_TOKENS` | `4096` (`16384` for GLM) | Per-LLM-call output cap |
 | `HARNESS_TIMEOUT_MS` | `300000` | Per-LLM-call wall clock |
@@ -172,7 +175,9 @@ src/
     lean-repl.ts           Long-lived leanprover-community/repl subprocess
   llm/
     local.ts               node-llama-cpp provider (Qwen / Mistral / Llama family)
-    glm.ts                 GLM-5.1 (Zhipu BigModel) HTTP provider
+    glm.ts                 GLM (Zhipu BigModel) thin wrapper
+    deepseek.ts            DeepSeek thin wrapper
+    openai-compat.ts       Shared OpenAI-compatible HTTP factory (used by glm + deepseek)
     types.ts               ChatMessage, LLMResponse, etc.
 scripts/
   agent-only.ts            Run one benchmark problem against the harness

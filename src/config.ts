@@ -22,7 +22,12 @@ function pickProvider(envProvider: string | undefined): ProviderType {
   ) {
     return envProvider as ProviderType;
   }
-  if (process.env.ZHIPU_API_KEY && !process.env.HARNESS_MODEL_PATH) return "glm";
+  // Auto-detect from API key envs (only if no local model path is set,
+  // since a configured GGUF takes precedence). Order: GLM, DeepSeek.
+  if (!process.env.HARNESS_MODEL_PATH) {
+    if (process.env.ZHIPU_API_KEY) return "glm";
+    if (process.env.DEEPSEEK_API_KEY) return "deepseek";
+  }
   if (process.env.HARNESS_MODEL_PATH) return "local";
   return "local";
 }
@@ -48,9 +53,22 @@ export function loadConfig(overrides?: Partial<ServerConfig>): ServerConfig {
   const modelPath =
     process.env.HARNESS_MODEL_PATH ?? overrides?.llm?.modelPath;
 
-  // Pick a sensible default model name when GLM is selected so the
-  // wire payload has a real model id; user can override via HARNESS_MODEL.
-  const defaultModel = provider === "glm" ? "glm-5.1" : "local-model";
+  // Sensible default model per provider — overridable via HARNESS_MODEL.
+  const defaultModel =
+    provider === "glm"
+      ? "glm-5.1"
+      : provider === "deepseek"
+        ? "deepseek-chat"
+        : "local-model";
+
+  // Pick the API key matching the provider (env-var-by-provider).
+  const apiKey =
+    overrides?.llm?.apiKey ??
+    (provider === "glm"
+      ? process.env.ZHIPU_API_KEY
+      : provider === "deepseek"
+        ? process.env.DEEPSEEK_API_KEY
+        : undefined);
 
   return {
     port: num(process.env.HARNESS_PORT) ?? overrides?.port ?? 3000,
@@ -59,7 +77,7 @@ export function loadConfig(overrides?: Partial<ServerConfig>): ServerConfig {
       provider,
       modelPath,
       baseUrl: process.env.HARNESS_BASE_URL ?? overrides?.llm?.baseUrl,
-      apiKey: overrides?.llm?.apiKey ?? process.env.ZHIPU_API_KEY,
+      apiKey,
       model:
         process.env.HARNESS_MODEL ?? overrides?.llm?.model ?? defaultModel,
       maxTokens:

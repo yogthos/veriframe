@@ -1,17 +1,18 @@
 /**
- * LLM provider factory.
- *
- * Picks a provider based on config:
+ * LLM provider factory. Picks per-config:
  *   - config.provider explicit, OR
- *   - config.modelPath set → "local"
+ *   - ZHIPU_API_KEY → "glm"
+ *   - DEEPSEEK_API_KEY → "deepseek"
+ *   - config.modelPath → "local"
  *
- * Currently only "local" is implemented; remote providers can be added
- * later (openai, ollama, deepseek) following the rlm-sandbox layout.
+ * Implemented: local (node-llama-cpp), glm (Zhipu), deepseek.
+ * Stubbed: openai, ollama.
  */
 
 import type { LLMConfig, LLMClient, ProviderType } from "./types.js";
 import { createLocalProvider } from "./local.js";
 import { createGLMProvider } from "./glm.js";
+import { createDeepSeekProvider } from "./deepseek.js";
 
 export {
   createLocalProvider,
@@ -19,6 +20,7 @@ export {
   preloadLocalModel,
 } from "./local.js";
 export { createGLMProvider } from "./glm.js";
+export { createDeepSeekProvider } from "./deepseek.js";
 
 export type {
   LLMConfig,
@@ -42,9 +44,10 @@ export function createLLMClient(config: LLMConfig): LLMClient {
       return createLocalProvider(config);
     case "glm":
       return createGLMProvider(config);
+    case "deepseek":
+      return createDeepSeekProvider(config);
     case "openai":
     case "ollama":
-    case "deepseek":
       throw new Error(
         `Provider "${provider}" not yet implemented in reasoning-harness`,
       );
