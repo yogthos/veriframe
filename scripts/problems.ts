@@ -343,6 +343,47 @@ Use the verify_lean tool: write the proof in Lean 4 with Mathlib. Useful tactics
     maxSteps: 8,
   },
 
+  "math-sqrt-2-irrational": {
+    id: "math-sqrt-2-irrational",
+    type: "Math theorem (proof by contradiction: √2 is irrational)",
+    difficulty: "medium",
+    prompt: `Prove that √2 is irrational in Lean 4 + Mathlib. Formally:
+
+  Irrational (Real.sqrt 2)
+
+This is a classic proof-by-contradiction theorem. Mathlib has it stated under a canonical name; \`lean_search\` should find it. You can either:
+1. Cite the canonical Mathlib lemma directly via verify_lean / proof_step's \`exact\`, or
+2. Prove it from scratch (a real challenge — recommend option 1).
+
+Use \`proof_start\` + \`proof_step\` to walk through the proof step by step if you choose to do it from scratch, or use \`verify_lean\` for a one-shot proof if you can recall the lemma name.`,
+    expectedAnswer:
+      "Proved by citing Mathlib's `irrational_sqrt_two` (or equivalent) — the canonical lemma name in Mathlib.NumberTheory.Irrational.",
+    maxSteps: 12,
+  },
+
+  "math-gauss-sum": {
+    id: "math-gauss-sum",
+    type: "Math theorem (induction with Finset.sum: Gauss formula)",
+    difficulty: "hard",
+    prompt: `Prove Gauss's formula in Lean 4 + Mathlib: the sum of integers from 0 to n equals n·(n+1)/2. Formally, with Finset notation:
+
+  ∀ n : ℕ, 2 * (∑ i ∈ Finset.range (n + 1), i) = n * (n + 1)
+
+(We multiply both sides by 2 to avoid division. The equivalent statement Mathlib likely has is \`Finset.sum_range_id\` or \`Gauss_sum\`-named.)
+
+This is a stepwise inductive proof with Finset / sum manipulation. Use \`proof_start\` and \`proof_step\`. Suggested skeleton:
+1. \`intro n\`
+2. \`induction n with | zero => ?_ | succ k ih => ?_\`
+3. Base case: \`norm_num\` or \`simp\`
+4. Inductive step: rewrite \`Finset.range (k + 1 + 1) = insert (k+1) (Finset.range (k+1))\` then unfold the sum.
+5. \`Finset.sum_insert\`, \`omega\`, \`ring\` are useful tactics.
+
+\`lean_search\` is your friend — try queries like "Finset sum range" or "sum_range_id".`,
+    expectedAnswer:
+      "Proved via induction; base case norm_num/decide; inductive step uses Finset.sum_range_succ + ring/omega.",
+    maxSteps: 25,
+  },
+
   "math-induction-pow2-gt-n": {
     id: "math-induction-pow2-gt-n",
     type: "Math theorem (induction: 2^n > n for all n : ℕ)",
