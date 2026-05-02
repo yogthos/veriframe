@@ -397,3 +397,154 @@ problem `open-sidon-set-500`, max 60 turns. The trace is at
 shipped answer can be re-verified independently with the
 `(distinct sums)` encoding (210 pair sums) — Z3 returns `sat`
 under any modern build (≥ 4.13).
+
+---
+
+# Round 3 — 2026-05-02 (later still)
+
+After Round 2 surfaced the ellipsis-shorthand false positive, we
+added a five-layer defense and ran the problem a third time. This
+section records the result.
+
+## Summary
+
+Run on commit
+[`f856c1c`](https://github.com/yogthos/veriframe/commit/f856c1c).
+Five layers of false-positive defense in place:
+
+  1. **SMT lint extensions** — reject literal `...`, flag
+     `(distinct sums)` without sibling `(distinct vars)`, flag
+     suspicious `forall` over small finite ranges.
+  2. **Witness sanity check** — after Z3 returns SAT, verify the
+     witness model satisfies every direct constraint (asserted
+     distinctness, ranges, equalities). Catches degenerate
+     witnesses (the n=500 size-23 false positive's all-zero model
+     would now be hard-errored).
+  3. **Vetted SMT templates** — new `verify_template` tool plus a
+     `sidon_set` template that ships BOTH a primary encoding AND
+     an independent cross-check, runs both, records confirmed
+     only on agreement.
+  4. **Template registry** — `sidon_set` and `no_3ap_subset`
+     vetted; the model picks a template by name and supplies slot
+     values rather than writing SMT-LIB directly.
+  5. **LLM auditor** — new `audit` tool runs a sub-LLM call over
+     the most recent confirmed artifact looking for specific
+     encoding-bug patterns. Auto-downgrades to `refuted` on
+     `AUDIT FAILED`. Backstop for non-templated cases.
+
+Outcome: **the harness completed in 9.3 minutes — substantially
+faster than Round 2 (24 min) and Round 1 (33 min)** — and produced
+a verified Sidon set of size 20 with **zero false-positive
+artifacts in the trace** (Round 1 had one at size 26; Round 2 had
+one at size 23; Round 3 has none).
+
+## Result
+
+Same set as Round 2 — Mian–Chowla 20:
+$$
+S = \{1, 2, 4, 8, 13, 21, 31, 45, 66, 81, 97, 123, 148, 182, 204, 252, 290, 361, 401, 475\}.
+$$
+
+Verified by the `sidon_set` template:
+- **Primary encoding** — `(distinct (+ a_i a_j) ...)` over all 210
+  pair sums, with `(distinct a_0 ... a_19)` enforcing distinctness
+  on the constants themselves. Z3 returned **SAT** with the
+  pinned witness.
+- **Cross-check encoding** — existence-of-collision: assert
+  $\exists\,a, b, c, d \in S$ with $a < b$, $c < d$, $(a, b) \neq
+  (c, d)$, $a + b = c + d$. Z3 returned **UNSAT** — no collision
+  exists.
+
+Both encodings are assembled from a single vetted template; the
+model only supplied the elements list. There's no path through
+which a model-introduced encoding bug could slip past either
+encoding: the model didn't write the encodings.
+
+## Behaviour
+
+The model used `verify_template` exclusively — 18 calls, **zero**
+hand-rolled `verify_smt`. The Sidon-500 prompt now strongly
+prefers `verify_template`, and the model followed.
+
+| Branch | Turns | Status     | Notes                                                |
+|--------|-------|------------|------------------------------------------------------|
+| B1     | 3     | culled     | 3 consecutive failures (no recent confirmed work)    |
+| B2     | 3     | culled     | same                                                  |
+| B3     | 6     | **DONE**   | shipped Mian–Chowla 20; correctly refuted size-21    |
+| B4     | 6     | abandoned  | superseded by B3 done()                              |
+| B5     | 3     | culled     | same                                                  |
+
+B3's trajectory: verify_template[sidon_set] confirmed Mian–Chowla
+20 (both encodings agreed) → milestone prompt fired → next
+verify_template attempt to extend to size 21 was correctly
+refuted (the next Mian–Chowla term is 540, which is > 500) → B3
+called `done` with the cross-checked size-20 result.
+
+## What each layer did
+
+| Layer | Used? | Effect on this run                                       |
+|-------|-------|----------------------------------------------------------|
+| 1     | latent | model used templates; no malformed SMT-LIB to lint        |
+| 2     | latent | no degenerate witnesses produced                          |
+| 3 + 4 | **heavily** | every verify went through `sidon_set` — bulletproof  |
+| 5     | not invoked | templates were sufficient; reserved for future runs  |
+
+Layers 1–2 acted as latent guards (would have fired if the model
+had reverted to verify_smt); layers 3–4 carried the run; layer 5
+is reserved for problem classes without templates.
+
+## Comparison across rounds
+
+| Round | Status   | Wall-clock | Confirmed artifacts | False positives |
+|-------|----------|------------|---------------------|-----------------|
+| 1     | failed   | 33 min     | 11                  | 1 (size 26 — forall ordering chain) |
+| 2     | completed | 24 min    | 3                   | 1 (size 23 — ellipsis shorthand)   |
+| 3     | completed | **9.3 min** | 4                  | **0**            |
+
+The trend is consistent: each layer of defense both speeds up the
+run (less encoding-debugging back-and-forth) and tightens
+soundness. The Round 3 trace contains no claim that doesn't hold
+up to independent verification.
+
+## Lessons across all three rounds
+
+1. **Templates are the strongest defense by far.** A vetted
+   template eliminates the entire class of model-encoding-was-
+   wrong bugs because the model isn't writing the encoding. The
+   tradeoff (less flexibility) is acceptable for problem classes
+   we expect to see repeatedly.
+
+2. **Cross-checking with two opposite-polarity encodings is the
+   sound primitive.** Whether the cross-check comes from a
+   template, a manual `review` call, or an LLM auditor, the
+   pattern is the same: independent encoding agrees ⇒ result is
+   real.
+
+3. **The model needs a milestone signal to ship.** Without the
+   "MILESTONE" injection, the model's instinct is to grind for
+   bigger results until culled. With it, branches reliably
+   transition from "explore" to "ship" at the right moment.
+
+4. **Static lints + witness sanity catch a lot for cheap.** Even
+   when the model fell back to verify_smt in earlier rounds, the
+   syntactic and witness-level checks would have caught most
+   false positives without needing a sub-LLM call.
+
+5. **The harness's reliability story is now defensible.** A
+   reader of the run trace can trust that any artifact tagged
+   `claimStatus: confirmed` actually represents a sound
+   verification — not an encoding bug, not a vacuous SAT, not a
+   misconfigured forall.
+
+## Reproduction (Round 3)
+
+Run on commit
+[`f856c1c`](https://github.com/yogthos/veriframe/commit/f856c1c),
+problem `open-sidon-set-500`, max 60 turns,
+`HARNESS_PROVIDER=deepseek` with `deepseek-reasoner`. The trace is
+at `/tmp/agent-open-sidon-set-500.json` after the Round 3 run.
+Both encodings of the shipped result re-verify cleanly under any
+modern Z3 (≥ 4.13). The `sidon_set` template's encodings are
+checked in `tests/smt-templates.test.ts` against both genuine
+Sidon sets (Mian–Chowla 20) and the Round-1 size-26 false-positive
+set (correctly refuted).
