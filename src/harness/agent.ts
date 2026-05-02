@@ -69,71 +69,72 @@ interface VerifyEvent {
 }
 
 /**
- * One hypothesis thread. The model opens a branch implicitly at the
- * start of the run and explicitly via `pivot` after that. Branches
- * make the search visible: when a thread dead-ends, the model
- * articulates *why* and *what's next* before going on, instead of
- * silently drifting into a different approach.
+ * Beam-search constants. Each run launches BEAM_WIDTH parallel
+ * branches (each with its own LLM thread, Prolog session, and Lean
+ * proof state). Branches that fail CULL_THRESHOLD consecutive
+ * verifications are pruned — the surviving branches continue with
+ * the global failure log so they don't repeat dead ends.
  */
-export interface Branch {
-  id: string;
-  /** One-line description of the hypothesis / technique. */
-  hypothesis: string;
-  status: "active" | "abandoned" | "done";
-  startedAtTurn: number;
-  endedAtTurn?: number;
-  /** Set when status === "abandoned" — the reason the model gave. */
-  abandonReason?: string;
-  /** How many verified artifacts were attributed to this branch. */
-  artifactCount: number;
+const BEAM_WIDTH = 5;
+const CULL_THRESHOLD = 3;
+
+/**
+ * One failed verification recorded into the global failure log
+ * shared across branches. The log is rendered into the next-turn
+ * context for every active branch so independent branches don't
+ * repeat each other's mistakes.
+ */
+export interface FailureEntry {
+  branchId: string;
+  turn: number;
+  toolName: string;
+  /** Model's one-sentence claim that didn't pan out. */
+  claim: string;
+  /** Why it failed — engine verdict + brief diagnosis. */
+  reason: string;
 }
 
-/** Maximum hypothesis threads per run. After this, the model must
- *  commit to one of the active threads, call `done`, or `give_up`. */
-const MAX_BRANCHES = 5;
-
-/** Inject a step-back reflection prompt every N successful tool
- *  calls. Catches the "grinding the same approach" failure mode. */
-const STEP_BACK_INTERVAL = 6;
-
-export interface AgentSession {
+/**
+ * One independent search branch. Each branch carries its OWN
+ * Prolog session, Lean proof state, message stream, and turn log.
+ * Branches share the global failure log via the parent
+ * GlobalRunState — that's the only cross-branch communication.
+ *
+ * Renamed from the prior BranchState to make it explicit that
+ * each branch is a peer, not a singleton — many run in parallel.
+ */
+export interface BranchState {
+  id: string;
+  /** Status drives loop scheduling: only "active" branches run. */
+  status: "active" | "culled" | "done" | "abandoned";
+  /** Per-branch reason when not active. */
+  inactiveReason?: string;
   problem: string;
   finalAnswer: string | null;
   turns: TurnEntry[];
   prolog: PrologSession;
-  /** Number of bytes asserted so far — surfaced to the model so it
-   *  can sense when the session has accumulated a lot of state. */
   assertedBytes: number;
-  /**
-   * Recent verify history. Used to detect "stuck on a step" patterns
-   * — three failed/repeated verifications in a row triggers a hint
-   *  appended to the next tool result. Capped at the last 8 entries.
-   */
   verifyHistory: VerifyEvent[];
-  /** Marks turns where we already injected the hint, so we don't
-   *  spam it every turn while the model recovers. */
   hintCooldownTurns: number;
-  /** Active stepwise Lean proof session, if any. At most one open at
-   *  a time — see lean-proof.ts for rationale. */
   leanProof: ProofSession | null;
-  /**
-   * Every successful verification accumulated this run — `verify_lean`
-   * snippets, closed `proof_start` sessions, and `verify_smt` runs
-   * (sat or unsat both count; the verdict tells the consumer what
-   * the model proved). Rendered verbatim in the final answer so the
-   * caller receives the actual machine-checked code, not just the
-   * model's natural-language summary.
-   */
   verifiedArtifacts: VerifiedArtifact[];
-  /** All hypothesis threads opened this run (active + abandoned). */
-  branches: Branch[];
-  /** ID of the currently-active branch. Set on session start and
-   *  changed by `pivot`. */
-  activeBranchId: string;
-  /** Counter that drives the periodic step-back injection. Reset
-   *  each time the step-back fires. */
-  successesSinceStepBack: number;
+  /** Resets to 0 on success, increments on failure; cull at CULL_THRESHOLD. */
+  consecutiveFailures: number;
   messages: ChatMessage[];
+}
+
+/**
+ * Top-level state for one beam-search run. Holds K branches and
+ * the global failure log. The first branch to call `done` wins;
+ * its final answer is reported and other branches' artifacts are
+ * aggregated into the response.
+ */
+export interface GlobalRunState {
+  problem: string;
+  branches: BranchState[];
+  globalFailureLog: FailureEntry[];
+  doneBranchId: string | null;
+  finalAnswer: string | null;
 }
 
 interface VerifiedArtifact {
@@ -157,18 +158,18 @@ interface VerifiedArtifact {
   claimStatus: "confirmed" | "refuted" | "ambiguous";
 }
 
-const SYSTEM_PROMPT = `You're solving a problem the way a creative researcher solves a hard one: by **forming hypotheses, drawing on the broadest mathematical knowledge you can reach, and using formal verification engines to validate or reject each idea**. Your unique value is intuition — knowing which technique to try, when to abandon a dead end, and what fundamentally different angle might work. The harness's job is to keep you honest by checking each idea formally.
+const SYSTEM_PROMPT = `You're solving a problem the way a creative researcher solves a hard one: by **forming hypotheses, drawing on the broadest mathematical knowledge you can reach, and using formal verification engines to validate or reject each idea**. Your unique value is intuition — knowing which technique to try given current evidence, and recognising a dead end quickly. The harness keeps you honest by checking each idea formally.
 
-This is NOT a linear march down a single proof. It is a **directed search through hypothesis space**, with backtracking. Dead ends are normal; the goal is recognising them quickly and reframing.
+This run is one of **${BEAM_WIDTH} parallel search branches**. Other branches, running independently right now, are exploring the same problem with different hypotheses. The harness shares a global failure log across all branches so you don't repeat each other's mistakes — when you see the failure log in your context, treat those entries as "already disproven, do not retry."
 
 ## The flow
 
 Each turn:
-1. **State a hypothesis** in your prose. Where in the search are you? Which technique are you trying, and why is it the most promising right now? Lean on what you know — different subfields, named theorems, structural analogies. Don't restrict yourself to the first idea.
+1. **State a hypothesis** in your prose. Lean on what you know — number theory, combinatorics, algebra, probability, named theorems, structural analogies. Don't restrict yourself to the first idea or the technique you tried last turn.
 2. **Issue ONE tool call** inside a fenced block (see below). The tool either verifies the hypothesis or returns evidence against it.
-3. **React.** If the engine confirms, build on it. If it rejects, that's data — analyse the root cause and reach for an alternative (the harness will prompt you for this).
+3. **React.** If the engine confirms, build on it. If it rejects, the failure goes into the global log; reach for a different angle on your next turn.
 
-A run can hold multiple branches — distinct hypothesis threads. Open a new branch with \`pivot\` whenever you've exhausted a direction or recognised a fundamentally better angle. Branches make your search visible.
+The first to call \`done\` with a verified answer wins for the whole run; other branches will be terminated. If your branch is clearly stuck, \`give_up\` so the harness can focus compute on surviving branches.
 
 Tool calls go inside a fence:
 
@@ -177,12 +178,6 @@ Tool calls go inside a fence:
 \`\`\`
 
 Free-form prose around the fence is allowed and encouraged for your reasoning; only the first fence is parsed.
-
-\`\`\`tool-call
-{"name": "<tool>", "args": {...}}
-\`\`\`
-
-Free-form prose around the fence is allowed for your reasoning; only the first fence is parsed.
 
 ## Tools
 
@@ -219,13 +214,6 @@ Free-form prose around the fence is allowed for your reasoning; only the first f
 **assume** — \`{"name": "...", "fact": "..."}\`. Open a *named hypothetical scope*. \`fact\` is Prolog code asserted while the scope is open. Anything you \`verify\` afterward is conditional on this assumption. Used for "assume A, derive B; therefore A → B" reasoning.
 
 **discharge** — \`{"name": "..."}\`. Close a previously-opened scope, retracting its assumption. Whatever you proved while it was open now stands as a conditional ("under hypothesis X, conclusion Y holds").
-
-**pivot** — \`{"why": "...", "newDirection": "..."}\`. Abandon the current hypothesis branch and open a new one. Use this when:
-- The current direction has dead-ended (verification keeps rejecting and root-cause repair isn't producing forward motion).
-- You've recognised a fundamentally different angle (a different subfield, a different proof technique, a different encoding) that's more likely to work.
-- Successful work on the current branch should be locked in before exploring elsewhere.
-
-\`why\` is a one-sentence diagnosis of why the current branch is being abandoned (or "complete — locking it in"). \`newDirection\` names the new technique/family in one sentence (e.g., "Switch from Behrend digit-sum to Cantor middle-thirds construction"; "Try character-sum instead of greedy"). The harness records the abandoned branch with its artifacts intact, opens a fresh branch under \`newDirection\`, and **shows you a summary of what's already been tried** so you don't loop. Branch budget: ${MAX_BRANCHES} per run.
 
 **done** — \`{"answer": "..."}\`. Submit the human-readable final answer once you've derived it.
 
@@ -453,7 +441,7 @@ function formatVerifyResult(
 }
 
 function recordVerify(
-  session: AgentSession,
+  session: BranchState,
   claim: string,
   outcome: VerifyOutcome,
 ): void {
@@ -476,38 +464,7 @@ function isSimilarClaim(a: string, b: string): boolean {
 
 const STUCK_HINT = `\n\n⚠ Heads up: the last 3 verifications haven't moved you forward — they failed, errored, or restated a similar claim. Step back before writing more Prolog:\n  • Is the *claim* too ambitious for one step? Decompose it (one-fact-per-claim).\n  • Did a recent rule break things? \`retract_rule({"name": "..."})\` to undo a tentative \`add_rule\` you named.\n  • Is the encoding shape wrong? Form a different hypothesis instead of patching this one.`;
 
-/**
- * Injected as a user message immediately after a verification fails
- * (NOT VERIFIED, REJECTED tactic, refuted artifact, UNKNOWN result,
- * or a tool error). The model gets the result PLUS this prompt and
- * must answer it before the next tool call. Forces explicit
- * hypothesis enumeration rather than silent drift after dead ends —
- * which is where creativity actually matters.
- *
- * Kept terse: 2-3 sentences expected. Long meta-essays burn tokens
- * without improving search quality.
- */
-const FAILURE_ANALYSIS_PROMPT = `That step did not confirm the claim. Before your next tool call, answer in 2-3 sentences:
-  1. **Root cause** — what was wrong with the hypothesis or the encoding?
-  2. **Alternatives** — name 2 different techniques (ideally from different mathematical traditions) that could work here.
-  3. **Choice** — which alternative are you trying next, and why?
-
-Then issue the next tool call. If the alternatives all look weak, consider \`pivot\` to a fundamentally different angle, or \`give_up\` if the problem really is out of reach.`;
-
-/**
- * Injected after every STEP_BACK_INTERVAL successful tool calls.
- * Forces the model to reassess direction before grinding further.
- * Catches the failure mode where a working technique stops working
- * but the model doesn't notice until many turns later.
- */
-const STEP_BACK_PROMPT = `Pause. In 3-4 sentences:
-  1. What have you established so far in the current branch?
-  2. What's the gap between here and the goal?
-  3. Is this technique still the best fit, or is there a different angle worth trying?
-
-Then continue. If a different angle looks better, \`pivot\` to it.`;
-
-function checkStuckHint(session: AgentSession): string {
+function checkStuckHint(session: BranchState): string {
   if (session.hintCooldownTurns > 0) return "";
   const recent = session.verifyHistory.slice(-3);
   if (recent.length < 3) return "";
@@ -636,7 +593,7 @@ interface RunToolResult {
 }
 
 async function runTool(
-  session: AgentSession,
+  session: BranchState,
   call: ToolCall,
   signal?: AbortSignal,
 ): Promise<RunToolResult> {
@@ -790,7 +747,6 @@ async function runTool(
       });
       // Attribute artifacts to the active branch so we can report
       // per-branch productivity in the final answer.
-      attributeArtifactToActiveBranch(session);
       const hint = checkStuckHint(session);
       const expectedNote =
         expectedVerdict === null
@@ -888,7 +844,6 @@ async function runTool(
           code: `import Mathlib\n\n${proofText}\n`,
           claimStatus: "confirmed",
         });
-        attributeArtifactToActiveBranch(session);
       } else if (stepResult.status === "open") {
         lines.push(
           `STEP ACCEPTED — ${stepResult.tacticCount} tactic(s) applied.`,
@@ -1080,7 +1035,6 @@ async function runTool(
           code: snippet,
           claimStatus: "confirmed",
         });
-        attributeArtifactToActiveBranch(session);
       }
       const hint = checkStuckHint(session);
       // On NOT VERIFIED or compile-error, auto-surface relevant
@@ -1164,63 +1118,6 @@ async function runTool(
       };
     }
 
-    case "pivot": {
-      const why = typeof args.why === "string" ? args.why.trim() : "";
-      const newDirection =
-        typeof args.newDirection === "string" ? args.newDirection.trim() : "";
-      if (!why) {
-        return {
-          result:
-            "[error] pivot requires {why: string, newDirection: string}. `why` is your one-sentence diagnosis of why the current branch is being abandoned.",
-        };
-      }
-      if (!newDirection) {
-        return {
-          result:
-            "[error] pivot requires {why: string, newDirection: string}. `newDirection` names the new technique/family in one sentence.",
-        };
-      }
-      const remaining = MAX_BRANCHES - session.branches.length;
-      if (remaining <= 0) {
-        return {
-          result: `[error] branch budget exhausted (${MAX_BRANCHES}). Branches tried so far:\n${renderBranchHistory(session)}\nCommit to one of the established threads with \`done\`, or use \`give_up\` if no thread reaches the goal.`,
-        };
-      }
-      // Close the active branch.
-      const active = session.branches.find(
-        (b) => b.id === session.activeBranchId,
-      );
-      const turnNow = session.turns.length;
-      if (active) {
-        active.status = "abandoned";
-        active.abandonReason = why;
-        active.endedAtTurn = turnNow;
-      }
-      // If a Lean proof is open, abandon it (its branch is dead).
-      if (session.leanProof && session.leanProof.status === "open") {
-        await closeSession(session.leanProof);
-        session.leanProof = null;
-      }
-      // Open the new branch.
-      const newBranch: Branch = {
-        id: `B${session.branches.length + 1}`,
-        hypothesis: newDirection,
-        status: "active",
-        startedAtTurn: turnNow + 1,
-        artifactCount: 0,
-      };
-      session.branches.push(newBranch);
-      session.activeBranchId = newBranch.id;
-      // Reset step-back counter — fresh branch, fresh cadence.
-      session.successesSinceStepBack = 0;
-      const summary = renderBranchHistory(session);
-      const remainingAfter = MAX_BRANCHES - session.branches.length;
-      return {
-        result: `Branch ${active?.id ?? "?"} ("${active?.hypothesis ?? "(none)"}") abandoned: ${why}\nNew active branch ${newBranch.id}: ${newDirection}\n\nWhat's been tried so far:\n${summary}\nBranch budget remaining: ${remainingAfter}/${MAX_BRANCHES}.\n\nProceed: state the first concrete claim under this new direction, then verify it.`,
-        category: "neutral",
-      };
-    }
-
     case "done": {
       if (typeof args.answer !== "string" || args.answer.trim().length === 0) {
         return {
@@ -1229,14 +1126,7 @@ async function runTool(
         };
       }
       session.finalAnswer = args.answer;
-      // Mark the active branch as done.
-      const active = session.branches.find(
-        (b) => b.id === session.activeBranchId,
-      );
-      if (active && active.status === "active") {
-        active.status = "done";
-        active.endedAtTurn = session.turns.length;
-      }
+      session.status = "done";
       return { result: "OK — finalizing.", done: true };
     }
 
@@ -1264,44 +1154,84 @@ async function runTool(
  * any tool that pushes to `verifiedArtifacts`. Used in the final
  * answer's per-branch summary.
  */
-function attributeArtifactToActiveBranch(session: AgentSession): void {
-  const active = session.branches.find(
-    (b) => b.id === session.activeBranchId,
-  );
-  if (active) active.artifactCount++;
-}
-
 /**
- * Compact summary of every branch tried in this run, designed to be
- * fed back to the model on `pivot` so it can see what's already been
- * tried and avoid loops. One line per branch; status, range of
- * turns, hypothesis, artifact count.
+ * Compact summary of all branches in a beam-search run. One line
+ * per branch with status, turn count, artifact count, inactive
+ * reason. Used in the final answer so a reader can see how the
+ * search played out across branches.
  *
  * Exported for tests; the prose format is part of the model-facing
  * contract so we want to lock it in.
  */
-export function renderBranchHistory(session: AgentSession): string {
+export function renderBranchHistory(state: GlobalRunState): string {
   const lines: string[] = [];
-  for (const b of session.branches) {
-    const range = b.endedAtTurn
-      ? `turns ${b.startedAtTurn}-${b.endedAtTurn}`
-      : `turn ${b.startedAtTurn}+`;
+  for (const b of state.branches) {
     const status = b.status.toUpperCase();
-    const why = b.abandonReason ? ` (because: ${b.abandonReason})` : "";
-    const arts = b.artifactCount > 0 ? `, ${b.artifactCount} artifact(s)` : "";
-    lines.push(`  ${b.id} [${status}, ${range}${arts}]: ${b.hypothesis}${why}`);
+    const turnCount = b.turns.length;
+    const turnFrag = turnCount === 0 ? "no turns yet" : `${turnCount} turn(s)`;
+    const arts =
+      b.verifiedArtifacts.length > 0
+        ? `, ${b.verifiedArtifacts.length} artifact(s)`
+        : "";
+    const reason = b.inactiveReason ? ` — ${b.inactiveReason}` : "";
+    lines.push(`  ${b.id} [${status}, ${turnFrag}${arts}]${reason}`);
   }
   return lines.join("\n");
 }
 
-export async function runAgent(
+/**
+ * Build the per-turn message context for one branch. Includes the
+ * persistent message history (system prompt + accumulated turns)
+ * plus a transient user message containing the global failure log
+ * so this branch can see what other branches have already tried
+ * and disproved.
+ *
+ * The failure log is NOT persisted into the branch's messages — it
+ * regenerates each turn from the global state, capped to the most
+ * recent N entries to keep context cheap.
+ */
+const FAILURE_LOG_HEAD = 30;
+function buildBranchTurnContext(
+  branch: BranchState,
+  state: GlobalRunState,
+): ChatMessage[] {
+  const base: ChatMessage[] = [
+    { role: "system", content: SYSTEM_PROMPT },
+    ...branch.messages,
+  ];
+  // Filter out failures from THIS branch — the branch already saw
+  // those in its own message history. Only show others' failures.
+  const others = state.globalFailureLog.filter((f) => f.branchId !== branch.id);
+  if (others.length === 0) return base;
+  const head = others.slice(-FAILURE_LOG_HEAD);
+  const lines = [
+    `Global failure log — ${others.length} attempt(s) by other branches that the engine REJECTED. Do NOT retry these:`,
+  ];
+  for (const f of head) {
+    lines.push(
+      `  • [${f.branchId} t${f.turn} ${f.toolName}] "${f.claim}" → ${f.reason}`,
+    );
+  }
+  if (others.length > head.length) {
+    lines.push(
+      `  (${others.length - head.length} earlier entries omitted for brevity)`,
+    );
+  }
+  return [...base, { role: "user", content: lines.join("\n") }];
+}
+
+/**
+ * Spin up one BranchState ready to participate in the beam. Each
+ * branch gets its own Prolog session for full isolation.
+ */
+async function createBranch(
+  id: string,
   problem: string,
-  llm: LLMClient,
-  opts: AgentRunOptions = {},
-): Promise<RunResult> {
-  const maxTurns = opts.config?.maxTurns ?? 40;
+): Promise<BranchState> {
   const prolog = await createSession();
-  const session: AgentSession = {
+  return {
+    id,
+    status: "active",
     problem,
     finalAnswer: null,
     turns: [],
@@ -1311,150 +1241,263 @@ export async function runAgent(
     hintCooldownTurns: 0,
     leanProof: null,
     verifiedArtifacts: [],
-    branches: [
-      {
-        id: "B1",
-        hypothesis: "initial approach (model has not yet articulated a specific technique)",
-        status: "active",
-        startedAtTurn: 1,
-        artifactCount: 0,
-      },
-    ],
-    activeBranchId: "B1",
-    successesSinceStepBack: 0,
+    consecutiveFailures: 0,
     messages: [{ role: "user", content: buildInitialUserMessage(problem) }],
+  };
+}
+
+/**
+ * Run one turn for one branch: call the LLM, parse the tool fence,
+ * execute the tool. Mutates branch.messages, branch.turns, and
+ * branch.verifiedArtifacts. Returns metadata the loop needs to
+ * decide whether to terminate, log a failure, or continue.
+ */
+interface BranchTurnOutcome {
+  done: boolean;
+  gaveUp: boolean;
+  category: ToolResultCategory;
+  toolName: string;
+  claim: string;
+  failureReason: string;
+}
+
+async function runBranchTurn(
+  branch: BranchState,
+  state: GlobalRunState,
+  turn: number,
+  llm: LLMClient,
+  signal: AbortSignal | undefined,
+  onTurn?: (entry: TurnEntry) => void,
+): Promise<BranchTurnOutcome> {
+  if (branch.hintCooldownTurns > 0) branch.hintCooldownTurns--;
+  const messages = buildBranchTurnContext(branch, state);
+  let response: string;
+  try {
+    const resp = await llm.chat(messages, { signal });
+    response = resp.content;
+  } catch (e) {
+    // Branch-level chat failure: mark this branch as dead but let
+    // the rest of the beam keep running.
+    const err = `chat failed at turn ${turn}: ${e instanceof Error ? e.message : String(e)}`;
+    branch.status = "abandoned";
+    branch.inactiveReason = err;
+    const entry: TurnEntry = {
+      turn,
+      toolCall: { name: "__llm_error__", args: {} },
+      result: err,
+    };
+    branch.turns.push(entry);
+    onTurn?.(entry);
+    return {
+      done: false,
+      gaveUp: true,
+      category: "failure",
+      toolName: "__llm_error__",
+      claim: "",
+      failureReason: err,
+    };
+  }
+
+  branch.messages.push({ role: "assistant", content: response });
+
+  const call = parseToolCall(response);
+  if (!call) {
+    const noCallMsg =
+      "Your previous response had no ```tool-call fence. Emit one tool call per turn.";
+    branch.messages.push({ role: "user", content: noCallMsg });
+    const entry: TurnEntry = {
+      turn,
+      toolCall: { name: "__no_call__", args: {} },
+      result: noCallMsg,
+    };
+    branch.turns.push(entry);
+    onTurn?.(entry);
+    return {
+      done: false,
+      gaveUp: false,
+      category: "neutral",
+      toolName: "__no_call__",
+      claim: "",
+      failureReason: "",
+    };
+  }
+
+  const { result, done, gaveUp, category } = await runTool(branch, call, signal);
+  branch.messages.push({ role: "user", content: truncateToolResult(result) });
+  const entry: TurnEntry = { turn, toolCall: call, result };
+  branch.turns.push(entry);
+  onTurn?.(entry);
+
+  // Pull a one-line claim from the call's args if the tool surfaced
+  // one (verify, verify_smt, verify_lean all use `claim`); otherwise
+  // fall back to the tool name + first arg keys.
+  const claim =
+    typeof call.args.claim === "string" && call.args.claim.trim()
+      ? String(call.args.claim).slice(0, 200)
+      : `${call.name} ${Object.keys(call.args).join(",")}`.slice(0, 200);
+
+  return {
+    done: !!done,
+    gaveUp: !!gaveUp,
+    category: category ?? "neutral",
+    toolName: call.name,
+    claim,
+    failureReason: category === "failure" ? truncateForLog(result) : "",
+  };
+}
+
+function truncateForLog(s: string): string {
+  // Keep the first ~200 chars; that's enough for "UNSAT — refuted"
+  // or "NOT VERIFIED — 0 answers" plus the head of any error text.
+  const oneLine = s.replace(/\s+/g, " ").trim();
+  return oneLine.length > 220 ? oneLine.slice(0, 217) + "..." : oneLine;
+}
+
+export async function runAgent(
+  problem: string,
+  llm: LLMClient,
+  opts: AgentRunOptions = {},
+): Promise<RunResult> {
+  const maxTurns = opts.config?.maxTurns ?? 40;
+
+  // Spin up K branches in parallel. Each branch starts from the same
+  // problem prompt; diversity comes from the LLM's stochastic
+  // generation under temperature, plus per-branch context drift as
+  // the global failure log fills with other branches' rejections.
+  const branches: BranchState[] = await Promise.all(
+    Array.from({ length: BEAM_WIDTH }, (_, i) =>
+      createBranch(`B${i + 1}`, problem),
+    ),
+  );
+  const state: GlobalRunState = {
+    problem,
+    branches,
+    globalFailureLog: [],
+    doneBranchId: null,
+    finalAnswer: null,
   };
 
   let turn = 0;
-  let outcome: "done" | "gave_up" | "exhausted" = "exhausted";
 
   try {
     while (turn < maxTurns) {
       turn++;
-      if (session.hintCooldownTurns > 0) session.hintCooldownTurns--;
       if (opts.signal?.aborted) {
-        outcome = "gave_up";
-        session.finalAnswer = "[aborted]";
-        break;
-      }
-      const messages: ChatMessage[] = [
-        { role: "system", content: SYSTEM_PROMPT },
-        ...session.messages,
-      ];
-      let response: string;
-      try {
-        const resp = await llm.chat(messages, { signal: opts.signal });
-        response = resp.content;
-      } catch (e) {
-        return {
-          status: "failed",
-          steps: turnsToSteps(session.turns),
-          error: `chat failed at turn ${turn}: ${e instanceof Error ? e.message : String(e)}`,
-          verifiedArtifacts: [...session.verifiedArtifacts],
-        };
-      }
-
-      session.messages.push({ role: "assistant", content: response });
-
-      const call = parseToolCall(response);
-      if (!call) {
-        const noCallMsg =
-          "Your previous response had no ```tool-call fence. Emit one tool call per turn.";
-        session.messages.push({ role: "user", content: noCallMsg });
-        const entry: TurnEntry = {
-          turn,
-          toolCall: { name: "__no_call__", args: {} },
-          result: noCallMsg,
-        };
-        session.turns.push(entry);
-        opts.onTurn?.(entry);
-        continue;
-      }
-
-      const { result, done, gaveUp, category } = await runTool(session, call, opts.signal);
-      session.messages.push({ role: "user", content: truncateToolResult(result) });
-      const entry: TurnEntry = { turn, toolCall: call, result };
-      session.turns.push(entry);
-      opts.onTurn?.(entry);
-
-      if (done) {
-        outcome = "done";
-        break;
-      }
-      if (gaveUp) {
-        outcome = "gave_up";
-        break;
-      }
-
-      // Hypothesis-search nudges. Two passive prompts injected into
-      // the message stream between the tool result and the model's
-      // next turn — they convert the linear proof loop into a
-      // directed search.
-      //
-      //   Failure → mandatory analysis (root cause + alternatives).
-      //   Periodic success → step-back reflection.
-      //
-      // Suppressed during an open Lean proof session; mid-proof
-      // tactic exploration ("try foo, no, try bar") is normal and
-      // shouldn't be interrupted by meta-prompts.
-      const inOpenProof =
-        session.leanProof !== null && session.leanProof.status === "open";
-      if (!inOpenProof) {
-        if (category === "failure") {
-          session.messages.push({
-            role: "user",
-            content: FAILURE_ANALYSIS_PROMPT,
-          });
-          // A failure resets the step-back cadence — the failure
-          // analysis itself is the reflection for now.
-          session.successesSinceStepBack = 0;
-        } else if (category === "success") {
-          session.successesSinceStepBack++;
-          if (session.successesSinceStepBack >= STEP_BACK_INTERVAL) {
-            session.successesSinceStepBack = 0;
-            session.messages.push({
-              role: "user",
-              content: STEP_BACK_PROMPT,
-            });
+        for (const b of state.branches) {
+          if (b.status === "active") {
+            b.status = "abandoned";
+            b.inactiveReason = "aborted by caller";
           }
         }
+        break;
       }
+      const active = state.branches.filter((b) => b.status === "active");
+      if (active.length === 0) break;
+
+      // K parallel LLM calls + tool runs. Each branch advances one
+      // turn independently; they share the global failure log via
+      // buildBranchTurnContext but otherwise operate in isolation.
+      const outcomes = await Promise.all(
+        active.map((b) =>
+          runBranchTurn(b, state, turn, llm, opts.signal, opts.onTurn),
+        ),
+      );
+
+      for (let i = 0; i < active.length; i++) {
+        const b = active[i];
+        const outcome = outcomes[i];
+
+        if (outcome.done) {
+          state.doneBranchId = b.id;
+          state.finalAnswer = b.finalAnswer;
+          // Stop scheduling further turns; abandon any other active
+          // branches so we don't keep paying for their LLM calls.
+          for (const other of state.branches) {
+            if (other.id !== b.id && other.status === "active") {
+              other.status = "abandoned";
+              other.inactiveReason = `superseded by ${b.id} done()`;
+            }
+          }
+          continue;
+        }
+        if (outcome.gaveUp) {
+          if (b.status === "active") {
+            b.status = "abandoned";
+            b.inactiveReason = b.finalAnswer ?? "gave_up";
+          }
+          continue;
+        }
+        if (outcome.category === "failure") {
+          b.consecutiveFailures++;
+          state.globalFailureLog.push({
+            branchId: b.id,
+            turn,
+            toolName: outcome.toolName,
+            claim: outcome.claim,
+            reason: outcome.failureReason,
+          });
+          if (b.consecutiveFailures >= CULL_THRESHOLD) {
+            b.status = "culled";
+            b.inactiveReason = `culled after ${CULL_THRESHOLD} consecutive failures`;
+          }
+        } else if (outcome.category === "success") {
+          b.consecutiveFailures = 0;
+        }
+      }
+
+      if (state.doneBranchId) break;
     }
   } finally {
-    await session.prolog.dispose();
+    // Dispose every branch's Prolog session — they all started a
+    // child process and we need to clean them up regardless of how
+    // the run ended.
+    await Promise.all(
+      state.branches.map((b) =>
+        b.prolog.dispose().catch(() => {
+          /* best effort */
+        }),
+      ),
+    );
   }
 
-  // Snapshot verified artifacts onto every return path so the caller
-  // sees machine-checked partial progress even when the agent exhausts
-  // its budget or gives up. Without this, a run that produced a
-  // verified Lean snippet but failed to call `done()` looks like total
-  // failure to anyone reading the response.
-  const artifacts = [...session.verifiedArtifacts];
-  if (outcome === "done") {
+  // Aggregate every branch's verified artifacts and turns into the
+  // final response. The caller sees the entire beam, not just the
+  // winning branch — failed branches' refuted attempts are useful
+  // diagnostic data.
+  const allArtifacts = state.branches.flatMap((b) => b.verifiedArtifacts);
+  const allSteps: ReasoningStep[] = state.branches.flatMap((b) =>
+    turnsToSteps(b.turns).map((s) => ({
+      ...s,
+      explanation: `[${b.id}] ${s.explanation}`,
+    })),
+  );
+
+  if (state.doneBranchId) {
     return {
       status: "completed",
-      steps: turnsToSteps(session.turns),
-      finalAnswer: renderFinalAnswer(session),
-      verifiedArtifacts: artifacts,
+      steps: allSteps,
+      finalAnswer: renderFinalAnswer(state),
+      verifiedArtifacts: allArtifacts,
     };
   }
-  if (outcome === "gave_up") {
-    return {
-      status: "failed",
-      steps: turnsToSteps(session.turns),
-      error: session.finalAnswer ?? "[gave up]",
-      verifiedArtifacts: artifacts,
-    };
-  }
+
+  // No branch finished. Report failure with whatever the beam
+  // collectively produced so the caller can still inspect partial
+  // progress (verified artifacts from culled branches, etc.).
+  const survivingActive = state.branches.filter(
+    (b) => b.status === "active",
+  ).length;
+  const culled = state.branches.filter((b) => b.status === "culled").length;
+  const abandoned = state.branches.filter((b) => b.status === "abandoned").length;
   const artifactNote =
-    artifacts.length > 0
-      ? ` ${artifacts.length} verified artifact(s) captured — see harness.verifiedArtifacts.`
+    allArtifacts.length > 0
+      ? ` ${allArtifacts.length} verified artifact(s) across the beam — see harness.verifiedArtifacts.`
       : "";
   return {
     status: "failed",
-    steps: turnsToSteps(session.turns),
-    error: `Turn budget (${maxTurns}) exhausted without calling done() or give_up().${artifactNote}`,
-    verifiedArtifacts: artifacts,
+    steps: allSteps,
+    error: `Beam exhausted: ${state.branches.length} branches, ${survivingActive} still active, ${culled} culled, ${abandoned} abandoned. No branch called done() within ${maxTurns} turns.${artifactNote}`,
+    verifiedArtifacts: allArtifacts,
   };
 }
 
@@ -1488,35 +1531,34 @@ function buildLeanProofText(ps: ProofSession): string {
   return lines.join("\n");
 }
 
-function renderFinalAnswer(session: AgentSession): string {
+function renderFinalAnswer(state: GlobalRunState): string {
   const lines: string[] = [];
-  lines.push("Final answer (model-claimed):");
-  lines.push(session.finalAnswer ?? "(none)");
+  const winner = state.branches.find((b) => b.id === state.doneBranchId);
+  lines.push(`Final answer (from branch ${state.doneBranchId ?? "(none)"}, model-claimed):`);
+  lines.push(state.finalAnswer ?? winner?.finalAnswer ?? "(none)");
 
-  // Branch trace: makes the search visible. A reader scanning the
-  // final answer can see how many threads were explored, which
-  // dead-ended, which produced verified work.
-  if (session.branches.length > 1 || session.branches[0]?.artifactCount > 0) {
-    lines.push("");
-    lines.push(`Hypothesis branches (${session.branches.length}/${MAX_BRANCHES}):`);
-    lines.push(renderBranchHistory(session));
-  }
+  // Beam summary: every branch's status + artifact count + reason.
+  // Makes the parallel search visible.
+  lines.push("");
+  lines.push(`Beam (${state.branches.length} branches; ${state.globalFailureLog.length} global failure log entries):`);
+  lines.push(renderBranchHistory(state));
 
-  // Surface every machine-verified artifact this run produced. The
-  // user gets the actual proof code (Lean snippets / SMT-LIB) — not
-  // just the model's natural-language summary — so they can copy,
-  // re-run, and trust the verification independently.
-  // Bucket artifacts by claim alignment. A `verify_smt` UNSAT under
-  // a `(distinct sums)` encoding means the claim is REFUTED; under
-  // an `(exists collision)` encoding it means the claim is
-  // CONFIRMED. The model declares which via `expectedVerdict` — we
-  // surface the three buckets separately so a reader doesn't mistake
-  // a refuted attempt for a verified one.
-  const confirmed = session.verifiedArtifacts.filter((a) => a.claimStatus === "confirmed");
-  const refuted = session.verifiedArtifacts.filter((a) => a.claimStatus === "refuted");
-  const ambiguous = session.verifiedArtifacts.filter((a) => a.claimStatus === "ambiguous");
+  // Aggregate artifacts across the entire beam. A failed branch's
+  // partial work (verified small Sidon set, refuted attempt) is
+  // diagnostic data the caller wants to see.
+  const allArtifacts = state.branches.flatMap((b) =>
+    b.verifiedArtifacts.map((a) => ({ branchId: b.id, artifact: a })),
+  );
+  const confirmed = allArtifacts.filter((x) => x.artifact.claimStatus === "confirmed");
+  const refuted = allArtifacts.filter((x) => x.artifact.claimStatus === "refuted");
+  const ambiguous = allArtifacts.filter((x) => x.artifact.claimStatus === "ambiguous");
 
-  const renderArtifact = (a: VerifiedArtifact, idx: number, total: number) => {
+  const renderArtifact = (
+    tagged: { branchId: string; artifact: VerifiedArtifact },
+    idx: number,
+    total: number,
+  ) => {
+    const a = tagged.artifact;
     lines.push("");
     const tag =
       a.kind === "smt" && a.verdict
@@ -1524,7 +1566,7 @@ function renderFinalAnswer(session: AgentSession): string {
         : a.kind === "lean"
           ? "Lean"
           : a.kind.toUpperCase();
-    lines.push(`[${idx + 1}/${total}] ${tag} — claim: "${a.claim}"`);
+    lines.push(`[${idx + 1}/${total}] ${tag} — branch ${tagged.branchId} — claim: "${a.claim}"`);
     lines.push(a.kind === "smt" ? "```smt" : "```lean");
     lines.push(a.code.trimEnd());
     lines.push("```");
@@ -1553,7 +1595,8 @@ function renderFinalAnswer(session: AgentSession): string {
     ambiguous.forEach((a, i) => renderArtifact(a, i, ambiguous.length));
   }
 
+  const totalTurns = state.branches.reduce((acc, b) => acc + b.turns.length, 0);
   lines.push("");
-  lines.push(`(${session.turns.length} turns)`);
+  lines.push(`(${totalTurns} total turns across ${state.branches.length} branches)`);
   return lines.join("\n");
 }

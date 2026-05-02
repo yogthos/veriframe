@@ -7,13 +7,39 @@ import { describe, it, expect } from "vitest";
 import {
   leanSnippetHasImport,
   renderBranchHistory,
-  type AgentSession,
+  type BranchState,
+  type GlobalRunState,
 } from "../src/harness/agent.js";
 
-function fakeSession(branches: AgentSession["branches"]): AgentSession {
-  // Type-safe construction without spinning up Prolog; only the
-  // branches field matters for renderBranchHistory.
-  return { branches } as unknown as AgentSession;
+function fakeBranch(over: Partial<BranchState> & { id: string }): BranchState {
+  return {
+    id: over.id,
+    status: over.status ?? "active",
+    inactiveReason: over.inactiveReason,
+    problem: over.problem ?? "",
+    finalAnswer: over.finalAnswer ?? null,
+    turns: over.turns ?? [],
+    // prolog/leanProof are non-trivial to construct; the helpers we
+    // test here don't touch them, so cast through unknown.
+    prolog: (over.prolog ?? {}) as BranchState["prolog"],
+    assertedBytes: over.assertedBytes ?? 0,
+    verifyHistory: over.verifyHistory ?? [],
+    hintCooldownTurns: over.hintCooldownTurns ?? 0,
+    leanProof: over.leanProof ?? null,
+    verifiedArtifacts: over.verifiedArtifacts ?? [],
+    consecutiveFailures: over.consecutiveFailures ?? 0,
+    messages: over.messages ?? [],
+  };
+}
+
+function fakeState(branches: BranchState[]): GlobalRunState {
+  return {
+    problem: "",
+    branches,
+    globalFailureLog: [],
+    doneBranchId: null,
+    finalAnswer: null,
+  };
 }
 
 describe("leanSnippetHasImport", () => {
@@ -48,60 +74,52 @@ describe("leanSnippetHasImport", () => {
 });
 
 describe("renderBranchHistory", () => {
-  it("renders an active branch with no artifacts", () => {
+  it("renders an active branch with no turns yet", () => {
     const out = renderBranchHistory(
-      fakeSession([
-        {
-          id: "B1",
-          hypothesis: "Behrend digit-sum lift",
-          status: "active",
-          startedAtTurn: 1,
-          artifactCount: 0,
-        },
-      ]),
+      fakeState([fakeBranch({ id: "B1" })]),
     );
     expect(out).toContain("B1");
     expect(out).toContain("ACTIVE");
-    expect(out).toContain("Behrend digit-sum lift");
-    expect(out).toContain("turn 1+");
+    expect(out).toContain("no turns yet");
   });
 
-  it("renders an abandoned branch with reason and turn range", () => {
+  it("renders a culled branch with reason and artifact count", () => {
     const out = renderBranchHistory(
-      fakeSession([
-        {
+      fakeState([
+        fakeBranch({
           id: "B1",
-          hypothesis: "Behrend digit-sum lift",
-          status: "abandoned",
-          startedAtTurn: 1,
-          endedAtTurn: 5,
-          abandonReason: "off-by-one in digit lift; size 36 set has a 3-AP",
-          artifactCount: 1,
-        },
-        {
-          id: "B2",
-          hypothesis: "Cantor middle-thirds",
-          status: "active",
-          startedAtTurn: 6,
-          artifactCount: 0,
-        },
+          status: "culled",
+          inactiveReason: "culled after 3 consecutive failures",
+          turns: [
+            { turn: 1, toolCall: { name: "verify_smt", args: {} }, result: "" },
+            { turn: 2, toolCall: { name: "verify_smt", args: {} }, result: "" },
+            { turn: 3, toolCall: { name: "verify_smt", args: {} }, result: "" },
+          ],
+          verifiedArtifacts: [
+            {
+              kind: "smt",
+              claim: "x",
+              code: "y",
+              verdict: "unsat",
+              claimStatus: "refuted",
+            },
+          ],
+        }),
       ]),
     );
     expect(out).toContain("B1");
-    expect(out).toContain("ABANDONED");
-    expect(out).toContain("turns 1-5");
+    expect(out).toContain("CULLED");
+    expect(out).toContain("3 turn(s)");
     expect(out).toContain("1 artifact(s)");
-    expect(out).toContain("off-by-one in digit lift");
-    expect(out).toContain("B2");
-    expect(out).toContain("ACTIVE");
+    expect(out).toContain("culled after 3 consecutive failures");
   });
 
   it("renders multiple branches preserving order", () => {
     const out = renderBranchHistory(
-      fakeSession([
-        { id: "B1", hypothesis: "first", status: "abandoned", startedAtTurn: 1, endedAtTurn: 3, abandonReason: "wrong", artifactCount: 0 },
-        { id: "B2", hypothesis: "second", status: "abandoned", startedAtTurn: 4, endedAtTurn: 7, abandonReason: "also wrong", artifactCount: 0 },
-        { id: "B3", hypothesis: "third", status: "active", startedAtTurn: 8, artifactCount: 0 },
+      fakeState([
+        fakeBranch({ id: "B1", status: "culled", inactiveReason: "x" }),
+        fakeBranch({ id: "B2", status: "abandoned", inactiveReason: "y" }),
+        fakeBranch({ id: "B3", status: "done" }),
       ]),
     );
     const lines = out.split("\n");
