@@ -58,7 +58,7 @@ export function loadConfig(overrides?: Partial<ServerConfig>): ServerConfig {
     provider === "glm"
       ? "glm-5.1"
       : provider === "deepseek"
-        ? "deepseek-chat"
+        ? "deepseek-reasoner"
         : "local-model";
 
   // Pick the API key matching the provider (env-var-by-provider).

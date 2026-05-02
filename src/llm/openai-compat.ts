@@ -34,6 +34,24 @@ interface ChatChoice {
   finish_reason?: string;
 }
 
+/**
+ * Strip `<think>…</think>` blocks from content. Applied to prior
+ * assistant messages before sending them back to the API so we
+ * don't accumulate reasoning across turns. Both DeepSeek and GLM's
+ * docs are explicit that `reasoning_content` should NOT be sent
+ * back on subsequent turns — the model regenerates fresh thinking
+ * each turn. Local Qwen's chat template handles this internally;
+ * the OpenAI-compat HTTP path has to do it ourselves.
+ *
+ * Tolerant to nesting and to unmatched tags (drops opens with no
+ * close). Matches across line breaks.
+ */
+export function stripThinkBlocks(content: string): string {
+  // Greedy-but-non-overlapping replace. `[\s\S]` matches across
+  // newlines (vs `.` which doesn't by default).
+  return content.replace(/<think>[\s\S]*?<\/think>/g, "").trim();
+}
+
 interface ChatResponse {
   choices?: ChatChoice[];
   usage?: {
@@ -167,9 +185,17 @@ export function createOpenAICompatProvider(
     ): Promise<LLMResponse> {
       const body: Record<string, unknown> = {
         model: config.model,
+        // Strip `<think>` blocks from PRIOR assistant turns — both
+        // DeepSeek and GLM expect reasoning_content to NOT be re-fed
+        // on subsequent turns, and accumulating it across turns
+        // burns context for no benefit. We leave the latest user
+        // message and any system prompts untouched.
         messages: messages.map((m) => ({
           role: m.role,
-          content: m.content,
+          content:
+            m.role === "assistant" && m.content
+              ? stripThinkBlocks(m.content)
+              : m.content,
         })),
         max_tokens: config.maxTokens ?? 4096,
         temperature: config.temperature ?? 0.7,
