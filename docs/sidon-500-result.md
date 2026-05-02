@@ -225,13 +225,175 @@ The harness terminated with `Beam exhausted` — the result is in
    ("if you have a verified result at or near the published bound,
    call done") or an emergency-finalisation hook on the harness side.
 
-## Reproduction
+## Reproduction (Round 1)
 
-The full run trace is at `/tmp/agent-open-sidon-set-500.json` from
-the run on commit
+The Round-1 trace is from the run on commit
 [`fe8e229`](https://github.com/yogthos/veriframe/commit/fe8e229)
 (the commit immediately preceding the code-review fixes). The
 verified artifacts and per-branch turn logs are inside the
 `harness.verifiedArtifacts` and `harness.trace` fields of that
 JSON. The size-20 set's full SMT-LIB (210-sum `(distinct ...)`)
 re-verifies cleanly under any modern Z3 (≥ 4.13).
+
+---
+
+# Round 2 — 2026-05-02 (later)
+
+After Round 1's analysis, several harness changes were made and the
+problem was re-run. This section records the second outcome.
+
+## Summary
+
+Run on commit
+[`117356f`](https://github.com/yogthos/veriframe/commit/117356f) with
+the following safeguards in place:
+
+- **`review` tool** — mandatory cross-check before `done` when any
+  confirmed artifact exists in the branch. Runs an INDEPENDENT
+  encoding (different style, different polarity, ideally a
+  different tool) and compares verdicts.
+- **`MILESTONE_PROMPT` injection** — fired automatically the first
+  time a branch lands a confirmed artifact. Tells the model "you
+  have a verified result; stop exploring; default to `review` then
+  `done`."
+- **Cull-protection window** — branches with a confirmed artifact
+  in the recent 5 turns are protected from the 3-consecutive-
+  failure cull rule.
+- **Anti-existential warning + JSON auto-repair** — system-prompt
+  guidance against asking Z3 to find combinatorial witnesses, plus
+  a control-character repair pass on tool-call JSON.
+
+Outcome: **the harness completed successfully for the first time on
+this problem.** Branch B3 produced a Mian–Chowla 20 confirmation,
+received the milestone prompt, ran `review` with an independent
+encoding, got REVIEW PASSED, and called `done`. Wall-clock 24 min,
+36 turns. Final answer:
+
+$$
+S = \{1, 2, 4, 8, 13, 21, 31, 45, 66, 81, 97, 123, 148, 182, 204, 252, 290, 361, 401, 475\}.
+$$
+
+## Cross-check (the new soundness guarantee)
+
+The result is verified by **two independent SMT-LIB encodings that
+agree**:
+
+1. **Existence-of-collision** (the `review` cross-check): assert
+   $\exists\,a, b, c, d \in S$ with $a < b$, $c < d$, $(a, b) \neq
+   (c, d)$, $a + b = c + d$. Z3 returned **UNSAT** — no such
+   collision exists, so $S$ is Sidon.
+
+2. **Distinct-sums** (the original verification): assert
+   `(distinct (+ a_i a_j) ...)` enumerating all $\binom{20+1}{2} =
+   210$ pair sums. Z3 returned **SAT** — all sums are distinct
+   under the fixed assignment, so $S$ is Sidon.
+
+The encodings are independent in the sense that demands by the
+problem ("are pair sums distinct?") and the encoding's assertion
+("does a collision exist?" vs. "are all sums distinct?") have
+opposite polarities. A bug in one encoding (e.g., the size-26
+`forall`-with-narrow-chain bug from Round 1) would not also appear
+in the other. Both agreeing is strong evidence the set is genuinely
+Sidon.
+
+## Beam summary
+
+| Branch | Turns | Status | Notes                                                                                  |
+|--------|-------|--------|----------------------------------------------------------------------------------------|
+| B1     | 8     | culled | 3 consecutive failures, no recent confirmed work                                       |
+| B2     | 4     | culled | same                                                                                   |
+| B3     | 15    | **DONE** | Mian-Chowla 20 → milestone prompt → `review` → `done`. 13 verified artifacts.         |
+| B4     | 4     | culled | same                                                                                   |
+| B5     | 5     | culled | same                                                                                   |
+
+Of B3's 13 artifacts: the shipped Mian–Chowla 20, the cross-check
+artifact, plus 11 refuted "can we add an element X?" attempts. The
+refuted attempts demonstrate the harness honestly rejecting bad
+extensions (e.g., $S \cup \{490\}$ has a collision; $S \cup \{3\}$
+has a collision; etc.) — the verifier is correctly catching the
+model's wrong guesses.
+
+## A new false-positive surfaced (and the harness fix)
+
+In B3's trace there is a fourth-from-last "confirmed" artifact:
+
+```
+claim: "There exists a Sidon set of size 23 in {1, …, 500}."
+verdict: sat
+witness model: a1 = 0, a2 = 0, a23 = 0
+smtlib (excerpt):
+  (declare-const a1 Int) (declare-const a2 Int) ... (declare-const a23 Int)
+  (assert (and (>= a1 1) (<= a1 500) ... (>= a23 1) (<= a23 500)))
+  (assert (distinct a1 a2 ... a23))
+```
+
+The model used **literal `...` ellipsis as shorthand** for the
+remaining 21 declarations and 21 assertions. That's not a valid
+SMT-LIB construct. Z3's actual response on this input:
+
+```
+(error "line 1 column 47: invalid command, '(' expected")
+(error "line 2 column 57: unknown constant ...")
+(error "line 3 column 24: unknown constant ...")
+(error "line 5 column 28: unknown constant a3")
+sat
+( (define-fun a2 () Int 0) (define-fun a1 () Int 0) ... )
+```
+
+Z3 emitted **four parse errors**, then output `sat` because the
+constraint set that survived parsing was effectively empty —
+trivially satisfiable with default zero values. The harness's
+`runSmt` was looking for the last `sat`/`unsat`/`unknown` line and
+ignoring the `(error ...)` lines preceding it, so the artifact got
+recorded as `claimStatus: confirmed`.
+
+The shipped answer was unaffected (B3 cross-checked and shipped
+Mian–Chowla 20, not this bogus size-23 claim), but the false
+positive lived on in the trace and would have polluted any
+future-work consumer of the JSON.
+
+**Fix landed in commit
+[`117356f`](https://github.com/yogthos/veriframe/commit/117356f)
+and tightened in the follow-up commit**: `runSmt` now refuses to
+report a verdict whenever Z3 emitted any `(error ...)` line in
+stdout, except for the benign `model is not available` message
+that follows `(get-model)` after UNSAT. New tests in
+`tests/smt.test.ts` cover the ellipsis-shorthand pattern and the
+undeclared-symbol pattern.
+
+## Lessons (updated)
+
+1. **Cross-checking works.** The `review` tool, with an enforced
+   independent encoding before `done`, is the correct shape for
+   defending against encoding bugs. Two SMT-LIB encodings agreeing
+   is strong evidence; they don't both miss the same edge case
+   unless the model's reasoning is consistently wrong about the
+   property.
+
+2. **Z3 error lines must be respected.** Earlier the harness only
+   parsed verdicts and ignored errors. Z3 keeps running after parse
+   errors and will SAT whatever remained. Now the harness refuses
+   to interpret the verdict whenever errors were emitted.
+
+3. **The model's encoding-correctness gaps will keep surfacing.**
+   Round 1 had `forall`-quantified ordering chains. Round 2 had
+   ellipsis-shorthand SMT-LIB. Future rounds will surface other
+   variants. The cross-check + error-line strictness combination
+   defends against most; per-claim cross-checking with a
+   harness-supplied template would defend against more (TODO).
+
+4. **The milestone prompt was load-bearing.** Without it, the model
+   spent the prior run pushing for size 21+ instead of shipping
+   the verified size 20. Inserting a user-message-level
+   intervention at the moment of first confirmation flipped the
+   behaviour to the correct one.
+
+## Reproduction (Round 2)
+
+Run on commit
+[`117356f`](https://github.com/yogthos/veriframe/commit/117356f),
+problem `open-sidon-set-500`, max 60 turns. The trace is at
+`/tmp/agent-open-sidon-set-500.json` after the Round 2 run; the
+shipped answer can be re-verified independently with the
+`(distinct sums)` encoding (210 pair sums) — Z3 returns `sat`
+under any modern build (≥ 4.13).

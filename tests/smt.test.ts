@@ -114,15 +114,34 @@ describe("z3 SMT backend", () => {
     expect(parseModel("(error \"line 1\")")).toEqual({});
   });
 
-  it("reports an error verdict when input is malformed", () => {
-    const r = runSmt(`(this is not smt-lib)`);
-    // Z3 will print errors but eventually emit a verdict for whatever
-    // it could parse, OR our wrapper sees no verdict at all and errors.
-    // Either path counts as a non-"ok" outcome here.
-    if (r.status === "ok") {
-      expect(["sat", "unsat", "unknown"]).toContain(r.verdict);
-    } else {
-      expect(r.status).toBe("error");
+  it("rejects input that produced Z3 parse errors (catches the n=500 ellipsis false positive)", () => {
+    // The model wrote ellipsis-shorthand SMT-LIB. Z3 parsed only the
+    // declarations before the `...`, errored on the rest, and then
+    // emitted `sat` for the empty constraint set that survived. The
+    // harness used to record this as a confirmed verdict; now it
+    // refuses to interpret the verdict whenever Z3 emitted errors.
+    const r = runSmt(`
+      (declare-const a1 Int) (declare-const a2 Int) ... (declare-const a23 Int)
+      (assert (and (>= a1 1) (<= a1 500) ... (>= a23 1) (<= a23 500)))
+      (assert (distinct a1 a2 ... a23))
+      (check-sat)
+    `);
+    expect(r.status).toBe("error");
+    if (r.status === "error") {
+      expect(r.error).toMatch(/parse|type|error/i);
     }
+  });
+
+  it("treats any (error ...) line in stdout as a hard error", () => {
+    // Build a snippet that references an undeclared symbol — Z3 will
+    // emit `(error "...")` and then SAT the rest. We must surface the
+    // error, not the misleading SAT.
+    const r = runSmt(`
+      (assert (> z 0))
+      (declare-const x Int)
+      (assert (= x 1))
+      (check-sat)
+    `);
+    expect(r.status).toBe("error");
   });
 });

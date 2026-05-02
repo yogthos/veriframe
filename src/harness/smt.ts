@@ -90,6 +90,59 @@ export function runSmt(smtlib: string): SmtResult {
   const stderr = proc.stderr ?? "";
 
   const lines = raw.split("\n").map((l) => l.trim()).filter(Boolean);
+
+  // Refuse to interpret a verdict if Z3 emitted any parse/type
+  // errors. Z3 keeps running after individual `(error ...)` lines
+  // and will gladly print `sat` for the empty constraint set that
+  // remained — which is how the n=500 Sidon "size 23" false positive
+  // happened: the model wrote `... (declare-const a23 Int)` with
+  // literal ellipsis shorthand, Z3 emitted 4 parse errors, then
+  // SAT'd a constraint set that was effectively empty. The harness
+  // recorded the artifact as "confirmed".
+  //
+  // Detect Z3 errors in two places:
+  //   - stdout: `(error "...")` S-expressions, or lines starting
+  //     with `error:` / `unsupported:` (some Z3 builds use these).
+  //   - stderr: any non-trivial content (Z3 normally writes nothing
+  //     to stderr on success).
+  // Whitelist benign Z3 errors that don't invalidate the verdict.
+  // The most common: `(error "...model is not available...")` after
+  // `(get-model)` follows an UNSAT verdict. The verdict itself was
+  // emitted cleanly; only the model fetch failed.
+  const isBenignError = (l: string): boolean =>
+    /model is not available/i.test(l);
+  const z3ErrorLines = lines.filter(
+    (l) =>
+      (l.startsWith("(error ") ||
+        /^error\b/i.test(l) ||
+        /^unsupported\b/i.test(l) ||
+        l.startsWith('(error "')) &&
+      !isBenignError(l),
+  );
+  const stderrTrim = stderr.trim();
+  if (z3ErrorLines.length > 0 || stderrTrim.length > 0) {
+    const summary: string[] = [];
+    if (z3ErrorLines.length > 0) {
+      summary.push(
+        `Z3 emitted ${z3ErrorLines.length} parse/type error(s):`,
+      );
+      for (const e of z3ErrorLines.slice(0, 5)) summary.push(`  ${e}`);
+      if (z3ErrorLines.length > 5) {
+        summary.push(`  (+${z3ErrorLines.length - 5} more)`);
+      }
+    }
+    if (stderrTrim.length > 0) {
+      summary.push(`stderr: ${stderrTrim.slice(0, 500)}`);
+    }
+    summary.push(
+      "Common cause: literal '...' ellipsis shorthand in SMT-LIB. Spell out every `(declare-const ...)` and every `(+ a_i a_j)` explicitly — Z3 has no abbreviation syntax. The harness refuses to report a verdict when Z3 emitted errors, because the verdict applies to the SUBSET of your formula that parsed, not the formula you wrote.",
+    );
+    return {
+      status: "error",
+      error: summary.join("\n"),
+    };
+  }
+
   // The verdict line is the last `sat | unsat | unknown` we emit.
   const verdictLine = [...lines]
     .reverse()
@@ -97,7 +150,7 @@ export function runSmt(smtlib: string): SmtResult {
   if (!verdictLine) {
     return {
       status: "error",
-      error: `z3 produced no verdict. Output was:\n${raw.trim()}${stderr.trim() ? `\nstderr: ${stderr.trim()}` : ""}`,
+      error: `z3 produced no verdict. Output was:\n${raw.trim()}${stderrTrim ? `\nstderr: ${stderrTrim}` : ""}`,
     };
   }
   const verdict = verdictLine as SmtVerdict;
