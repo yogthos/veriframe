@@ -1,18 +1,53 @@
 # reasoning-harness
 
-OpenAI-compatible HTTP server that wraps a local GGUF model in a Z3-verified reasoning loop. The model translates natural-language problems to SMT-LIB; Z3 does the search and verifies the answer with a machine-checkable certificate (a model + uniqueness proof, or a minimal unsat core).
+OpenAI-compatible HTTP server that wraps an LLM in a **claim-first verification loop** backed by three reasoning engines: **SWI-Prolog** (with CLP(FD)), **Z3 SMT**, and **Lean 4 + Mathlib**. The model commits to a one-sentence claim, the harness checks it, the model accumulates verified facts. The architecture follows the literature's settled findings on LLM-driven theorem proving and constraint solving (LeanDojo, Magnushammer, ReProver, ProB+Z3, Logic-LM).
 
-## Why this exists
+Three classes of problem are first-class:
 
-Demonstrated on a 3-disk Tower of Hanoi puzzle modified to forbid disk D2 from peg B — solvable in 11 moves but with a tempting impossibility trap (see [docs/benchmark.md](docs/benchmark.md), problem 18):
+- **Relational / finite-domain CSPs** (knights & knaves, zebra, sudoku) — SWI-Prolog with `library(clpfd)`.
+- **Numerical / theory-rich constraints** (linear/nonlinear arithmetic, bitvectors, optimisation) — Z3 4.15 via `execSync`.
+- **Mathematical theorems** (induction, ε-δ, real analysis, group theory, number theory) — Lean 4 + Mathlib via a long-lived `leanprover-community/repl` subprocess. Proofs run **stepwise**, the way a human writes one in tactic mode.
 
-- **Direct Qwen 3.6 35B** confidently emits a 10-move "solution" with a self-described "verification" step. The sequence's move 6 is illegal (it moves D2 while D1 sits on top), but the model's verification only checks which pegs D2 visited, missing the move-legality violation. *Wrong answer (sequence illegal), no signal of trouble.*
-- **The step-based harness** forces the model to commit to encoded constraints step by step. On the same prompt, the harness's prose argues the puzzle is *impossible*: "D3 must reach C, which requires C empty and D1+D2 elsewhere; D2 can't be on B; ergo D2 blocks either D3's source or destination." This argument silently assumes D3 moves A→C directly — but D3 can route through B. *Wrong answer (claimed impossible).*
-- **The REPL-style agent with the `setup_planning` tool** ([`mode: "agent"`](#agent-mode-repl-style) in the API) handles state-transition planning by factoring the work between the model and the harness: the model provides the domain content (state variables, action specs, legality predicates, goal); the harness handles the universal planning machinery (per-timestep variable replication, transition disjunctions, frame axioms, K-iteration). On the same prompt the agent iterates K = 9 → 10 → 11, finds SAT at K=11, and the harness extracts a Z3-verified 11-move plan that confirms unique on negation. *Right answer with a machine-checkable certificate.*
+## Tool surface
 
-The factoring matters: prompt-only agents either skip the transition machinery (vacuous one-step horizons) or write fragile encodings Z3 returns `unknown` on. Pure tool injection without model content would just be a hard-coded planner. Splitting the work — universal structure in tools, domain interpretation in the model — is what lets the system handle a puzzle class the model fundamentally can't autoformalize on its own.
+The model picks tools per claim:
 
-For routine puzzles where direct already gets it right, the harness's value is the machine-checkable certificate it adds (Z3 model + uniqueness proof, or a minimal unsat core) — useful when you need to trust the answer downstream.
+```
+add_rule({name?, code})        — Prolog facts/rules; named = retractable, anonymous = permanent
+retract_rule({name})           — undo a tentative named rule
+commit({name})                 — lock a named rule in (no longer retractable)
+verify({claim, check})         — Prolog goal that succeeds iff the claim holds
+verify_smt({claim, smtlib})    — Z3 sat/unsat check
+verify_lean({claim, lean})     — one-shot Lean snippet against Mathlib
+lean_search({query, top_k?})   — retrieval over Mathlib's ~235k declarations
+proof_start({claim, theorem})  — open a stateful Lean proof session
+proof_step({tactic, claim?})   — apply ONE tactic; returns new goal state
+proof_state()                  — inspect current proof
+proof_undo({steps?})           — roll back N tactics (sub-second; REPL retains state)
+proof_close()                  — verify all goals discharged (optional — auto-finalised on close)
+proof_abandon()                — drop the active proof session
+assume({name, fact})           — open a hypothetical scope (for "if A then B" proofs)
+discharge({name})              — close the scope
+done({answer})                 — submit the final answer (with the verified Lean proof appended)
+give_up({reason})              — bail
+```
+
+A **stuck-detection heuristic** injects a "rethink the step / retract / decompose" hint after 3 consecutive failed verifies; auto-suggests Mathlib lemmas drawn from the *failed proof goal*, not the natural-language claim (per the ReProver / Magnushammer signal).
+
+## Validated benchmarks
+
+Six-for-six on math theorems with **GLM-5.1**:
+
+| problem | turns | time | tools used |
+|---|---|---|---|
+| AM-GM (∀ x y ≥ 0, 4xy ≤ (x+y)²) | 3 | 42s | 1× verify_lean (`nlinarith [sq_nonneg (x-y)]`) |
+| sum of evens is even | 6 | 55s | 1× verify_lean (`obtain`/`use`/`linarith`) |
+| Euclid (∞ many primes) | 5 | 43s | 2× lean_search + verify_lean |
+| 2^n > n by induction | 7 | 84s | proof_start + 5× proof_step |
+| √2 is irrational | 9 | 174s | 2× lean_search + 3× verify_lean |
+| Gauss `2·Σi = n(n+1)` | 17 | 94s | 8× lean_search + proof_start + 5× proof_step |
+
+The Gauss run especially illustrates the literature's premise-selection pattern: the model spent half its turns on `lean_search` narrowing in on `Finset.range_succ`, then proved the theorem in 4 tactics.
 
 ## Install
 
@@ -20,88 +55,72 @@ For routine puzzles where direct already gets it right, the harness's value is t
 npm install
 ```
 
-Drop a GGUF model into `models/`. The default config expects `models/Qwen3.6-35B-A3B-Q8_0.gguf`; any node-llama-cpp-compatible GGUF will work.
-
-## Run the server
+### Lean toolchain (required for theorem proving)
 
 ```bash
-HARNESS_MODEL_PATH=models/Qwen3.6-35B-A3B-Q8_0.gguf \
-HARNESS_MAX_TOKENS=49152 \
-HARNESS_PORT=3001 \
-npm start
+# 1. Install elan (Lean's version manager)
+curl https://raw.githubusercontent.com/leanprover/elan/master/elan-init.sh -sSf | sh
+source $HOME/.elan/env
+
+# 2. Fetch + build Mathlib in the workspace (~10GB, one-time)
+cd tools/lean-workspace && lake update && cd ../..
+
+# 3. Fetch + build leanprover-community/repl (one-time, ~30s)
+./tools/setup-lean-repl.sh
 ```
 
-Or use the included `./start.sh` which sets reasonable defaults. The server preloads the model at startup; first request after `Listening on http://0.0.0.0:3001` will run instantly.
+### Z3
+
+Already on most macOS dev machines. If not:
+
+```bash
+brew install z3
+```
+
+### LLM provider
+
+Pick one:
+
+- **Local (Qwen via node-llama-cpp)** — drop a GGUF into `models/`. Default config expects `models/Qwen3.6-35B-A3B-Q8_0.gguf`. Run with `./start.sh`.
+- **GLM-5.1 (Zhipu BigModel)** — export `ZHIPU_API_KEY`, then `./start-glm.sh`. GLM-5.1 is a thinking model; the provider merges `reasoning_content` + `content` into `<think>...</think>` framing so the agent's tool-call fence parser sees the fence wherever the model emits it.
+- **DeepSeek** — export `DEEPSEEK_API_KEY`, then `./start-deepseek.sh`. Default model is `deepseek-chat`; set `HARNESS_MODEL=deepseek-reasoner` for the thinking variant (same `reasoning_content` handling as GLM).
+
+## Run
+
+```bash
+./start-glm.sh   # GLM-5.1, default port 3001
+# or
+./start.sh       # local Qwen
+```
+
+The server preloads the LLM (local) or validates the API key (GLM), then exposes the standard OpenAI shape at `/v1/chat/completions`. Lean's REPL is spawned lazily on the first proof tool call (~10-30s warm-up for `import Mathlib`); subsequent proof steps are sub-second.
 
 ## Make a request
-
-The server exposes the standard OpenAI shape at `/v1/chat/completions`:
 
 ```bash
 curl -sS -X POST http://localhost:3001/v1/chat/completions \
   -H 'Content-Type: application/json' \
   -d '{
-    "model": "local-model",
-    "messages": [{"role": "user", "content": "Sally has 3 brothers. Each brother has 2 sisters. How many sisters does Sally have?"}]
+    "model": "glm-5.1",
+    "messages": [{"role": "user", "content": "Prove that 2^n > n for all natural numbers n."}],
+    "mode": "agent"
   }' | jq
 ```
 
-The response body has the usual `choices[].message.content` (the verified prose answer), plus a non-standard `harness` field with the Z3 trace:
+Or use the per-problem driver against the registry:
 
-```json
-{
-  "id": "chatcmpl-…",
-  "choices": [{"message": {"role": "assistant", "content": "Step 1: …\nZ3-verified assignment (UNIQUE …):\n  sally_sisters = 1"}, "finish_reason": "stop"}],
-  "harness": {
-    "status": "completed",
-    "steps": 2,
-    "trace": [{"stepNumber": 1, "assertions": ["(declare-const …)", …], "status": "accepted"}, …],
-    "verification": {"model": {"sally_sisters": "1", …}, "unique": true}
-  }
-}
+```bash
+npx tsx scripts/agent-only.ts math-induction-pow2-gt-n
+npx tsx scripts/agent-only.ts math-gauss-sum
+npx tsx scripts/agent-only.ts knights-3
+npx tsx scripts/agent-only.ts zebra-5x5
 ```
 
-`status` is `"completed"` (SAT, with model + uniqueness flag), `"unsat"` (constraints mutually inconsistent, with `unsatCore`), or `"failed"` (parse / retry exhaustion).
-
-### How the harness loop works
-
-The model issues one tool call per turn against a persistent Z3 solver — the way a programmer iterates against a REPL. Tools available:
-
-- `add_smt({code})` — append SMT-LIB to the solver. Anything goes: declarations, assertions, multi-statement chunks. Use `(assert (! ... :named foo))` to make assertions retractable later.
-- `view_smt()` — show all chunks added so far.
-- `retract({name})` — remove the chunk containing the named assertion; solver is rebuilt from the remaining chunks.
-- `check_sat()` — runs `(check-sat)`. Returns `sat` plus the model, `unsat` plus the unsat core, or `unknown`.
-- `eval({expr})` — evaluate a variable in the current model (after a sat check).
-- `setup_planning({spec})` — generate the boilerplate for a bounded state-transition planning problem (per-timestep variables, transition disjunctions with frame axioms, invariants, initial/goal). The agent provides a structured spec; the harness lays down the universal planning machinery so the model only writes the legality predicates per action. Re-calling with a higher horizon auto-retracts the prior planning chunk, so the standard UNSAT-on-K iteration is just `setup_planning K=N → check_sat → setup_planning K=N+1`.
-- `done({answer})` — finalize. The harness then re-runs `(check-sat)` and a uniqueness probe (asserting the negation of the model in a temporary frame); the verification verdict is appended to the response.
-- `give_up({reason})` — stop with a stated reason.
-
-The conversation is maintained as proper multi-turn messages so the local LLM provider's KV cache extends across turns. There's no imposed workflow — the model uses the tools the way it would naturally use a REPL. See [docs/benchmark.md](docs/benchmark.md) for the case studies, especially problem 18 (modified Tower of Hanoi) where this approach is the only one that produces a correct + Z3-verified answer.
-
-#### `setup_planning` spec shape
-
-```json
-{
-  "horizon": 11,
-  "state_vars": [
-    {"name": "d1", "sort": "Int", "domain": [0, 2]},
-    {"name": "d2", "sort": "Int", "domain": [0, 2]}
-  ],
-  "initial": {"d1": 0, "d2": 0},
-  "goal":    {"d1": 2, "d2": 2},
-  "invariants": ["(not (= d2_t 1))"],
-  "actions": [
-    {"name": "move_d1", "changes": ["d1"], "predicate": "(not (= d1_t d1_tp1))"},
-    {"name": "move_d2", "changes": ["d2"], "predicate": "(and (not (= d2_t d2_tp1)) (not (= d1_t d2_t)) (not (= d1_t d2_tp1)))"}
-  ]
-}
-```
-
-In each action `predicate` and in `invariants`, reference state variables with the suffix `_t` (current state) and `_tp1` (next state). The harness substitutes the concrete timestep numbers and emits frame axioms `(= var_t var_tp1)` for each state var NOT in the action's `changes` list.
+The response body has `choices[].message.content` (the model's natural-language answer + the verified Lean proof) and a non-standard `harness` field with the per-step trace.
 
 ### Bypass the harness
 
-Send `"raw": true` in the body to call the model directly without the Z3 loop:
+Send `"raw": true` to call the model directly:
 
 ```bash
 curl -sS -X POST http://localhost:3001/v1/chat/completions \
@@ -109,55 +128,33 @@ curl -sS -X POST http://localhost:3001/v1/chat/completions \
   -d '{"messages": [{"role": "user", "content": "..."}], "raw": true}'
 ```
 
-Useful for A/B comparison.
-
-### Other endpoints
-
-```
-GET  /health           → {"status": "ok"}
-GET  /v1/models        → OpenAI-format model list
-```
-
-## Run the benchmark suite
-
-`scripts/compare.ts` posts a chosen problem twice — once raw, once harnessed — and prints both outputs side by side.
-
-```bash
-# pick from the problems registered in scripts/problems.ts
-npx tsx scripts/compare.ts sudoku-hard
-npx tsx scripts/compare.ts zebra-5x5
-npx tsx scripts/compare.ts car-wash-decision
-```
-
-Results land in `/tmp/bench-<id>.log` (full transcript) and `/tmp/bench-<id>.json` (parsed result + harness trace). Full per-problem write-up in [docs/benchmark.md](docs/benchmark.md).
-
 ## Configuration
 
-All settings via env vars (with sensible defaults):
-
 | Variable | Default | Notes |
-| --- | --- | --- |
-| `HARNESS_MODEL_PATH` | — | Path to the GGUF file. Required. |
-| `HARNESS_PORT` | `3000` | HTTP port. |
-| `HARNESS_HOST` | `0.0.0.0` | Bind address. |
-| `HARNESS_MAX_TOKENS` | `4096` | Max output tokens per LLM call. **Bump to 24576+ for hard puzzles** (Sudoku, Zebra) — Qwen's `<think>` block can be long. |
-| `HARNESS_CONTEXT_WINDOW` | `131072` | Context size passed to llama.cpp. |
-| `HARNESS_TEMPERATURE` | `0.7` | Sampling temperature. |
-| `HARNESS_PRESERVE_THINKING` | `true` | Keep prior `<think>` blocks across turns (Qwen 3.x). |
-| `HARNESS_GPU_LAYERS` | auto | Offloaded layers; `-1` = all, `0` = CPU only. |
+|---|---|---|
+| `HARNESS_PROVIDER` | auto-detect | `local` / `glm` / `deepseek`. Auto-picks `glm` if `ZHIPU_API_KEY` is set, else `deepseek` if `DEEPSEEK_API_KEY` is set, else `local`. |
+| `HARNESS_MODEL_PATH` | — | GGUF path (local provider only) |
+| `HARNESS_MODEL` | per-provider default | Model name for the wire payload (`local-model` / `glm-5.1` / `deepseek-chat`) |
+| `ZHIPU_API_KEY` | — | Required when `HARNESS_PROVIDER=glm` |
+| `DEEPSEEK_API_KEY` | — | Required when `HARNESS_PROVIDER=deepseek` |
+| `HARNESS_PORT` | `3000` | HTTP port |
+| `HARNESS_MAX_TOKENS` | `4096` (`16384` for GLM) | Per-LLM-call output cap |
+| `HARNESS_TIMEOUT_MS` | `300000` | Per-LLM-call wall clock |
+| `HARNESS_LEAN_WORKSPACE` | `tools/lean-workspace` | Override the Lean workspace path |
+| `HARNESS_LEAN_REPL_BIN` | `tools/lean-repl/.lake/build/bin/repl` | Override the Lean REPL binary path |
+| `HARNESS_LEAN_TIMEOUT_MS` | `120000` | Per-Lean-call timeout (fallback for `lake env lean` path) |
 
-Harness-loop knobs (set per-request via JSON body):
+Per-request fields (in the JSON body):
 
 | Field | Default | Notes |
-| --- | --- | --- |
-| `max_turns` | `40` | Hard cap on tool-call turns the agent gets before the run is failed as "exhausted". |
-| `raw` | `false` | Bypass the harness; call the model directly. |
+|---|---|---|
+| `mode` | `agent` | `agent` runs the verification loop; `raw: true` bypasses |
+| `max_turns` | `80` | Hard cap on tool-call turns before the run is failed |
 
 ## Tests
 
 ```bash
-npm test           # vitest watch mode
-npm run test:run   # one-shot
+npm run test:run    # 69 tests across prolog / smt / lean / lean-search / lean-proof / agent helpers
 npm run typecheck
 ```
 
@@ -165,25 +162,43 @@ npm run typecheck
 
 ```
 src/
-  bin/server.ts          Entry: preload model + start HTTP server
-  server.ts              OpenAI-compatible HTTP routes
-  config.ts              env-var → ServerConfig
+  bin/server.ts            Entry — preload + HTTP listen
+  server.ts                OpenAI-compatible routes
+  config.ts                env → ServerConfig
   harness/
-    agent.ts             REPL-style tool-call loop, verification, persistent solver
-    agent-planning.ts    setup_planning skeleton generator
-    solver.ts            Z3 incremental wrapper
+    agent.ts               REPL-style tool-call loop + verification
+    prolog.ts              SWI-Prolog wrapper (in-process WASM via prolog-wasm-full)
+    smt.ts                 Z3 wrapper (execSync to system binary)
+    lean.ts                One-shot Lean wrapper (lake env lean --json)
+    lean-search.ts         Mathlib premise-retrieval index (keyword)
+    lean-proof.ts          Stateful Lean proof sessions
+    lean-repl.ts           Long-lived leanprover-community/repl subprocess
   llm/
-    local.ts             node-llama-cpp provider with KV-cache reuse
-    types.ts             ChatMessage, LLMResponse, etc.
-    tool-calls.ts        OpenAI tools ↔ llama.cpp functions bridge
+    local.ts               node-llama-cpp provider (Qwen / Mistral / Llama family)
+    glm.ts                 GLM (Zhipu BigModel) thin wrapper
+    deepseek.ts            DeepSeek thin wrapper
+    openai-compat.ts       Shared OpenAI-compatible HTTP factory (used by glm + deepseek)
+    types.ts               ChatMessage, LLMResponse, etc.
 scripts/
-  compare.ts             Direct-vs-harness comparison driver
-  agent-only.ts          Skip-direct driver for fast agent-only iteration
-  problems.ts            Benchmark problem registry
-docs/
-  benchmark.md           Per-problem benchmark write-up
-tests/                   Vitest unit tests for solver and planning generator
+  agent-only.ts            Run one benchmark problem against the harness
+  compare.ts               Direct-vs-harness side-by-side
+  problems.ts              Benchmark problem registry (puzzles + math theorems)
+tools/
+  lean-workspace/          Lean project pinning Mathlib v4.29.1
+  lean-repl/               leanprover-community/repl (built by setup-lean-repl.sh)
+  setup-lean-repl.sh       Idempotent setup script
+tests/                     Vitest unit + integration tests
 ```
+
+## Architectural notes
+
+- **Claim-first verification.** Every `verify*` tool requires a one-sentence natural-language `claim` alongside the formal check. The model commits to the *idea* before writing the *check* — that's the lever that makes the rest work. Without it, the model defaults to "write a giant solver and hope" (well-documented failure mode in BiasBusters / Tool-Augmented LLMs).
+
+- **Premise retrieval is mandatory, not optional.** Mathlib has ~235k declarations; no LLM holds them by heart. `lean_search` is the literature's "settled science" for LLM theorem proving, and we wire it both as a model-callable tool and as an automatic suggestion when `verify_lean` fails (the search query is built from Lean's diagnostic, not the NL claim — the ReProver / Magnushammer signal).
+
+- **Stepwise proof state via long-lived REPL.** Each `proof_step` is sub-second after the one-time Mathlib import. The REPL retains all earlier `proofState` IDs by integer, so `proof_undo` is a no-execution rollback.
+
+- **Multi-engine, not all-purpose.** SWI-Prolog handles relational reasoning best; Z3 handles theory-heavy SMT best; Lean handles math-with-named-lemmas best. The architecture lets the model route per problem class — Logic-LM showed deterministic dispatch outperforms LLM-choice, but in practice GLM-5.1 picks correctly when the tools are well-described.
 
 ## License
 

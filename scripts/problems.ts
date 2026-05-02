@@ -129,6 +129,25 @@ Determine, for each house 1..5, the colour, nationality, drink, cigar, and pet. 
     maxSteps: 25,
   },
 
+  "hanoi-4-d2-locked": {
+    id: "hanoi-4-d2-locked",
+    type: "Modified 4-disk Tower of Hanoi (D2 forbidden from peg B; non-standard solution)",
+    difficulty: "very-hard",
+    prompt: `Standard 4-disk Tower of Hanoi: disks D1 (smallest), D2, D3, and D4 (largest) start stacked on peg A in size order (D4 at the bottom, D1 on top). The goal is to move all four disks to peg C in the same order. There are three pegs: A, B, and C. Standard rules apply:
+- Move one disk at a time.
+- Only the top disk of any peg can be moved.
+- A larger disk may never be placed on top of a smaller disk.
+
+ADDITIONAL RESTRICTION: disk D2 (the second-smallest) may never rest on peg B at any point during the solution. (D2 may be on peg A or peg C only.)
+
+Determine whether this puzzle can be solved under both the standard rules and the restriction. If yes, give the minimum number of moves and a valid move sequence. If no, prove the puzzle is impossible.
+
+Show your reasoning step by step. State the answer as either a single integer (minimum moves) followed by the sequence, or "IMPOSSIBLE" with justification.`,
+    expectedAnswer:
+      "Solvable; direct LLMs in prior runs found 35 moves. Direct LLMs commonly pattern-match to the standard 15-move recursive solution and emit illegal moves where D2 visits B; the agent must use Prolog/CLP(FD) iterative deepening to find the genuine optimum.",
+    maxSteps: 30,
+  },
+
   "hanoi-d2-locked": {
     id: "hanoi-d2-locked",
     type: "Modified Tower of Hanoi (forbidden-peg restriction; non-standard solution)",
@@ -306,6 +325,171 @@ State whether the formula is SAT or UNSAT, with reasoning.`,
     expectedAnswer:
       "UNSAT (pigeonhole principle: 3 pigeons cannot fit into 2 holes without sharing). The minimal conflict involves all 9 clauses simultaneously.",
     maxSteps: 14,
+  },
+
+  "math-amgm-2": {
+    id: "math-amgm-2",
+    type: "Math theorem (AM-GM for two non-negative reals)",
+    difficulty: "medium",
+    prompt: `Prove the AM-GM inequality for two non-negative real numbers: for all real x, y ≥ 0, the geometric mean does not exceed the arithmetic mean. Formally:
+
+  ∀ x y : ℝ, 0 ≤ x → 0 ≤ y → 2 * sqrt (x * y) ≤ x + y
+
+Equivalently (squaring both sides under non-negativity), 4·x·y ≤ (x + y)². You may prove either form.
+
+Use the verify_lean tool: write the proof in Lean 4 with Mathlib. Useful tactics: \`nlinarith\`, \`polyrith\`, \`Real.sqrt_le_sqrt\`, \`Real.sq_sqrt\`, \`Real.sqrt_mul_self\`. The simplest proof of the squared form takes one line with nlinarith and the fact (x - y)² ≥ 0.`,
+    expectedAnswer:
+      "Proved via nlinarith using (x - y)² ≥ 0 (equivalently 4xy ≤ (x+y)²).",
+    maxSteps: 8,
+  },
+
+  "ramsey-3-3": {
+    id: "ramsey-3-3",
+    type: "Math theorem (Ramsey number R(3,3) = 6)",
+    difficulty: "hard",
+    prompt: `Prove that the Ramsey number R(3,3) = 6.
+
+**Definition.** R(s,t) is the smallest natural number N such that every 2-coloring of the edges of the complete graph K_N (each edge colored red or blue) contains either a red K_s (red clique on s vertices) or a blue K_t (blue clique on t vertices). For R(3,3): the smallest N where every 2-edge-coloring of K_N has a monochromatic triangle.
+
+**What you must prove.** R(3,3) = 6 has two halves; both are required:
+
+  (a) **Upper bound, R(3,3) ≤ 6.** Every 2-edge-coloring of K_6 contains a monochromatic K_3.
+
+  (b) **Lower bound, R(3,3) > 5** (equivalently, R(3,3) ≥ 6). There EXISTS a 2-edge-coloring of K_5 with no monochromatic K_3.
+
+The combined statement is R(3,3) = 6.
+
+**Suggested approaches.**
+
+For (a) — a textbook pigeon-hole argument:
+  1. Pick any vertex v of K_6. Its 5 incident edges are 2-colored, so by pigeonhole at least 3 are the same color, say red. Let those neighbors be a, b, c.
+  2. If any edge among {a, b, c} is red, that edge plus v forms a red triangle. If all three of {ab, ac, bc} are blue, they form a blue triangle. Either way: a monochromatic triangle.
+  This pigeon-hole step is short enough to do in Lean, but you can also encode "every 2-edge-coloring of K_6 has a monochromatic K_3" as a SAT query in Z3 (assert the negation; Z3 returns UNSAT). Z3 will solve it in milliseconds.
+
+For (b) — exhibit the *pentagon* coloring of K_5: arrange the 5 vertices as a regular 5-cycle; color the 5 cycle edges red and the 5 chord (diagonal) edges blue. No three vertices form a monochromatic K_3 because:
+  - Three vertices forming a red triangle would require three pairwise-cycle-adjacent vertices, but the 5-cycle has no triangle.
+  - Three vertices forming a blue triangle would require three pairwise-non-adjacent vertices on the cycle, but C_5 has independence number 2.
+  This is verifiable by Z3 in milliseconds (assert the coloring and check there's no monochromatic K_3) or formalizable in Lean.
+
+**Tools you have.**
+  - \`lean_search\` and \`verify_lean\` / \`proof_start\` for formal Lean+Mathlib proofs. Mathlib has \`SimpleGraph\`, \`Finset\`, and clique predicates; \`SimpleGraph.IsNClique\` is the basic lemma. Search for "Ramsey", "monochromatic", "IsNClique" to find the relevant infrastructure.
+  - \`verify_smt\` for Z3-based SAT/UNSAT verification of small finite cases (K_5 and K_6 are tiny — 10 and 15 edges respectively, all triangle constraints fit comfortably).
+  - The Prolog engines aren't a great fit for this finite-clique problem; stick to Lean + Z3.
+
+**Output expectations.** A correct proof of R(3,3) = 6 needs both halves. The Lean proof (or Z3 verification) of each half is what counts as the answer; the natural-language prose is supporting commentary. State the final answer as: "R(3,3) = 6, established by [your method for upper bound] and [your method for lower bound]." Include the Lean proofs / SMT-LIB encodings in the response — they'll be auto-appended via the harness's verified-proof channel when you call \`done\`.`,
+    expectedAnswer:
+      "R(3,3) = 6. Upper bound R(3,3) ≤ 6 by pigeon-hole on a vertex's 5 neighbours (Lean or Z3 UNSAT on K_6 with no monochromatic triangle). Lower bound R(3,3) ≥ 6 by exhibiting the pentagon coloring of K_5 (cycle edges red, chords blue — no monochromatic triangle).",
+    maxSteps: 80,
+  },
+
+  "math-sqrt-2-irrational": {
+    id: "math-sqrt-2-irrational",
+    type: "Math theorem (proof by contradiction: √2 is irrational)",
+    difficulty: "medium",
+    prompt: `Prove that √2 is irrational in Lean 4 + Mathlib. Formally:
+
+  Irrational (Real.sqrt 2)
+
+This is a classic proof-by-contradiction theorem. Mathlib has it stated under a canonical name; \`lean_search\` should find it. You can either:
+1. Cite the canonical Mathlib lemma directly via verify_lean / proof_step's \`exact\`, or
+2. Prove it from scratch (a real challenge — recommend option 1).
+
+Use \`proof_start\` + \`proof_step\` to walk through the proof step by step if you choose to do it from scratch, or use \`verify_lean\` for a one-shot proof if you can recall the lemma name.`,
+    expectedAnswer:
+      "Proved by citing Mathlib's `irrational_sqrt_two` (or equivalent) — the canonical lemma name in Mathlib.NumberTheory.Irrational.",
+    maxSteps: 12,
+  },
+
+  "math-gauss-sum": {
+    id: "math-gauss-sum",
+    type: "Math theorem (induction with Finset.sum: Gauss formula)",
+    difficulty: "hard",
+    prompt: `Prove Gauss's formula in Lean 4 + Mathlib: the sum of integers from 0 to n equals n·(n+1)/2. Formally, with Finset notation:
+
+  ∀ n : ℕ, 2 * (∑ i ∈ Finset.range (n + 1), i) = n * (n + 1)
+
+(We multiply both sides by 2 to avoid division. The equivalent statement Mathlib likely has is \`Finset.sum_range_id\` or \`Gauss_sum\`-named.)
+
+This is a stepwise inductive proof with Finset / sum manipulation. Use \`proof_start\` and \`proof_step\`. Suggested skeleton:
+1. \`intro n\`
+2. \`induction n with | zero => ?_ | succ k ih => ?_\`
+3. Base case: \`norm_num\` or \`simp\`
+4. Inductive step: rewrite \`Finset.range (k + 1 + 1) = insert (k+1) (Finset.range (k+1))\` then unfold the sum.
+5. \`Finset.sum_insert\`, \`omega\`, \`ring\` are useful tactics.
+
+\`lean_search\` is your friend — try queries like "Finset sum range" or "sum_range_id".`,
+    expectedAnswer:
+      "Proved via induction; base case norm_num/decide; inductive step uses Finset.sum_range_succ + ring/omega.",
+    maxSteps: 25,
+  },
+
+  "math-induction-pow2-gt-n": {
+    id: "math-induction-pow2-gt-n",
+    type: "Math theorem (induction: 2^n > n for all n : ℕ)",
+    difficulty: "medium",
+    prompt: `Prove that 2^n > n for every natural number n. Formally:
+
+  ∀ n : ℕ, n < 2 ^ n
+
+This is a stepwise inductive proof. Use \`proof_start\` to open a session, then apply tactics one at a time via \`proof_step\` so the goal state evolves visibly. You'll see the goal after every tactic — pick the next move based on what's left.
+
+Some hints (use them as you see fit):
+- Induction on n: base case n = 0 reduces to 0 < 1; inductive step needs n+1 < 2^(n+1) given ih : n < 2^n.
+- Useful tactics: \`intro n\`, \`induction n with | zero => ?_ | succ k ih => ?_\`, \`norm_num\`, \`omega\`, \`linarith\`, \`simp [pow_succ]\`, \`show <expr>\`, \`have h := ...\`.
+- \`pow_succ\` rewrites 2^(k+1) = 2^k * 2.
+- If you go down a wrong path, \`proof_undo\` rolls back tactics without restarting.
+
+Proof technique is your call. Start with \`proof_start\` and work step by step.`,
+    expectedAnswer:
+      "Proved by induction on n: base case n = 0 gives 0 < 1 (trivial); inductive step uses ih and pow_succ to derive n+1 < 2^(n+1).",
+    maxSteps: 30,
+  },
+
+  "math-induction-square-plus-self-even": {
+    id: "math-induction-square-plus-self-even",
+    type: "Math theorem (induction: n² + n is even for all n : ℕ)",
+    difficulty: "medium",
+    prompt: `Prove by induction in Lean 4 + Mathlib that for every natural number n, n² + n is even. Formally:
+
+  ∀ n : ℕ, 2 ∣ n^2 + n
+
+This is a stepwise proof — use \`proof_start\` to open a session, then apply tactics one at a time via \`proof_step\` so the goal state evolves visibly. Pick any structure you like (induction, even/odd case split, etc.); the harness lets you see the goal after every tactic. When all goals close, call \`proof_close\`.
+
+Hints if you want them:
+- Induction on n is the most natural route.
+- Base case: \`norm_num\` or \`decide\` should handle 0² + 0.
+- Inductive step: from \`2 ∣ k^2 + k\`, derive \`2 ∣ (k+1)^2 + (k+1)\`. Note (k+1)² + (k+1) = k² + 3k + 2 = (k² + k) + 2(k + 1).
+- \`omega\` and \`ring_nf\` are useful tactics. \`Nat.dvd_add\` chains divisibilities.`,
+    expectedAnswer:
+      "Proved via induction on n; base case trivial, inductive step uses (k+1)² + (k+1) = (k² + k) + 2(k+1) and Nat.dvd_add.",
+    maxSteps: 25,
+  },
+
+  "math-infinitely-many-primes": {
+    id: "math-infinitely-many-primes",
+    type: "Math theorem (Euclid: infinitely many primes)",
+    difficulty: "hard",
+    prompt: `Prove Euclid's theorem in Lean 4 + Mathlib: for every natural number n, there exists a prime p with p > n. Formally:
+
+  ∀ n : ℕ, ∃ p, n < p ∧ Nat.Prime p
+
+This is a classic theorem; Mathlib has it. Use \`lean_search\` to find the canonical lemma name (it lives in \`Mathlib.NumberTheory\` somewhere). Then either cite it directly or write a short proof using \`Nat.exists_infinite_primes\`-style results. You may also try \`exact?\` or \`apply?\` inside the proof to let Lean suggest a closing tactic.`,
+    expectedAnswer:
+      "Proved via Mathlib's existing infinitude-of-primes lemma (Nat.exists_infinite_primes or similar).",
+    maxSteps: 12,
+  },
+
+  "math-sum-evens": {
+    id: "math-sum-evens",
+    type: "Math theorem (sum of two evens is even)",
+    difficulty: "easy",
+    prompt: `Prove that the sum of two even integers is even. Formally:
+
+  ∀ a b : ℤ, Even a → Even b → Even (a + b)
+
+Use verify_lean. The standard Mathlib proof unfolds Even as ∃ k, _ = k + k (or 2*k), then constructs the witness.`,
+    expectedAnswer: "Proved by destructuring the two Even hypotheses and using the witness ka + kb.",
+    maxSteps: 6,
   },
 
   "einstein-4x4": {

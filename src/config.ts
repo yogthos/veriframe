@@ -16,8 +16,17 @@ export interface ServerConfig {
 }
 
 function pickProvider(envProvider: string | undefined): ProviderType {
-  if (envProvider && ["local", "openai", "deepseek", "ollama"].includes(envProvider)) {
+  if (
+    envProvider &&
+    ["local", "openai", "deepseek", "ollama", "glm"].includes(envProvider)
+  ) {
     return envProvider as ProviderType;
+  }
+  // Auto-detect from API key envs (only if no local model path is set,
+  // since a configured GGUF takes precedence). Order: GLM, DeepSeek.
+  if (!process.env.HARNESS_MODEL_PATH) {
+    if (process.env.ZHIPU_API_KEY) return "glm";
+    if (process.env.DEEPSEEK_API_KEY) return "deepseek";
   }
   if (process.env.HARNESS_MODEL_PATH) return "local";
   return "local";
@@ -44,6 +53,23 @@ export function loadConfig(overrides?: Partial<ServerConfig>): ServerConfig {
   const modelPath =
     process.env.HARNESS_MODEL_PATH ?? overrides?.llm?.modelPath;
 
+  // Sensible default model per provider — overridable via HARNESS_MODEL.
+  const defaultModel =
+    provider === "glm"
+      ? "glm-5.1"
+      : provider === "deepseek"
+        ? "deepseek-reasoner"
+        : "local-model";
+
+  // Pick the API key matching the provider (env-var-by-provider).
+  const apiKey =
+    overrides?.llm?.apiKey ??
+    (provider === "glm"
+      ? process.env.ZHIPU_API_KEY
+      : provider === "deepseek"
+        ? process.env.DEEPSEEK_API_KEY
+        : undefined);
+
   return {
     port: num(process.env.HARNESS_PORT) ?? overrides?.port ?? 3000,
     host: process.env.HARNESS_HOST ?? overrides?.host ?? "0.0.0.0",
@@ -51,9 +77,9 @@ export function loadConfig(overrides?: Partial<ServerConfig>): ServerConfig {
       provider,
       modelPath,
       baseUrl: process.env.HARNESS_BASE_URL ?? overrides?.llm?.baseUrl,
-      apiKey: overrides?.llm?.apiKey,
+      apiKey,
       model:
-        process.env.HARNESS_MODEL ?? overrides?.llm?.model ?? "local-model",
+        process.env.HARNESS_MODEL ?? overrides?.llm?.model ?? defaultModel,
       maxTokens:
         num(process.env.HARNESS_MAX_TOKENS) ??
         overrides?.llm?.maxTokens ??

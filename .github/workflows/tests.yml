@@ -1,0 +1,112 @@
+name: tests
+
+on:
+  push:
+    branches: [main, prolog-layer]
+  pull_request:
+    branches: [main, prolog-layer]
+
+# Cancel in-progress runs on the same ref when a new commit lands.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  fast:
+    name: typecheck + fast tests (no Lean / Mathlib)
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: npm
+
+      - name: Install Node deps
+        run: npm ci
+
+      - name: Install Z3
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y z3
+          z3 --version
+
+      - name: Typecheck
+        run: npm run typecheck
+
+      - name: Run fast tests (prolog + smt + agent helpers)
+        # Skip Lean-stack tests here — those need elan + Mathlib and
+        # are run by the `lean` job below. lean-search reads the
+        # Mathlib source, also gated to the lean job.
+        run: npx vitest run tests/prolog.test.ts tests/smt.test.ts tests/agent-helpers.test.ts
+
+  lean:
+    name: full suite (with Lean 4 + Mathlib)
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    # Only run the heavy Lean stack if the fast job passes.
+    needs: fast
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: npm
+
+      - name: Install Node deps
+        run: npm ci
+
+      - name: Install Z3
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y z3
+
+      - name: Install elan (Lean version manager)
+        run: |
+          curl https://raw.githubusercontent.com/leanprover/elan/master/elan-init.sh -sSf | sh -s -- -y --default-toolchain none
+          echo "$HOME/.elan/bin" >> $GITHUB_PATH
+
+      - name: Cache Lean toolchain
+        uses: actions/cache@v4
+        with:
+          path: ~/.elan/toolchains
+          key: elan-${{ hashFiles('tools/lean-workspace/lean-toolchain') }}
+
+      - name: Cache lake packages (Mathlib source)
+        uses: actions/cache@v4
+        with:
+          path: |
+            tools/lean-workspace/.lake/packages
+            tools/lean-workspace/lake-manifest.json
+          key: lake-packages-${{ hashFiles('tools/lean-workspace/lakefile.toml', 'tools/lean-workspace/lean-toolchain') }}
+
+      - name: Cache mathlib build artifacts (oleans)
+        # Built oleans are big (~7GB) — separate cache so we can
+        # invalidate just the build when the manifest moves.
+        uses: actions/cache@v4
+        with:
+          path: tools/lean-workspace/.lake/build
+          key: lake-build-${{ hashFiles('tools/lean-workspace/lake-manifest.json', 'tools/lean-workspace/lean-toolchain') }}
+
+      - name: Lake update + olean cache fetch
+        run: |
+          cd tools/lean-workspace
+          lake update
+          # `lake update` may have already fetched the olean cache via
+          # mathlib's auto-cache-get; this is idempotent.
+          lake exe cache get || true
+
+      - name: Cache lean-repl build
+        uses: actions/cache@v4
+        with:
+          path: tools/lean-repl
+          key: lean-repl-${{ hashFiles('tools/setup-lean-repl.sh') }}
+
+      - name: Build lean-repl (idempotent)
+        run: ./tools/setup-lean-repl.sh
+
+      - name: Run full test suite
+        run: npm run test:run

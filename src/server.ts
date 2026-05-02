@@ -142,18 +142,6 @@ export function createServer(
                 status: "completed",
                 steps: result.steps.length,
                 trace: result.steps,
-                verification: result.verification,
-              },
-            };
-          } else if (result.status === "unsat") {
-            content = result.finalAnswer;
-            finishReason = "stop";
-            extra = {
-              harness: {
-                status: "unsat",
-                steps: result.steps.length,
-                trace: result.steps,
-                unsatCore: result.unsatCore,
               },
             };
           } else {

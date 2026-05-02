@@ -5,3 +5,17 @@ dist/
 # Local GGUF models — large, not for VCS
 models/
 *.gguf
+
+# Lean build artifacts + multi-GB mathlib cache. The workspace's
+# lakefile.toml + lean-toolchain are tracked; users regenerate
+# .lake locally with `lake update`.
+tools/lean-workspace/.lake/
+tools/lean-workspace/build/
+
+# Generated index caches (Mathlib lemma index, future embedding
+# indices). ~80MB and rebuildable from the lake source on first run.
+.cache/
+
+# leanprover-community/repl is fetched + built locally via
+# tools/setup-lean-repl.sh — we don't track its source in this repo.
+tools/lean-repl/
