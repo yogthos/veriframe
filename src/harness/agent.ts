@@ -68,7 +68,35 @@ interface VerifyEvent {
   outcome: VerifyOutcome;
 }
 
-interface AgentSession {
+/**
+ * One hypothesis thread. The model opens a branch implicitly at the
+ * start of the run and explicitly via `pivot` after that. Branches
+ * make the search visible: when a thread dead-ends, the model
+ * articulates *why* and *what's next* before going on, instead of
+ * silently drifting into a different approach.
+ */
+export interface Branch {
+  id: string;
+  /** One-line description of the hypothesis / technique. */
+  hypothesis: string;
+  status: "active" | "abandoned" | "done";
+  startedAtTurn: number;
+  endedAtTurn?: number;
+  /** Set when status === "abandoned" — the reason the model gave. */
+  abandonReason?: string;
+  /** How many verified artifacts were attributed to this branch. */
+  artifactCount: number;
+}
+
+/** Maximum hypothesis threads per run. After this, the model must
+ *  commit to one of the active threads, call `done`, or `give_up`. */
+const MAX_BRANCHES = 5;
+
+/** Inject a step-back reflection prompt every N successful tool
+ *  calls. Catches the "grinding the same approach" failure mode. */
+const STEP_BACK_INTERVAL = 6;
+
+export interface AgentSession {
   problem: string;
   finalAnswer: string | null;
   turns: TurnEntry[];
@@ -97,6 +125,14 @@ interface AgentSession {
    * model's natural-language summary.
    */
   verifiedArtifacts: VerifiedArtifact[];
+  /** All hypothesis threads opened this run (active + abandoned). */
+  branches: Branch[];
+  /** ID of the currently-active branch. Set on session start and
+   *  changed by `pivot`. */
+  activeBranchId: string;
+  /** Counter that drives the periodic step-back injection. Reset
+   *  each time the step-back fires. */
+  successesSinceStepBack: number;
   messages: ChatMessage[];
 }
 
@@ -121,23 +157,32 @@ interface VerifiedArtifact {
   claimStatus: "confirmed" | "refuted" | "ambiguous";
 }
 
-const SYSTEM_PROMPT = `You're solving a problem the way a mathematician proves a theorem: by reasoning out the next step in natural language, then verifying that one step with Prolog. **You are not writing a Prolog solver.** You are deriving the answer step by step, with Prolog as the proof checker for each derivation.
+const SYSTEM_PROMPT = `You're solving a problem the way a creative researcher solves a hard one: by **forming hypotheses, drawing on the broadest mathematical knowledge you can reach, and using formal verification engines to validate or reject each idea**. Your unique value is intuition — knowing which technique to try, when to abandon a dead end, and what fundamentally different angle might work. The harness's job is to keep you honest by checking each idea formally.
 
-Each turn, emit ONE tool call inside a fenced block:
+This is NOT a linear march down a single proof. It is a **directed search through hypothesis space**, with backtracking. Dead ends are normal; the goal is recognising them quickly and reframing.
+
+## The flow
+
+Each turn:
+1. **State a hypothesis** in your prose. Where in the search are you? Which technique are you trying, and why is it the most promising right now? Lean on what you know — different subfields, named theorems, structural analogies. Don't restrict yourself to the first idea.
+2. **Issue ONE tool call** inside a fenced block (see below). The tool either verifies the hypothesis or returns evidence against it.
+3. **React.** If the engine confirms, build on it. If it rejects, that's data — analyse the root cause and reach for an alternative (the harness will prompt you for this).
+
+A run can hold multiple branches — distinct hypothesis threads. Open a new branch with \`pivot\` whenever you've exhausted a direction or recognised a fundamentally better angle. Branches make your search visible.
+
+Tool calls go inside a fence:
+
+\`\`\`tool-call
+{"name": "<tool>", "args": {...}}
+\`\`\`
+
+Free-form prose around the fence is allowed and encouraged for your reasoning; only the first fence is parsed.
 
 \`\`\`tool-call
 {"name": "<tool>", "args": {...}}
 \`\`\`
 
 Free-form prose around the fence is allowed for your reasoning; only the first fence is parsed.
-
-## The flow — every turn answers two questions
-
-1. **What is the next step I need to prove?** State it in one sentence in your prose. Examples: "House 1 is yellow." "If A is a knight, then B is a knight." "Move D1 from peg A to peg B is legal in the initial state."
-
-2. **What's the smallest Prolog check that confirms this step?** Write it as the \`check\` field of \`verify\`. The Prolog runs against rules you've added so far + library(lists) + library(clpfd).
-
-If verification PASSES, the step is proved; the next turn picks up from there. If it FAILS, your claim was wrong or your encoding incomplete — rethink the *step* (not the encoding) before trying a different formulation.
 
 ## Tools
 
@@ -174,6 +219,13 @@ If verification PASSES, the step is proved; the next turn picks up from there. I
 **assume** — \`{"name": "...", "fact": "..."}\`. Open a *named hypothetical scope*. \`fact\` is Prolog code asserted while the scope is open. Anything you \`verify\` afterward is conditional on this assumption. Used for "assume A, derive B; therefore A → B" reasoning.
 
 **discharge** — \`{"name": "..."}\`. Close a previously-opened scope, retracting its assumption. Whatever you proved while it was open now stands as a conditional ("under hypothesis X, conclusion Y holds").
+
+**pivot** — \`{"why": "...", "newDirection": "..."}\`. Abandon the current hypothesis branch and open a new one. Use this when:
+- The current direction has dead-ended (verification keeps rejecting and root-cause repair isn't producing forward motion).
+- You've recognised a fundamentally different angle (a different subfield, a different proof technique, a different encoding) that's more likely to work.
+- Successful work on the current branch should be locked in before exploring elsewhere.
+
+\`why\` is a one-sentence diagnosis of why the current branch is being abandoned (or "complete — locking it in"). \`newDirection\` names the new technique/family in one sentence (e.g., "Switch from Behrend digit-sum to Cantor middle-thirds construction"; "Try character-sum instead of greedy"). The harness records the abandoned branch with its artifacts intact, opens a fresh branch under \`newDirection\`, and **shows you a summary of what's already been tried** so you don't loop. Branch budget: ${MAX_BRANCHES} per run.
 
 **done** — \`{"answer": "..."}\`. Submit the human-readable final answer once you've derived it.
 
@@ -424,6 +476,37 @@ function isSimilarClaim(a: string, b: string): boolean {
 
 const STUCK_HINT = `\n\n⚠ Heads up: the last 3 verifications haven't moved you forward — they failed, errored, or restated a similar claim. Step back before writing more Prolog:\n  • Is the *claim* too ambitious for one step? Decompose it (one-fact-per-claim).\n  • Did a recent rule break things? \`retract_rule({"name": "..."})\` to undo a tentative \`add_rule\` you named.\n  • Is the encoding shape wrong? Form a different hypothesis instead of patching this one.`;
 
+/**
+ * Injected as a user message immediately after a verification fails
+ * (NOT VERIFIED, REJECTED tactic, refuted artifact, UNKNOWN result,
+ * or a tool error). The model gets the result PLUS this prompt and
+ * must answer it before the next tool call. Forces explicit
+ * hypothesis enumeration rather than silent drift after dead ends —
+ * which is where creativity actually matters.
+ *
+ * Kept terse: 2-3 sentences expected. Long meta-essays burn tokens
+ * without improving search quality.
+ */
+const FAILURE_ANALYSIS_PROMPT = `That step did not confirm the claim. Before your next tool call, answer in 2-3 sentences:
+  1. **Root cause** — what was wrong with the hypothesis or the encoding?
+  2. **Alternatives** — name 2 different techniques (ideally from different mathematical traditions) that could work here.
+  3. **Choice** — which alternative are you trying next, and why?
+
+Then issue the next tool call. If the alternatives all look weak, consider \`pivot\` to a fundamentally different angle, or \`give_up\` if the problem really is out of reach.`;
+
+/**
+ * Injected after every STEP_BACK_INTERVAL successful tool calls.
+ * Forces the model to reassess direction before grinding further.
+ * Catches the failure mode where a working technique stops working
+ * but the model doesn't notice until many turns later.
+ */
+const STEP_BACK_PROMPT = `Pause. In 3-4 sentences:
+  1. What have you established so far in the current branch?
+  2. What's the gap between here and the goal?
+  3. Is this technique still the best fit, or is there a different angle worth trying?
+
+Then continue. If a different angle looks better, \`pivot\` to it.`;
+
 function checkStuckHint(session: AgentSession): string {
   if (session.hintCooldownTurns > 0) return "";
   const recent = session.verifyHistory.slice(-3);
@@ -536,11 +619,27 @@ function formatSmtResult(claim: string, verdict: "sat" | "unsat" | "unknown"): s
   }
 }
 
+/**
+ * Outcome class returned alongside each tool result. Drives the
+ * follow-up prompt injection in the runAgent loop:
+ *   - "failure" triggers FAILURE_ANALYSIS_PROMPT
+ *   - "success" advances the step-back counter
+ *   - "neutral" / undefined does neither (e.g., add_rule, lean_search)
+ */
+type ToolResultCategory = "success" | "failure" | "neutral";
+
+interface RunToolResult {
+  result: string;
+  done?: boolean;
+  gaveUp?: boolean;
+  category?: ToolResultCategory;
+}
+
 async function runTool(
   session: AgentSession,
   call: ToolCall,
   signal?: AbortSignal,
-): Promise<{ result: string; done?: boolean; gaveUp?: boolean }> {
+): Promise<RunToolResult> {
   const { name, args } = call;
   switch (name) {
     case "add_rule": {
@@ -612,12 +711,18 @@ async function runTool(
       if (r.status === "error") {
         recordVerify(session, claim, "error");
         const hint = checkStuckHint(session);
-        return { result: `claim: "${claim}"\n[verify error] ${r.error}${hint}` };
+        return {
+          result: `claim: "${claim}"\n[verify error] ${r.error}${hint}`,
+          category: "failure",
+        };
       }
       const outcome: VerifyOutcome = r.answers.length > 0 ? "verified" : "not_verified";
       recordVerify(session, claim, outcome);
       const hint = checkStuckHint(session);
-      return { result: formatVerifyResult(claim, r.answers) + hint };
+      return {
+        result: formatVerifyResult(claim, r.answers) + hint,
+        category: outcome === "verified" ? "success" : "failure",
+      };
     }
 
     case "verify_smt": {
@@ -683,6 +788,9 @@ async function runTool(
         model: r.verdict === "sat" ? r.model : undefined,
         claimStatus,
       });
+      // Attribute artifacts to the active branch so we can report
+      // per-branch productivity in the final answer.
+      attributeArtifactToActiveBranch(session);
       const hint = checkStuckHint(session);
       const expectedNote =
         expectedVerdict === null
@@ -690,8 +798,15 @@ async function runTool(
           : claimStatus === "refuted"
             ? `\nNote: you said expectedVerdict=${expectedVerdict.toUpperCase()} would confirm the claim. Z3 returned the opposite — your claim is REFUTED by this check. Revise the claim or the encoding.`
             : "";
+      const category: ToolResultCategory =
+        claimStatus === "confirmed"
+          ? "success"
+          : claimStatus === "refuted"
+            ? "failure"
+            : "neutral";
       return {
         result: formatSmtResult(claim, r.verdict) + expectedNote + hint,
+        category,
       };
     }
 
@@ -773,6 +888,7 @@ async function runTool(
           code: `import Mathlib\n\n${proofText}\n`,
           claimStatus: "confirmed",
         });
+        attributeArtifactToActiveBranch(session);
       } else if (stepResult.status === "open") {
         lines.push(
           `STEP ACCEPTED — ${stepResult.tacticCount} tactic(s) applied.`,
@@ -827,8 +943,15 @@ async function runTool(
           /* best-effort */
         }
       }
+      const category: ToolResultCategory =
+        stepResult.status === "closed"
+          ? "success"
+          : stepResult.status === "tactic_error"
+            ? "failure"
+            : "neutral";
       return {
         result: lines.join("\n") + suggestion + stuck,
+        category,
       };
     }
 
@@ -957,6 +1080,7 @@ async function runTool(
           code: snippet,
           claimStatus: "confirmed",
         });
+        attributeArtifactToActiveBranch(session);
       }
       const hint = checkStuckHint(session);
       // On NOT VERIFIED or compile-error, auto-surface relevant
@@ -994,6 +1118,7 @@ async function runTool(
       }
       return {
         result: formatLeanResult(claim, r) + suggestion + hint,
+        category: r.status === "ok" ? "success" : "failure",
       };
     }
 
@@ -1039,6 +1164,63 @@ async function runTool(
       };
     }
 
+    case "pivot": {
+      const why = typeof args.why === "string" ? args.why.trim() : "";
+      const newDirection =
+        typeof args.newDirection === "string" ? args.newDirection.trim() : "";
+      if (!why) {
+        return {
+          result:
+            "[error] pivot requires {why: string, newDirection: string}. `why` is your one-sentence diagnosis of why the current branch is being abandoned.",
+        };
+      }
+      if (!newDirection) {
+        return {
+          result:
+            "[error] pivot requires {why: string, newDirection: string}. `newDirection` names the new technique/family in one sentence.",
+        };
+      }
+      const remaining = MAX_BRANCHES - session.branches.length;
+      if (remaining <= 0) {
+        return {
+          result: `[error] branch budget exhausted (${MAX_BRANCHES}). Branches tried so far:\n${renderBranchHistory(session)}\nCommit to one of the established threads with \`done\`, or use \`give_up\` if no thread reaches the goal.`,
+        };
+      }
+      // Close the active branch.
+      const active = session.branches.find(
+        (b) => b.id === session.activeBranchId,
+      );
+      const turnNow = session.turns.length;
+      if (active) {
+        active.status = "abandoned";
+        active.abandonReason = why;
+        active.endedAtTurn = turnNow;
+      }
+      // If a Lean proof is open, abandon it (its branch is dead).
+      if (session.leanProof && session.leanProof.status === "open") {
+        await closeSession(session.leanProof);
+        session.leanProof = null;
+      }
+      // Open the new branch.
+      const newBranch: Branch = {
+        id: `B${session.branches.length + 1}`,
+        hypothesis: newDirection,
+        status: "active",
+        startedAtTurn: turnNow + 1,
+        artifactCount: 0,
+      };
+      session.branches.push(newBranch);
+      session.activeBranchId = newBranch.id;
+      // Reset step-back counter — fresh branch, fresh cadence.
+      session.successesSinceStepBack = 0;
+      const summary = renderBranchHistory(session);
+      const remainingAfter = MAX_BRANCHES - session.branches.length;
+      return {
+        result: `Branch ${active?.id ?? "?"} ("${active?.hypothesis ?? "(none)"}") abandoned: ${why}\nNew active branch ${newBranch.id}: ${newDirection}\n\nWhat's been tried so far:\n${summary}\nBranch budget remaining: ${remainingAfter}/${MAX_BRANCHES}.\n\nProceed: state the first concrete claim under this new direction, then verify it.`,
+        category: "neutral",
+      };
+    }
+
     case "done": {
       if (typeof args.answer !== "string" || args.answer.trim().length === 0) {
         return {
@@ -1047,6 +1229,14 @@ async function runTool(
         };
       }
       session.finalAnswer = args.answer;
+      // Mark the active branch as done.
+      const active = session.branches.find(
+        (b) => b.id === session.activeBranchId,
+      );
+      if (active && active.status === "active") {
+        active.status = "done";
+        active.endedAtTurn = session.turns.length;
+      }
       return { result: "OK — finalizing.", done: true };
     }
 
@@ -1064,9 +1254,44 @@ async function runTool(
 
     default:
       return {
-        result: `[error] unknown tool "${name}". Valid: add_rule, retract_rule, commit, verify, verify_smt, verify_lean, lean_search, proof_start, proof_step, proof_state, proof_undo, proof_close, proof_abandon, assume, discharge, done, give_up.`,
+        result: `[error] unknown tool "${name}". Valid: add_rule, retract_rule, commit, verify, verify_smt, verify_lean, lean_search, proof_start, proof_step, proof_state, proof_undo, proof_close, proof_abandon, assume, discharge, pivot, done, give_up.`,
       };
   }
+}
+
+/**
+ * Bump the artifact count on the currently active branch. Called by
+ * any tool that pushes to `verifiedArtifacts`. Used in the final
+ * answer's per-branch summary.
+ */
+function attributeArtifactToActiveBranch(session: AgentSession): void {
+  const active = session.branches.find(
+    (b) => b.id === session.activeBranchId,
+  );
+  if (active) active.artifactCount++;
+}
+
+/**
+ * Compact summary of every branch tried in this run, designed to be
+ * fed back to the model on `pivot` so it can see what's already been
+ * tried and avoid loops. One line per branch; status, range of
+ * turns, hypothesis, artifact count.
+ *
+ * Exported for tests; the prose format is part of the model-facing
+ * contract so we want to lock it in.
+ */
+export function renderBranchHistory(session: AgentSession): string {
+  const lines: string[] = [];
+  for (const b of session.branches) {
+    const range = b.endedAtTurn
+      ? `turns ${b.startedAtTurn}-${b.endedAtTurn}`
+      : `turn ${b.startedAtTurn}+`;
+    const status = b.status.toUpperCase();
+    const why = b.abandonReason ? ` (because: ${b.abandonReason})` : "";
+    const arts = b.artifactCount > 0 ? `, ${b.artifactCount} artifact(s)` : "";
+    lines.push(`  ${b.id} [${status}, ${range}${arts}]: ${b.hypothesis}${why}`);
+  }
+  return lines.join("\n");
 }
 
 export async function runAgent(
@@ -1086,6 +1311,17 @@ export async function runAgent(
     hintCooldownTurns: 0,
     leanProof: null,
     verifiedArtifacts: [],
+    branches: [
+      {
+        id: "B1",
+        hypothesis: "initial approach (model has not yet articulated a specific technique)",
+        status: "active",
+        startedAtTurn: 1,
+        artifactCount: 0,
+      },
+    ],
+    activeBranchId: "B1",
+    successesSinceStepBack: 0,
     messages: [{ role: "user", content: buildInitialUserMessage(problem) }],
   };
 
@@ -1135,7 +1371,7 @@ export async function runAgent(
         continue;
       }
 
-      const { result, done, gaveUp } = await runTool(session, call, opts.signal);
+      const { result, done, gaveUp, category } = await runTool(session, call, opts.signal);
       session.messages.push({ role: "user", content: truncateToolResult(result) });
       const entry: TurnEntry = { turn, toolCall: call, result };
       session.turns.push(entry);
@@ -1148,6 +1384,40 @@ export async function runAgent(
       if (gaveUp) {
         outcome = "gave_up";
         break;
+      }
+
+      // Hypothesis-search nudges. Two passive prompts injected into
+      // the message stream between the tool result and the model's
+      // next turn — they convert the linear proof loop into a
+      // directed search.
+      //
+      //   Failure → mandatory analysis (root cause + alternatives).
+      //   Periodic success → step-back reflection.
+      //
+      // Suppressed during an open Lean proof session; mid-proof
+      // tactic exploration ("try foo, no, try bar") is normal and
+      // shouldn't be interrupted by meta-prompts.
+      const inOpenProof =
+        session.leanProof !== null && session.leanProof.status === "open";
+      if (!inOpenProof) {
+        if (category === "failure") {
+          session.messages.push({
+            role: "user",
+            content: FAILURE_ANALYSIS_PROMPT,
+          });
+          // A failure resets the step-back cadence — the failure
+          // analysis itself is the reflection for now.
+          session.successesSinceStepBack = 0;
+        } else if (category === "success") {
+          session.successesSinceStepBack++;
+          if (session.successesSinceStepBack >= STEP_BACK_INTERVAL) {
+            session.successesSinceStepBack = 0;
+            session.messages.push({
+              role: "user",
+              content: STEP_BACK_PROMPT,
+            });
+          }
+        }
       }
     }
   } finally {
@@ -1222,6 +1492,15 @@ function renderFinalAnswer(session: AgentSession): string {
   const lines: string[] = [];
   lines.push("Final answer (model-claimed):");
   lines.push(session.finalAnswer ?? "(none)");
+
+  // Branch trace: makes the search visible. A reader scanning the
+  // final answer can see how many threads were explored, which
+  // dead-ended, which produced verified work.
+  if (session.branches.length > 1 || session.branches[0]?.artifactCount > 0) {
+    lines.push("");
+    lines.push(`Hypothesis branches (${session.branches.length}/${MAX_BRANCHES}):`);
+    lines.push(renderBranchHistory(session));
+  }
 
   // Surface every machine-verified artifact this run produced. The
   // user gets the actual proof code (Lean snippets / SMT-LIB) — not
