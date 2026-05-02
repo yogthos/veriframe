@@ -43,6 +43,7 @@ import {
   undoStep,
   type ProofSession,
 } from "./lean-proof.js";
+import { extendEnv, getMathlibEnv, type ReplMessage } from "./lean-repl.js";
 
 export interface AgentRunOptions {
   config?: { maxTurns?: number };
@@ -209,6 +210,12 @@ export interface BranchState {
   verifiedArtifacts: VerifiedArtifact[];
   /** Resets to 0 on success, increments on failure; cull at CULL_THRESHOLD. */
   consecutiveFailures: number;
+  /** Per-branch Lean REPL env id. Tracks the state including any
+   *  user definitions added incrementally via `lean_define`. Lazily
+   *  initialised the first time the branch touches Lean. proof_start
+   *  uses this as its base env so theorem statements and tactic
+   *  bodies see the branch's accumulated definitions. */
+  leanEnv: number | null;
   /** Most recent passing review, set by the `review` tool. Cleared
    *  if a subsequent verify produces a NEW confirmed artifact (since
    *  the new artifact hasn't been cross-checked yet). */
@@ -298,6 +305,18 @@ Free-form prose around the fence is allowed and encouraged for your reasoning; o
 **verify_smt** — \`{"claim": "...", "smtlib": "...", "expectedVerdict"?: "sat"|"unsat"}\`. Same shape as \`verify\` but the check is SMT-LIB code, executed by Z3 4.15. Use this when Prolog/CLP(FD) isn't enough: real arithmetic, nonlinear arithmetic, large bitvectors, theory combinations, optimisation. The harness reports SAT / UNSAT / UNKNOWN — read the description below for proof semantics. Don't include \`(check-sat)\`; the harness appends it. **Always pass \`expectedVerdict\`** — declare which Z3 verdict supports your claim. If you assert the negation of P (proof-by-contradiction style), expectedVerdict is "unsat" (UNSAT means P holds). If you assert P directly and want a witness, expectedVerdict is "sat". Without expectedVerdict, the harness can't tell whether the verdict confirms or refutes your claim and will mark the artifact as "ambiguous" — readers won't know which bucket your work belongs in.
 
 **verify_lean** — \`{"claim": "...", "lean": "..."}\`. Same shape, but the check is a **Lean 4 snippet** evaluated against Mathlib. Use this for genuine mathematical theorems: real/complex analysis (continuity, limits, ε-δ proofs), inequalities, number theory (primes, divisibility), algebra (group/ring/field theory), basic geometry, anything with named lemmas in Mathlib. The harness reports VERIFIED if Lean accepts the proof; NOT VERIFIED with up to 3 error lines (line numbers, "unsolved goals" messages, etc.) when it doesn't. \`import Mathlib\` is auto-prepended if you don't include it. Use \`example\` for one-off claims and \`theorem name\` if you want to assert a name and reuse it later via \`add_rule\`. **On a failed verify, the harness automatically searches Mathlib for relevant lemmas** and appends the top-3 results — read them.
+
+**lean_define** — \`{"code": "..."}\`. **Add Lean code (definitions, axioms, lemmas, structure declarations — anything top-level) to your branch's persistent Lean state.** The harness threads the resulting REPL env into subsequent proof_start calls so they see your declarations in scope. Use this for the prelude of any multi-theorem development: define your types, state your axioms, add helper lemmas with \`lean_define\`, then use \`proof_start\` for each main theorem with the prelude already loaded. Without lean_define, every proof_start starts from bare \`import Mathlib\` and your theorem statement can only reference Mathlib names.
+
+Example workflow:
+\`\`\`tool-call
+{"name": "lean_define", "args": {"code": "def IsUnionClosed (F : Finset (Finset α)) [DecidableEq α] : Prop := F.Nonempty ∧ (∀ A ∈ F, ∀ B ∈ F, A ∪ B ∈ F)"}}
+\`\`\`
+Then later:
+\`\`\`tool-call
+{"name": "proof_start", "args": {"claim": "Trivial case", "theorem": "∀ {α : Type} [DecidableEq α] (a : α), IsUnionClosed ({{a}} : Finset (Finset α))"}}
+\`\`\`
+The proof_start sees \`IsUnionClosed\` because lean_define added it to the branch env.
 
 **lean_search** — \`{"query": "...", "top_k"?: number}\`. Search Mathlib's ~235k declarations for lemmas matching a query. The query can be a partial name (\`sqrt_nonneg\`), a phrase (\`Real square root non-negative\`), or a concept (\`AM-GM inequality\`). Returns up to \`top_k\` (default 8, max 20) ranked hits with name, signature, doc snippet, and source location. Use this *before* writing a proof when you don't know the canonical lemma name, or *during* a stuck step to find a relevant tool. Mathlib naming convention: snake_case + dot-namespace (e.g. \`Real.sqrt_le_sqrt\`, \`Nat.add_comm\`, \`Finset.sum_pow\`).
 
@@ -390,6 +409,52 @@ NOT VERIFIED is a green light to **rethink the step**. Re-examine your reasoning
 - UNKNOWN means Z3 couldn't decide — try simpler arithmetic or a different encoding.
 
 \`verify_lean\` returns VERIFIED or NOT VERIFIED with diagnostics. Lean is a real proof assistant — the proof must compile against Mathlib. Useful tactics to know: \`norm_num\` (arithmetic identities), \`linarith\` / \`nlinarith\` / \`polyrith\` (linear/nonlinear inequalities), \`ring\` (ring identities), \`field_simp\` (field simplification), \`decide\` (decidable propositions), \`omega\` (linear integer/nat arithmetic), \`positivity\` (positivity of expressions), \`exact?\` / \`apply?\` / \`hint\` (Mathlib search & suggestion). Combine with \`intro\`, \`cases\`, \`rcases\`, \`induction\`, \`refine\`, \`have\`, \`show\`, \`use\`, \`rw\`. If a tactic fails on a side-condition, fall back to manual steps — but try the hammers first.
+
+## Lean idioms — what works for which goal shape
+
+When you're proving things in Lean (especially with \`Finset\` over generic types), the choice of tactic matters a lot. Some patterns that consistently work, and some traps to avoid.
+
+**Finset cardinality / counting goals:**
+- \`Finset.card_filter_le\` — \`(s.filter p).card ≤ s.card\`
+- \`Finset.card_image_le\` — \`(s.image f).card ≤ s.card\`
+- \`Finset.card_image_of_injOn\` — when \`f\` is injective on \`s\`, \`.image\` preserves cardinality
+- \`Finset.card_le_card\` — subset gives ≤ on cardinality
+- \`Finset.one_le_card\` — \`s.Nonempty ↔ 1 ≤ s.card\`
+- \`Finset.card_eq_one\` — characterises singletons
+- \`Finset.card_insert_of_notMem\`, \`Finset.card_insert_le\`
+- \`Finset.sum_card_filter\` — \`s.card = ∑ x ∈ s, 1\` etc.
+
+**Avoid these tactics on goals containing free type variables:**
+- \`decide\` / \`native_decide\` — needs a *computable* decidable instance; free \`α\` doesn't have one
+- \`omega\` — works on \`ℕ\`/\`ℤ\` directly but won't unfold \`Finset.card\` for you
+- \`dec_trivial\` — same as \`decide\`
+- \`simp\` *without arguments* on Finset cardinality often makes "no progress"; pass it specific lemmas: \`simp [Finset.card_filter_le, Finset.mem_insert]\` etc.
+
+**Prefer these tactics for generic-type Finset proofs:**
+- \`apply Finset.card_filter_le\` then chain
+- \`exact Finset.card_le_card hSubset\` — direct subset bound
+- \`calc\` blocks — chain inequalities explicitly
+- \`refine ⟨witness, ?_, ?_⟩\` — provide existential witnesses, leave proof goals
+- \`Finset.induction_on s\` — induct over a Finset structurally
+
+**Concrete-instance goals** (e.g., proving things about \`{∅, {a}}\`):
+- \`simp [Finset.mem_insert, Finset.mem_singleton]\` for membership
+- \`decide\` *only* if the entire goal is on a decidable type with no free vars (use \`α := ℕ\` or \`Fin n\` if needed for a sanity check)
+- \`Finset.card_pair\` for two-element sets
+
+**Existential goals** (\`∃ x, P x\`):
+- \`exact ⟨witness, proof⟩\` or \`refine ⟨witness, ?_⟩\` — never \`exact?\` for these (it tends to time out)
+- \`use witness; <prove P witness>\` — short syntax
+
+**Type-class trouble** (\`failed to synthesize instance of type class ...\`):
+- Add the missing instance as an assumption: \`[DecidableEq α]\`, \`[Fintype α]\`
+- For \`Finset α\` membership, you almost always need \`[DecidableEq α]\`
+- Wrap in \`Classical.dec\` only as last resort — it makes everything noncomputable
+
+**Building up a development incrementally:**
+- Use \`lean_define\` to add definitions to your branch's persistent env
+- Then \`proof_start\` for each theorem — your definitions are already in scope
+- Don't paste the whole prelude into every \`verify_lean\` snippet — use \`lean_define\` once per definition
 
 ## Stepwise Lean proofs — when verify_lean isn't enough
 
@@ -1001,10 +1066,23 @@ async function runTool(
         };
       }
       try {
-        const ps = await startSession({ claim, theorem, name });
+        // Use the branch's accumulated Lean env so any user
+        // definitions added via lean_define are visible. If the
+        // branch hasn't touched Lean yet, leanEnv is null and
+        // startSession defaults to bare Mathlib.
+        const ps = await startSession({
+          claim,
+          theorem,
+          name,
+          baseEnv: session.leanEnv ?? undefined,
+        });
         session.leanProof = ps;
+        const baseNote =
+          session.leanEnv !== null
+            ? " (with branch-local definitions loaded)"
+            : "";
         return {
-          result: `OK — proof session opened (Lean REPL).\n${renderSession(ps)}\n\nApply tactics via proof_step. The harness sends each tactic to a long-lived Lean process; you'll see the new goal state (or an error) before deciding the next move.`,
+          result: `OK — proof session opened (Lean REPL${baseNote}).\n${renderSession(ps)}\n\nApply tactics via proof_step. The harness sends each tactic to a long-lived Lean process; you'll see the new goal state (or an error) before deciding the next move.`,
         };
       } catch (e) {
         return {
@@ -1193,6 +1271,59 @@ async function runTool(
       const claim = session.leanProof.claim;
       session.leanProof = null;
       return { result: `proof "${claim}" abandoned.` };
+    }
+
+    case "lean_define": {
+      // Add Lean code (definitions, axioms, lemmas — anything that
+      // can appear at top level) to this branch's persistent Lean
+      // env. The next proof_start call sees these declarations in
+      // scope. This is how you build up a development incrementally
+      // without inlining the entire prelude in every theorem
+      // statement.
+      const code = typeof args.code === "string" ? args.code.trim() : "";
+      if (!code) {
+        return {
+          result:
+            "[error] lean_define requires {code: string}. Pass the definitions/axioms to add to the branch's Lean state.",
+        };
+      }
+      // Lazy-init the branch env to bare Mathlib on first use.
+      try {
+        if (session.leanEnv === null) {
+          session.leanEnv = await getMathlibEnv();
+        }
+        const r = await extendEnv(session.leanEnv, code);
+        if (!r.ok) {
+          const errs = r.messages
+            .filter((m: ReplMessage) => m.severity === "error")
+            .map((m: ReplMessage) => `  • ${m.data ?? ""}`)
+            .slice(0, 5)
+            .join("\n");
+          return {
+            result: `lean_define REJECTED — Lean rejected the declarations; branch state unchanged.\n${errs}`,
+            category: "failure",
+          };
+        }
+        // Update the branch's env so subsequent proof_start calls see
+        // these definitions.
+        session.leanEnv = r.env;
+        const warnings = r.messages
+          .filter((m: ReplMessage) => m.severity === "warning")
+          .map((m: ReplMessage) => `  • ${m.data ?? ""}`)
+          .slice(0, 3);
+        const warnNote = warnings.length > 0
+          ? `\nWarnings:\n${warnings.join("\n")}`
+          : "";
+        return {
+          result: `OK — definitions added to branch ${session.id}'s Lean env. Subsequent proof_start calls will see them in scope.${warnNote}`,
+          category: "success",
+        };
+      } catch (e) {
+        return {
+          result: `[lean_define error] ${e instanceof Error ? e.message : String(e)}`,
+          category: "failure",
+        };
+      }
     }
 
     case "lean_search": {
@@ -1772,7 +1903,7 @@ async function runTool(
 
     default:
       return {
-        result: `[error] unknown tool "${name}". Valid: add_rule, retract_rule, commit, verify, verify_smt, verify_template, verify_lean, lean_search, proof_start, proof_step, proof_state, proof_undo, proof_close, proof_abandon, assume, discharge, review, audit, done, give_up.`,
+        result: `[error] unknown tool "${name}". Valid: add_rule, retract_rule, commit, verify, verify_smt, verify_template, verify_lean, lean_define, lean_search, proof_start, proof_step, proof_state, proof_undo, proof_close, proof_abandon, assume, discharge, review, audit, done, give_up.`,
       };
   }
 }
@@ -1879,6 +2010,7 @@ async function createBranch(
     leanProof: null,
     verifiedArtifacts: [],
     consecutiveFailures: 0,
+    leanEnv: null,
     lastReview: null,
     milestonePromptInjected: false,
     messages: [{ role: "user", content: buildInitialUserMessage(problem) }],

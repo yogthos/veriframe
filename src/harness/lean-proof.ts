@@ -64,6 +64,11 @@ export interface ProofStartArgs {
   claim: string;
   theorem: string;
   name?: string;
+  /** Optional env id from a previous incremental Lean command. When
+   *  provided, the proof opens against that state — so user
+   *  definitions (added via lean_define) are visible in the theorem
+   *  statement and tactic body. Defaults to the bare-Mathlib env. */
+  baseEnv?: number;
 }
 
 export interface ProofStepResult {
@@ -100,7 +105,7 @@ export async function startSession(args: ProofStartArgs): Promise<ProofSession> 
   // Open the proof against the REPL — this types-checks the theorem
   // statement and returns the initial goal/state. Errors here mean
   // the type itself was malformed.
-  const opened = await openProof(uniqueName, theorem);
+  const opened = await openProof(uniqueName, theorem, args.baseEnv);
   const initial: ProofCheckpoint = {
     proofState: opened.proofState,
     goals: opened.goal,

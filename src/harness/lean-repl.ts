@@ -270,18 +270,60 @@ export interface OpenedProof {
 }
 
 /**
+ * Get the env id of the post-`import Mathlib` REPL state. Anything
+ * built incrementally (definitions, lemmas) starts from here.
+ * Branches initialise their own `leanEnv` to this value the first
+ * time they touch Lean.
+ */
+export async function getMathlibEnv(): Promise<number> {
+  await ensureStarted();
+  if (mathlibEnv === null) throw new Error("REPL not initialised");
+  return mathlibEnv;
+}
+
+/**
+ * Send arbitrary Lean code (definitions, axioms, lemmas — anything
+ * a top-level command would accept) to the REPL on top of an
+ * existing env, and return the new env id plus any
+ * error/warning messages.
+ *
+ * This is the building block for incremental development: the
+ * caller threads the returned env into the next call so each
+ * command sees everything that came before.
+ *
+ * On error: returns the original env unchanged so the caller can
+ * surface diagnostics without polluting state.
+ */
+export async function extendEnv(
+  baseEnv: number,
+  cmd: string,
+): Promise<{ env: number; messages: ReplMessage[]; ok: boolean }> {
+  await ensureStarted();
+  const r = (await sendRaw({ cmd, env: baseEnv })) as ReplCommandResponse;
+  const errors = r.messages?.filter((m) => m.severity === "error") ?? [];
+  if (errors.length > 0 || r.env === undefined) {
+    return { env: baseEnv, messages: r.messages ?? [], ok: false };
+  }
+  return { env: r.env, messages: r.messages ?? [], ok: true };
+}
+
+/**
  * Declare a `theorem` with `sorry` to enter tactic mode and capture
- * the initial proof state.
+ * the initial proof state. Optional `baseEnv` lets the caller use
+ * a state with user definitions already loaded; defaults to the
+ * bare-Mathlib env.
  */
 export async function openProof(
   name: string,
   theorem: string,
+  baseEnv?: number,
 ): Promise<OpenedProof> {
   await ensureStarted();
   const cmd = `theorem ${name} : ${theorem} := by sorry`;
+  const env = baseEnv ?? mathlibEnv;
   const r = (await sendRaw({
     cmd,
-    env: mathlibEnv,
+    env,
   })) as ReplCommandResponse;
   // Parse errors (other than the expected "uses sorry" warning) mean
   // the type didn't typecheck — surface them.
