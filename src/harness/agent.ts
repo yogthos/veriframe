@@ -1190,7 +1190,7 @@ export function renderBranchHistory(state: GlobalRunState): string {
  * regenerates each turn from the global state, capped to the most
  * recent N entries to keep context cheap.
  */
-const FAILURE_LOG_HEAD = 30;
+const FAILURE_LOG_RECENT = 30;
 function buildBranchTurnContext(
   branch: BranchState,
   state: GlobalRunState,
@@ -1203,20 +1203,29 @@ function buildBranchTurnContext(
   // those in its own message history. Only show others' failures.
   const others = state.globalFailureLog.filter((f) => f.branchId !== branch.id);
   if (others.length === 0) return base;
-  const head = others.slice(-FAILURE_LOG_HEAD);
+  // Most-recent N — slice(-N) keeps the tail. Older failures get
+  // dropped first when the log overflows since fresher failures are
+  // more likely to inform the model's next move.
+  const recent = others.slice(-FAILURE_LOG_RECENT);
   const lines = [
     `Global failure log — ${others.length} attempt(s) by other branches that the engine REJECTED. Do NOT retry these:`,
   ];
-  for (const f of head) {
+  for (const f of recent) {
     lines.push(
       `  • [${f.branchId} t${f.turn} ${f.toolName}] "${f.claim}" → ${f.reason}`,
     );
   }
-  if (others.length > head.length) {
+  if (others.length > recent.length) {
     lines.push(
-      `  (${others.length - head.length} earlier entries omitted for brevity)`,
+      `  (${others.length - recent.length} earlier entries omitted for brevity)`,
     );
   }
+  // TODO(compaction): branch.messages and the global failure log
+  // both grow unboundedly. With deepseek-reasoner's 1M-token context
+  // this is fine for now, but for smaller-context models or longer
+  // runs we should compact older turns into a summary instead of
+  // sending verbatim. Out of scope for the K=5 beam rewrite — file
+  // when we hit a context-window cliff.
   return [...base, { role: "user", content: lines.join("\n") }];
 }
 
@@ -1364,11 +1373,39 @@ export async function runAgent(
   // problem prompt; diversity comes from the LLM's stochastic
   // generation under temperature, plus per-branch context drift as
   // the global failure log fills with other branches' rejections.
-  const branches: BranchState[] = await Promise.all(
+  //
+  // Use allSettled (not all): if one Prolog spawn fails we still
+  // need to dispose the ones that succeeded — Promise.all would
+  // leak them. On any failure, dispose successes and propagate.
+  const settled = await Promise.allSettled(
     Array.from({ length: BEAM_WIDTH }, (_, i) =>
       createBranch(`B${i + 1}`, problem),
     ),
   );
+  const succeeded = settled
+    .filter(
+      (r): r is PromiseFulfilledResult<BranchState> => r.status === "fulfilled",
+    )
+    .map((r) => r.value);
+  const rejected = settled.filter(
+    (r): r is PromiseRejectedResult => r.status === "rejected",
+  );
+  if (rejected.length > 0) {
+    await Promise.all(
+      succeeded.map((b) =>
+        b.prolog.dispose().catch(() => {
+          /* best effort */
+        }),
+      ),
+    );
+    const reasons = rejected
+      .map((r) => (r.reason instanceof Error ? r.reason.message : String(r.reason)))
+      .join("; ");
+    throw new Error(
+      `Failed to spawn ${rejected.length}/${BEAM_WIDTH} branches: ${reasons}`,
+    );
+  }
+  const branches: BranchState[] = succeeded;
   const state: GlobalRunState = {
     problem,
     branches,
@@ -1408,6 +1445,11 @@ export async function runAgent(
         const outcome = outcomes[i];
 
         if (outcome.done) {
+          // First done() in the round wins. Two or more branches can
+          // legitimately call done() in the same round (the
+          // Promise.all resolved them all); skip subsequent dones so
+          // we don't overwrite the winner's answer.
+          if (state.doneBranchId) continue;
           state.doneBranchId = b.id;
           state.finalAnswer = b.finalAnswer;
           // Stop scheduling further turns; abandon any other active
@@ -1448,15 +1490,24 @@ export async function runAgent(
       if (state.doneBranchId) break;
     }
   } finally {
-    // Dispose every branch's Prolog session — they all started a
-    // child process and we need to clean them up regardless of how
-    // the run ended.
+    // Dispose every branch's child processes — Prolog sessions and
+    // any open Lean REPL — so we don't leak subprocesses regardless
+    // of how the run ended (signal abort, exception, normal exit).
     await Promise.all(
-      state.branches.map((b) =>
-        b.prolog.dispose().catch(() => {
+      state.branches.map(async (b) => {
+        if (b.leanProof) {
+          try {
+            await closeSession(b.leanProof);
+          } catch {
+            /* best effort */
+          }
+        }
+        try {
+          await b.prolog.dispose();
+        } catch {
           /* best effort */
-        }),
-      ),
+        }
+      }),
     );
   }
 
@@ -1464,11 +1515,19 @@ export async function runAgent(
   // final response. The caller sees the entire beam, not just the
   // winning branch — failed branches' refuted attempts are useful
   // diagnostic data.
+  //
+  // Renumber stepNumber globally so consumers expecting a strictly
+  // increasing sequence aren't confused by per-branch numbering
+  // colliding (5 branches each starting at turn 1). The original
+  // per-branch turn number stays visible inside the explanation
+  // string via the `[Bx]` prefix and the tool-call args.
   const allArtifacts = state.branches.flatMap((b) => b.verifiedArtifacts);
+  let globalStepCounter = 0;
   const allSteps: ReasoningStep[] = state.branches.flatMap((b) =>
     turnsToSteps(b.turns).map((s) => ({
       ...s,
-      explanation: `[${b.id}] ${s.explanation}`,
+      stepNumber: ++globalStepCounter,
+      explanation: `[${b.id} t${s.stepNumber}] ${s.explanation}`,
     })),
   );
 
