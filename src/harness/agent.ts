@@ -1814,24 +1814,47 @@ async function runTool(
             "[error] done requires {answer: string} — your final human-readable answer.",
         };
       }
-      // Soundness gate: refuse `done` if the branch has confirmed
+      const answer = args.answer;
+      // Soundness gate 1: refuse `done` if the branch has confirmed
       // artifacts but no review has been run. The model must call
       // `review` first to cross-verify with an independent encoding,
-      // OR explicitly opt out with a rationale. This is the
-      // harness-level guard against the "model wrote a buggy
-      // encoding, Z3 said sat vacuously, claimStatus=confirmed
-      // shipped a wrong answer" failure mode we observed on the
-      // n=500 Sidon run.
-      const hasConfirmed = session.verifiedArtifacts.some(
-        (a) => a.claimStatus === "confirmed",
+      // OR explicitly opt out with a rationale.
+      const confirmedArtifacts = session.verifiedArtifacts.filter(
+        (a) => a.claimStatus === "confirmed" && !a.claim.startsWith("[review of]") && !a.claim.startsWith("[template "),
       );
-      if (hasConfirmed && !session.lastReview) {
+      if (confirmedArtifacts.length > 0 && !session.lastReview) {
         return {
           result:
             "[done blocked] Your branch has confirmed artifacts but no `review` has been run. Before declaring `done`, call `review` with an INDEPENDENT cross-check (different encoding/tool than the original confirmation) to catch encoding bugs. If you genuinely don't need a cross-check (e.g., Lean compiled the proof end-to-end), call review with `optOut: true` and a rationale.",
         };
       }
-      session.finalAnswer = args.answer;
+      // Soundness gate 2 (the answer-substantiation check): the
+      // shipped answer must mention the claims of the recent
+      // confirmed artifacts. Without this, a model can verify X,
+      // then call done() with a claim about Y — observed in the
+      // Schur-coloring run where B5 verified a 3-coloring of [1,13]
+      // and shipped a (false) 4-coloring of [1,44].
+      //
+      // We extract distinctive tokens (numbers, bracketed lists,
+      // identifier-like terms) from each recent confirmed artifact
+      // and require enough of them to appear in the answer text.
+      // If the answer is about a fundamentally different claim,
+      // reject and tell the model to verify what it's actually
+      // shipping.
+      if (confirmedArtifacts.length > 0) {
+        const recent = confirmedArtifacts.slice(-3);
+        const mismatch = checkAnswerCoversArtifacts(answer, recent);
+        if (mismatch.length > 0) {
+          const lines = [
+            "[done blocked] Your answer doesn't substantively reference the claims you actually verified. The harness checks that the answer mentions the distinctive identifiers/numbers from your recent confirmed artifacts so a 'verify X then ship Y' substitution is caught. Mismatches:",
+            ...mismatch.map((m) => `  • Artifact "${m.claim.slice(0, 100)}" — missing tokens in answer: ${m.missing.join(", ")}`),
+            "",
+            "If you've moved on to a different claim, run verify_template (or verify_smt / verify_lean) on the EXACT claim you want to ship, then call done. If the answer is intentionally summarising multiple results, mention each verified result's distinctive identifiers explicitly.",
+          ];
+          return { result: lines.join("\n") };
+        }
+      }
+      session.finalAnswer = answer;
       session.status = "done";
       const reviewNote = session.lastReview
         ? session.lastReview.optedOut
@@ -1876,6 +1899,100 @@ async function runTool(
  * Exported for tests; the prose format is part of the model-facing
  * contract so we want to lock it in.
  */
+/**
+ * Pull "distinctive" tokens from a string — numbers, bracketed
+ * lists like `[1, 500]`, identifiers ≥ 4 chars that aren't common
+ * words. These are the substantive content tokens that should
+ * appear in any honest summary of the same fact.
+ *
+ * Used by the done-gate to check that the model's shipped answer
+ * actually relates to the artifacts it verified.
+ */
+const DONE_GATE_STOPWORDS = new Set([
+  "the", "and", "for", "with", "that", "this", "from", "have", "has",
+  "are", "was", "were", "been", "into", "over", "what", "when", "where",
+  "which", "while", "above", "below", "after", "before", "about", "such",
+  "true", "false", "some", "all", "any", "non", "set", "size", "type",
+  "class", "case", "form", "kind", "name", "list", "value", "array",
+  "claim", "claims", "claimed", "verified", "confirm", "confirmed",
+  "prove", "proven", "proof", "lemma", "theorem", "predicate", "statement",
+  "result", "results", "level", "levels", "harness", "model", "open",
+  "closed", "compile", "compiled", "well", "typed", "general", "specific",
+  "goal", "goals",
+]);
+
+function extractDoneGateTokens(text: string): Set<string> {
+  const out = new Set<string>();
+  // Numbers (digit runs)
+  const nums = text.match(/\d+/g) ?? [];
+  for (const n of nums) out.add(n);
+  // Bracketed numeric lists like [1, 500] or {1, ..., 13}
+  const brackets = text.match(/[\[\{][^\[\]\{\}]*\d[^\[\]\{\}]*[\]\}]/g) ?? [];
+  for (const b of brackets) {
+    out.add(b.replace(/\s+/g, "").toLowerCase());
+  }
+  // Identifier-like tokens, ≥ 4 chars, not stopwords. Includes
+  // hyphenated terms like "3-coloring", "2-element-set".
+  const ids = text.match(/[A-Za-z][A-Za-z0-9_-]{3,}/g) ?? [];
+  for (const id of ids) {
+    const norm = id.toLowerCase();
+    if (!DONE_GATE_STOPWORDS.has(norm)) out.add(norm);
+  }
+  return out;
+}
+
+interface ArtifactMismatch {
+  claim: string;
+  missing: string[];
+}
+
+/**
+ * For each recent confirmed artifact, check whether the shipped
+ * `answer` mentions enough of the artifact's distinctive tokens.
+ * Returns an array of mismatches (one per artifact whose tokens are
+ * largely absent from the answer). Empty array = answer is
+ * substantively backed by the artifacts.
+ *
+ * Threshold: an artifact is considered "covered" if MORE THAN HALF
+ * of its distinctive tokens appear (case-insensitive substring) in
+ * the answer. Otherwise we flag the missing ones.
+ */
+export function checkAnswerCoversArtifacts(
+  answer: string,
+  artifacts: VerifiedArtifact[],
+): ArtifactMismatch[] {
+  const lowerAnswer = answer.toLowerCase().replace(/\s+/g, "");
+  const compactAnswer = lowerAnswer; // for bracketed-list matching
+  const wordAnswer = answer.toLowerCase();
+  const mismatches: ArtifactMismatch[] = [];
+  for (const a of artifacts) {
+    const tokens = extractDoneGateTokens(a.claim);
+    if (tokens.size === 0) continue; // no checkable tokens — skip
+    const missing: string[] = [];
+    for (const tok of tokens) {
+      // Bracketed lists: compare against compact form
+      if (tok.startsWith("[") || tok.startsWith("{")) {
+        if (!compactAnswer.includes(tok)) missing.push(tok);
+      } else if (/^\d+$/.test(tok)) {
+        // Numbers: word-boundary check
+        const re = new RegExp(`\\b${tok}\\b`);
+        if (!re.test(wordAnswer)) missing.push(tok);
+      } else {
+        // Identifiers: substring check (handles hyphens/underscores)
+        if (!wordAnswer.includes(tok)) missing.push(tok);
+      }
+    }
+    const coveredCount = tokens.size - missing.length;
+    // Require strictly MORE than half coverage. With small token
+    // counts (≤ 2) we require all of them to match.
+    const required = tokens.size <= 2 ? tokens.size : Math.floor(tokens.size / 2) + 1;
+    if (coveredCount < required) {
+      mismatches.push({ claim: a.claim, missing: missing.slice(0, 10) });
+    }
+  }
+  return mismatches;
+}
+
 export function renderBranchHistory(state: GlobalRunState): string {
   const lines: string[] = [];
   for (const b of state.branches) {

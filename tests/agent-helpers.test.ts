@@ -8,6 +8,7 @@ import {
   leanSnippetHasImport,
   renderBranchHistory,
   repairControlCharsInJsonStrings,
+  checkAnswerCoversArtifacts,
   type BranchState,
   type GlobalRunState,
 } from "../src/harness/agent.js";
@@ -120,6 +121,79 @@ describe("repairControlCharsInJsonStrings", () => {
     // raw newline mid-string should still get repaired.
     expect(out).toBe('{"k": "say \\"hi\\" then\\nbye"}');
     expect(() => JSON.parse(out)).not.toThrow();
+  });
+});
+
+describe("checkAnswerCoversArtifacts (done-gate substantiation)", () => {
+  const mkArtifact = (claim: string) => ({
+    kind: "smt" as const,
+    claim,
+    code: "",
+    claimStatus: "confirmed" as const,
+  });
+
+  it("flags the Schur cheat: verified [1,13] 3-coloring, shipped [1,44] 4-coloring", () => {
+    const artifact = mkArtifact(
+      "3-coloring of [1,13] via recursive construction has no monochromatic Schur triple",
+    );
+    const cheatAnswer = "Goal achieved: a 4-coloring of [1,44] periodic pattern with no monochromatic Schur triple, verified via verify_template.";
+    const mismatches = checkAnswerCoversArtifacts(cheatAnswer, [artifact]);
+    expect(mismatches.length).toBeGreaterThan(0);
+    expect(mismatches[0].missing.join(",")).toMatch(/13|recursive/);
+  });
+
+  it("accepts an honest answer that mentions the verified claim", () => {
+    const artifact = mkArtifact(
+      "3-coloring of [1,13] via recursive construction has no monochromatic Schur triple",
+    );
+    const honestAnswer = "Goal: 3-coloring of [1,13] verified, no monochromatic Schur triple. Used the recursive Schur construction. Settles S(3) ≥ 13.";
+    const mismatches = checkAnswerCoversArtifacts(honestAnswer, [artifact]);
+    expect(mismatches).toEqual([]);
+  });
+
+  it("accepts a Sidon Mian-Chowla 20 answer", () => {
+    const artifact = mkArtifact(
+      "Mian-Chowla 20 is a Sidon set in [1, 500]",
+    );
+    const answer = "Verified Sidon set of size 20 in [1, 500] using the Mian-Chowla truncated sequence: {1, 2, 4, 8, 13, 21, ...}.";
+    const mismatches = checkAnswerCoversArtifacts(answer, [artifact]);
+    expect(mismatches).toEqual([]);
+  });
+
+  it("accepts a thorough multi-artifact summary that names each verified result", () => {
+    const a1 = mkArtifact("Definitions of IsUnionClosed and FranklConjecture compile against Mathlib");
+    const a2 = mkArtifact("Level 2c: For union-closed F with |F| = 2, Frankl's conjecture holds");
+    const answer = "Verified: Definitions of IsUnionClosed and FranklConjecture compile against Mathlib (Level 1 baseline). Level 2c: For union-closed F with |F| = 2, the Frankl conjecture holds (Lean proof closes via omega).";
+    const mismatches = checkAnswerCoversArtifacts(answer, [a1, a2]);
+    expect(mismatches).toEqual([]);
+  });
+
+  it("flags a partial summary that drops one of the verified artifacts", () => {
+    // The model verified two things and shipped only the second.
+    // The L1 artifact's distinctive identifiers (IsUnionClosed,
+    // FranklConjecture) don't appear in the answer; the gate should
+    // catch that the answer is under-counting.
+    const a1 = mkArtifact("Definitions of IsUnionClosed and FranklConjecture compile against Mathlib");
+    const a2 = mkArtifact("Level 2c: For union-closed F with |F| = 2, Frankl's conjecture holds");
+    const answer = "Verified: Level 2c — for union-closed F with |F| = 2, the Frankl conjecture holds.";
+    const mismatches = checkAnswerCoversArtifacts(answer, [a1, a2]);
+    // a1 should be flagged (its identifiers don't appear)
+    expect(mismatches.length).toBe(1);
+    expect(mismatches[0].claim).toContain("IsUnionClosed");
+  });
+
+  it("flags when the answer omits the verified problem's specific numbers", () => {
+    const artifact = mkArtifact(
+      "Verified Mian-Chowla Sidon set of size 20 in [1, 500]",
+    );
+    // Answer claims a totally different size and range
+    const wrong = "Sidon set of size 35 in [1, 1000] using Singer's construction";
+    const mismatches = checkAnswerCoversArtifacts(wrong, [artifact]);
+    expect(mismatches.length).toBeGreaterThan(0);
+  });
+
+  it("returns no mismatches when there are no recent artifacts", () => {
+    expect(checkAnswerCoversArtifacts("anything", [])).toEqual([]);
   });
 });
 
