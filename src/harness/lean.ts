@@ -27,6 +27,7 @@ import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { randomUUID } from "node:crypto";
+import { lintLean } from "./lint.js";
 
 // Workspace lives at <repo-root>/tools/lean-workspace. This file is
 // at <repo-root>/src/harness/lean.ts (or dist/harness/lean.js when
@@ -161,6 +162,16 @@ export async function runLean(
   snippet: string,
   opts: LeanOptions = {},
 ): Promise<LeanResult> {
+  // Pre-execution lint. Catches "comment-eats-declaration" style
+  // bugs and empty / decl-less inputs before we pay the lake startup.
+  const lint = lintLean(snippet);
+  if (!lint.ok) {
+    return {
+      status: "error",
+      error: `Lean lint rejected the snippet — execution skipped:\n  • ${lint.warnings.join("\n  • ")}`,
+      diagnostics: [],
+    };
+  }
   const workspace = opts.workspaceDir ?? WORKSPACE_DIR;
   if (!existsSync(workspace)) {
     return {

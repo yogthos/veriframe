@@ -24,6 +24,7 @@
  */
 
 import { spawnSync } from "node:child_process";
+import { lintSmt } from "./lint.js";
 
 const Z3_BINARY = "z3";
 const Z3_TIMEOUT_MS = 30_000;
@@ -44,6 +45,18 @@ export type SmtResult =
   | { status: "error"; error: string };
 
 export function runSmt(smtlib: string): SmtResult {
+  // Pre-execution lint — refuse to run inputs that would silently
+  // produce vacuous results (e.g., a `;` line comment swallowed all
+  // the assertions). Catches the kind of encoding bugs Z3 itself
+  // doesn't surface.
+  const lint = lintSmt(smtlib);
+  if (!lint.ok) {
+    return {
+      status: "error",
+      error: `SMT lint rejected the input — execution skipped:\n  • ${lint.warnings.join("\n  • ")}`,
+    };
+  }
+
   const hasCheckSat = /\(\s*check-sat\s*\)/.test(smtlib);
   const hasGetModel = /\(\s*get-model\s*\)/.test(smtlib);
   let code = smtlib;

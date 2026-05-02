@@ -48,14 +48,17 @@ describe("lean 4 backend", () => {
     expect(r.diagnostics.filter((d) => d.severity === "error")).toHaveLength(0);
   }, 120_000);
 
-  it("reports a syntax-error proof clearly", async () => {
+  it("rejects a no-declaration snippet at lint stage", async () => {
+    // Lint catches "no theorem/example/def" before lake startup.
+    // The previous behaviour required spinning Lean up just to get
+    // a parse error; the lint short-circuits in milliseconds.
     const r = await runLean(`
       import Mathlib
       this is not valid lean
     `);
     expect(r.status).toBe("error");
     if (r.status !== "error") return;
-    expect(r.diagnostics.length).toBeGreaterThan(0);
+    expect(r.error.toLowerCase()).toMatch(/lint|theorem|example/);
   }, 120_000);
 
   it("two runLean calls execute concurrently (not blocking the event loop)", async () => {
