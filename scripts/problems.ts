@@ -492,6 +492,106 @@ Use verify_lean. The standard Mathlib proof unfolds Even as ∃ k, _ = k + k (or
     maxSteps: 6,
   },
 
+  "erdos-straus-mod1-creative": {
+    id: "erdos-straus-mod1-creative",
+    type: "OPEN PROBLEM — Erdős–Straus for n ≡ 1 mod 4 (cross-disciplinary attempt)",
+    difficulty: "very-hard",
+    prompt: `## The remaining case
+
+A previous run of this harness produced **Lean 4 + Mathlib proofs of the Erdős–Straus conjecture for $n \\equiv 0, 2, 3 \\pmod 4$** (commit a4c19fd). The constructions:
+
+- $n \\equiv 0 \\pmod 2$: $(x, y, z) = (k, 2k, 2k)$ for $n = 2k$
+- $n \\equiv 0 \\pmod 4$: $(x, y, z) = (3m, 3m, 3m)$ for $n = 4m$ (refined)
+- $n \\equiv 3 \\pmod 4$: $(x, y, z) = \\bigl(k+1,\\; n(k+1)+1,\\; n(k+1)(n(k+1)+1)\\bigr)$ for $n = 4k+3$
+
+**Your target: prove the conjecture for $n \\equiv 1 \\pmod 4$.** This single residue class is the entire remaining content of Erdős–Straus. It's been the bottleneck for 78 years.
+
+## What's already been tried (don't repeat)
+
+Mathematicians have spent decades on this. The standard approaches all fail at the residual sparse set:
+
+- **Sub-residue decomposition** mod 24, mod 840: handles many $n \\equiv 1 \\pmod 4$ cases, leaves a residual.
+- **Reduction to "$n$ has a prime factor $p$ with [certain property]"**: works for many primes, leaves the others.
+- **Mordell's identity** and variations: covers more cases, still leaves a residual.
+- **Polynomial identities in auxiliary parameters**: extensive search has found many, none cover the residual.
+- **Computer search** to $n \\leq 10^{17}$: confirms the conjecture but proves nothing.
+- **Heath-Brown density bound** (1996): density of $n$ violating the conjecture is $O((\\log N)^{-3})$. Doesn't cover the residual deterministically.
+
+Standard techniques have been **exhausted** on this case. If a clean proof exists, it's almost certainly **not** another sub-residue decomposition or polynomial identity.
+
+## Your charge: be creative across disciplines
+
+This is the entire point of this run. **Don't try a standard number-theoretic approach.** Bring a perspective from a completely different field. Some jumping-off points — pick one that resonates, or invent your own:
+
+### Physics
+- **Statistical mechanics on integers**: treat $4/n = 1/x + 1/y + 1/z$ as an energy minimisation over a state space of triples $(x, y, z)$. Are there phase transitions in the density of solutions as $n$ varies through residues?
+- **Spectral theory**: the operator $T(n) = \\inf_{(x,y,z)} \\|4/n - (1/x + 1/y + 1/z)\\|$ has structure as $n$ varies. What does its spectrum look like?
+- **Quantum decomposition**: model unit fractions as states in a Hilbert space, the conjecture as a statement about reachability.
+
+### Computer science / algorithms
+- **Randomised algorithms / Lovász local lemma**: model the failure of the conjecture as a bad event, show its probability is < 1.
+- **Kolmogorov complexity**: failures of Erdős-Straus would have low complexity descriptions; bound the complexity to bound failures.
+- **Algorithmic information theory**: a counterexample would be a compressible structure; impossibility from incompressibility arguments.
+- **Streaming / sketching**: what's the minimal "sketch" of $n$ that determines whether the conjecture holds?
+
+### Information theory
+- **Entropy bounds**: each $n$ admits multiple $(x, y, z)$ decompositions. What's the entropy of the decomposition distribution? Does it diverge for the open class?
+- **Channel capacity**: model the conjecture as a coding problem; failures correspond to transmission errors with some bounded rate.
+
+### Topology / algebraic geometry
+- **The variety**: $4xyz - n(yz + xz + xy) = 0$ defines a surface in $\\mathbb{P}^3$ or $\\mathbb{A}^3$. Are there topological invariants (Euler characteristic, Betti numbers) that prevent integer points for specific residues?
+- **Sheaf cohomology**: rational points on the variety as a cohomological obstruction.
+
+### Game theory / dynamics
+- **A two-player game**: the proposer picks $n \\equiv 1 \\pmod 4$, the responder must produce $(x, y, z)$. Is there a winning strategy for the responder regardless of the proposer's choice?
+- **Dynamical systems**: iterate a map $n \\mapsto T(n)$ that's invariant on the failure set. If the failure set is empty, the map has no orbits — a topological constraint.
+
+### Logic / proof theory
+- **Reverse mathematics**: what's the proof-theoretic strength of Erdős–Straus? Is it equivalent to some known principle?
+- **Reduction to a decidable fragment**: identify a fragment where this is decidable; reduce.
+
+### Cross-pollination
+- **Recent breakthroughs**: the Polynomial Freiman-Ruzsa conjecture was resolved in 2023 by Marton/Tao/Green/Manners using entropy methods after decades of failed attempts. Could a similar entropy-on-additive-structure approach apply here?
+- **Cap sets**: Croot-Lev-Pach (2016) used polynomial-degree arguments to crack the cap set conjecture asymptotically. Is there an analogous polynomial-method approach for unit fractions?
+
+## Tooling & verification
+
+The harness's verification engines stay the same — anything you produce gets checked:
+
+- **\`lean_define\`** to add the previous theorems' statements + your auxiliary types/axioms incrementally
+- **\`proof_start\`** + **\`proof_step\`** for stepwise development
+- **\`verify_lean\`** for one-shot proofs
+- **\`verify_smt\`** for witness-finding at specific $n \\equiv 1 \\pmod 4$ (Z3 can find $(x, y, z)$ for any specific $n$ in the open class — that's not the question; the question is the GENERAL proof)
+- **\`audit\`** to LLM-cross-check any structural argument before shipping
+- **\`review\`** for explicit cross-checking with an independent encoding
+
+## Process
+
+1. **Choose your discipline.** Pick the angle that feels most promising or most underexplored. Commit to one — don't try five at 20% depth.
+2. **Articulate the bridge.** In your prose, spell out concretely how the cross-disciplinary perspective maps onto the conjecture's structure. The bridge is the load-bearing piece.
+3. **Identify the load-bearing lemma.** What's the smallest claim that, if proven via your novel angle, would close the conjecture (or a meaningful subset of $n \\equiv 1 \\pmod 4$)?
+4. **Formalize what you can.** Use \`lean_define\` to set up the cross-disciplinary framing in Lean (or as much as fits).
+5. **Verify, audit, ship.** Even if the full conjecture eludes you, a verified novel structural insight is meaningful.
+
+## Realistic outcomes
+
+- **Most likely**: you reach for a cross-disciplinary angle, formalize the framing, and prove a smaller structural result that captures part of the open case. This is genuinely new and meaningful.
+- **Possible**: a sub-residue class of $n \\equiv 1 \\pmod 4$ falls to your novel approach.
+- **Vanishingly unlikely but real**: the full $n \\equiv 1 \\pmod 4$ case yields. This would be a publishable contribution.
+- **Equally valid**: you try a novel angle, it doesn't work, you ship the honest finding "approach X reduces the problem to claim Y, which I couldn't close." Negative results from creative attempts are also data.
+
+## Critical reminder
+
+**Resist the urge to retreat to standard techniques after the first failed creative attempt.** That's the failure mode that keeps this conjecture open. The standard techniques don't work — that's why we're trying something else. If your first cross-disciplinary angle doesn't pan out, **try a different cross-disciplinary angle**, not a standard fallback.
+
+The harness will verify whatever you produce. Be bold.
+
+**Budget: 100 turns.** Spend turns on the bridging argument, not on routine elaboration.`,
+    expectedAnswer:
+      "Open. The n ≡ 1 mod 4 case of Erdős–Straus is the historically-hardest residue class. Realistic measure of success: any verified novel structural argument, even if partial. Full proof not expected.",
+    maxSteps: 100,
+  },
+
   "erdos-straus-general": {
     id: "erdos-straus-general",
     type: "OPEN PROBLEM — Erdős–Straus conjecture, general proof attempt",
