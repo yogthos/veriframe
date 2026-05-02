@@ -492,6 +492,67 @@ Use verify_lean. The standard Mathlib proof unfolds Even as ∃ k, _ = k + k (or
     maxSteps: 6,
   },
 
+  "open-3ap-free-300": {
+    id: "open-3ap-free-300",
+    type: "OPEN PROBLEM — large 3-AP-free subset of [1, 300]",
+    difficulty: "very-hard",
+    prompt: `**THIS IS AN OPEN PROBLEM.** The exact maximum size of a 3-AP-free subset of {1, 2, …, n} (denoted r_3(n)) is computed exactly in OEIS A003002 only for small n; for n in the few-hundred range, only bounds are recorded. The general behaviour is r_3(n) = n / (log n)^{Ω(√log log n)} (Behrend 1946; Elkin's 2010 improvement; Croot–Lev–Pach / Ellenberg–Gijswijt for the F_3^n cousin). This is NOT a problem with a known closed-form answer — your job is creative.
+
+**Goal.** Construct a subset S ⊆ {1, 2, …, 300} of size as large as possible such that S contains NO three-term arithmetic progression (i.e., no a, d ≥ 1 with a, a+d, a+2d all in S; note d > 0, and a, a+d, a+2d distinct).
+
+**Reward gradient.**
+  - **Floor (~30):** the greedy / random construction. Easy. Not interesting.
+  - **Behrend-like (~40–50):** the Behrend 1946 construction or its Elkin-style refinement at n=300. This is the published baseline. Match it and you've executed the literature correctly.
+  - **Above 50:** plausibly novel. Genuinely worth writing down if verified.
+  - **Above the Mathematica/SAT-derived bounds for this scale:** a publishable result.
+
+**Process — this is the part we care about.**
+
+You are NOT proving R(3,3); the answer is unknown. We want creative problem-solving.
+
+  1. **Range first.** Before producing any candidate set, propose 3–5 *distinct constructions from different mathematical traditions*. Examples to spark thought (don't use these verbatim — pick your own):
+     - Number-theoretic: Behrend's "high-dimensional sphere" lift via base-q digits with bounded digit-sum-of-squares.
+     - Multiplicative-character: residues that avoid certain quadratic patterns.
+     - Probabilistic / explicit pseudo-random: random sets conditioned on no 3-AP, then derandomised.
+     - Algebraic: subsets of Z/pZ avoiding 3-APs lifted to [1, n].
+     - Computational: SAT-driven construction starting from a Behrend skeleton, swapping elements to grow.
+     - Geometric: lattice points on a sphere in Z^k, mapped to [1, n] via base-q.
+     For each, write 2-3 sentences: what's the construction, why might it work at n=300, what's the predicted size?
+
+  2. **Pick one. Commit.** Choose the most promising. Justify briefly.
+
+  3. **Construct.** Output the explicit subset S as a sorted list of integers.
+
+  4. **Verify.** Encode "S contains no 3-AP" in SMT-LIB and call \`verify_smt\`. The encoding is short:
+     - declare S as a fixed list of integers (e.g., \`(define-fun S () (Array Int Bool) (store (store ... (const false) ...)))\` or simply enumerate membership predicates).
+     - assert: \`(exists ((a Int) (d Int)) (and (> d 0) (in-S a) (in-S (+ a d)) (in-S (+ a (* 2 d)))))\`
+     - expected: UNSAT (no 3-AP in S).
+     A simpler encoding: declare elements as constants, assert distinctness, and assert NOT (any of the C(|S|, 3) candidate triples form an AP — there are only ~|S|² such pairs to check, manageable for |S| ≤ 60). Pick whichever encoding you can write cleanly.
+
+  5. **Iterate.** If verification rejects S (some 3-AP slipped in), explain what you learned, repair or pivot, try again. Verification failure is data, not defeat.
+
+  6. **Report.** Final answer must include:
+     - The chosen construction (named, with citation if applicable).
+     - The explicit subset S.
+     - The verified |S|.
+     - Comparison: is this above, at, or below the published Behrend bound for n=300? (Give a numerical estimate.)
+
+**What success looks like.**
+  - Produce a set S of size ≥ 40 with verified no-3-AP property.
+  - The reasoning trace shows genuine cross-subfield exploration, not regurgitation.
+  - The construction is explainable: a future reader can understand WHY this set has no 3-AP without re-running the verifier.
+
+**What failure looks like (still useful!).**
+  - A construction that the verifier rejects. (You learned something about the construction.)
+  - A construction smaller than the trivial bound. (You learned something about your encoding.)
+  - The model confidently proposing a "clever" construction that's actually 3-AP-rich. (Verification catches this — that's the whole point.)
+
+You have lots of turns; don't rush. The interesting trace is one where you propose something, the verifier disagrees, and you iterate.`,
+    expectedAnswer:
+      "Open. Floor: ~30 from greedy. Behrend baseline at n=300 yields roughly 35–50 (depends on parameter choice). Anything ≥ 40 with verified no-3-AP is an honest result; ≥ 50 is plausibly novel. The harness should not declare a 'correct' answer here — judge by the *size achieved* and whether the verifier accepted it.",
+    maxSteps: 60,
+  },
+
   "einstein-4x4": {
     id: "einstein-4x4",
     type: "Einstein-style logic puzzle (4 houses, 4 attribute categories, 9 clues)",
