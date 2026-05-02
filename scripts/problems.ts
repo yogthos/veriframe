@@ -492,6 +492,82 @@ Use verify_lean. The standard Mathlib proof unfolds Even as ∃ k, _ = k + k (or
     maxSteps: 6,
   },
 
+  "rigging-no-equivocation": {
+    id: "rigging-no-equivocation",
+    type: "Cryptographic protocol theorem — hitch non-equivocation guarantee",
+    difficulty: "very-hard",
+    prompt: `**Prove the fundamental rigging guarantee** (TODA Rigging Specifications v0.9876, §6).
+
+## Background
+
+A *line* is a sequence of *twists* (each twist is a hash-identified data structure that succeeds the previous one). A line *equivocates* if a single twist has two distinct valid successors — i.e., the line forks. The cryptographic question of interest: under what construction can we guarantee that an untrusted line cannot equivocate?
+
+A **hitch** is the fundamental unit of rigging. It connects two segments — a *footline* (untrusted) to a *topline* (trusted), via 5 distinguished twists:
+- **fastener** — the first twist of the topline
+- **lead** — the first twist of the footline; supplies a secret \`lead.shld\`
+- **meet** — the last twist of the footline; the canonical successor of \`lead\`
+- **hoist** — the twist on the topline that incorporates the lead-meet binding
+- **post** — succeeds the hoist; carries the rigging trie containing the binding
+
+**Shielding.** The footline operator keeps \`lead.shld\` secret. The shield function is
+$$
+S(\\text{hitch}, x) = H_{\\text{alg}(I(\\text{lead}))}\\bigl(C(\\text{lead.shld}) \\mid\\mid x\\bigr)
+$$
+where $H_a$ is the hash for algorithm $a$, $I(\\cdot)$ is the twist identifier, and $C(\\cdot)$ extracts content bytes.
+
+**Hitch validity.** A valid hitch requires the hoist's rigging trie to contain BOTH:
+1. \`hoist.rigs[S(hitch, I(lead))] = I(meet)\`
+2. \`hoist.rigs[S(hitch, S(hitch, I(lead)))] = S(hitch, I(meet))\`
+
+Plus a "no-collision proof" that no twist between fastener and hoist contains a conflicting pair under the same shielded keys.
+
+## Theorem to prove
+
+**Theorem (Hitch non-equivocation).** Assume:
+- $H$ is a *collision-resistant cryptographic hash function* (treated as an injective oracle for proof purposes — no two distinct inputs map to the same output).
+- Twist identifiers are determined by hashing twist contents, so distinct twists have distinct identifiers.
+- The footline operator's secret \`lead.shld\` is unknown to any other party until disclosed.
+
+If the **topline** (segment from fastener to hoist) has not equivocated — i.e., the topline has a unique sequence of twists from \`fastener\` to \`hoist\` — then the **footline** (segment from \`lead\` to \`meet\`) has not equivocated either: the meet identified by the hoist's rigging trie is the unique canonical successor of \`lead\` in the footline.
+
+## Proof obligations
+
+You don't need a single Lean script that compiles end-to-end (formalising the entire rigging protocol in Mathlib would take weeks). Instead, produce a **structured proof argument** with as much formalisation as is feasible:
+
+1. **Setup**: state the abstract types (twists, identifiers, hashes) and the collision-resistance axiom in Lean (using \`opaque\` or \`axiom\`).
+
+2. **Key lemmas**: prove or formally state:
+   - **L1 (uniqueness of shielded key-value)**: given the secret \`lead.shld\`, only the footline operator can produce a valid second pair \`[S(S(lead)), S(meet)]\` matching a chosen \`[S(lead), meet]\`. Any forgery requires a hash collision.
+   - **L2 (hoist uniqueness)**: any two valid hitches with the same lead and same hoist must have the same meet. This is the heart of the theorem.
+   - **L3 (canonical succession)**: from L2, \`meet\` is the unique canonical successor of \`lead\` modulo the topline.
+
+3. **Main theorem**: if the topline is unique (uses the L2 lemma), the meet is determined → the footline up to meet is unique.
+
+## Tools
+
+- \`verify_lean\` / \`proof_start\` / \`proof_step\` for the formal lemmas. Mathlib has injection-style lemmas (\`Function.Injective\`) you can leverage.
+- \`lean_search\` to find Mathlib lemmas on injectivity, hash-like structures, or unique-existence.
+- \`verify_smt\` for any small finite-instance sanity checks (e.g., a 2-twist hitch model).
+
+## Output expectations
+
+A valid attempt has:
+- Definitions of the relevant abstract types in Lean (twist, hitch, hoist's rigging trie as a function/finmap)
+- The collision-resistance axiom stated explicitly
+- L1, L2, or L3 proven (any one is meaningful progress; all three is the goal)
+- The main theorem stated formally (proof can defer to lemmas)
+- A natural-language summary of why the proof works
+
+This is a structural/cryptographic theorem, not a constructive combinatorial problem. Lean is the right tool. Don't try to verify with SMT-LIB existential queries — they'll time out. Prefer \`proof_start\` + tactic-by-tactic development.
+
+**Budget: 50 turns.** Use them for genuine proof construction, not encoding fiddling. If you can't make the formalisation work in 5 turns, pivot to writing a precise informal proof with whichever lemmas you CAN formalise sprinkled in.
+
+**What success looks like:** at minimum, a Lean snippet that compiles defining the abstract setup + the collision-resistance axiom. Better: at least one of L1/L2/L3 proven. Best: the main theorem stated and proven from the lemmas.`,
+    expectedAnswer:
+      "A structured proof of hitch non-equivocation. The core argument: shielded key-value pairs in the hoist's rigging trie cryptographically bind lead to meet via the footline operator's secret lead.shld; any equivocation in the footline (two distinct meets for the same lead) would require either a hash collision (violating the assumption) or an unauthorized party knowing lead.shld (also assumed impossible). Formal Lean grounding for the collision-resistance axiom and the bind-lemma is the meaningful deliverable; full formalisation of the protocol is out of scope.",
+    maxSteps: 50,
+  },
+
   "open-capset-f3-7": {
     id: "open-capset-f3-7",
     type: "GENUINELY OPEN PROBLEM — maximum cap set in F_3^7",
