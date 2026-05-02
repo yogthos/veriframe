@@ -81,6 +81,11 @@ export interface ChatOptions {
         };
       };
   signal?: AbortSignal;
+  /** Per-call temperature override. Lets the agent loop vary
+   *  creativity per turn — high when proposing a hypothesis, lower
+   *  when consolidating a verified result. Falls back to
+   *  config.temperature when unset. */
+  temperature?: number;
 }
 
 export interface LLMClient {

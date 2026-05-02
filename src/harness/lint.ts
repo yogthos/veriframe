@@ -98,6 +98,61 @@ export function lintSmt(smtlib: string): LintResult {
     }
   }
 
+  // Layer 1 — Round 2 false-positive coverage: ellipsis shorthand.
+  // The model used `...` as informal shorthand for "and so on";
+  // Z3 emits parse errors then SAT'd the empty surviving formula.
+  // SMT-LIB has no abbreviation syntax — `...` is an error.
+  if (/(?<!["])\.\.\.(?!["])/.test(stripped)) {
+    warnings.push(
+      "Literal `...` (ellipsis) detected outside string literals. SMT-LIB has no abbreviation syntax — every (declare-const ...), (assert ...), and (+ a_i a_j) must be spelled out explicitly. Z3 will emit parse errors and may silently SAT the empty constraint set that survives.",
+    );
+  }
+
+  // Layer 1 — flag `(distinct sums)` over expressions whose summands
+  // include constants that aren't themselves asserted distinct. The
+  // n=500 false positive at "size 23 existential" had this shape:
+  // `(distinct a1 ... a23)` was missing, so `(distinct (+ a_i a_j))`
+  // was vacuously satisfiable with all-zero values. Heuristic check
+  // for the smell, not a full parser.
+  const distinctSumsRe = /\(\s*distinct\s+\(\s*\+\s/;
+  if (distinctSumsRe.test(stripped)) {
+    // We're asserting distinctness of pair-sums. Look for a sibling
+    // `(distinct varname1 varname2 ...)` that constrains the
+    // underlying constants — without it the witness can be all-equal
+    // and the sum-distinctness becomes trivially "0 ≠ 0 ≠ 0 …" → SAT
+    // with a degenerate model.
+    const distinctVarsRe = /\(\s*distinct\s+(?!\(\s*\+)/;
+    if (!distinctVarsRe.test(stripped)) {
+      warnings.push(
+        "`(distinct (+ a_i a_j) ...)` asserts pair-sum distinctness but there's no sibling `(distinct a_1 a_2 ... a_n)` constraining the underlying constants. Z3 can SAT this with a degenerate witness (e.g., all-zero values) where pair-sums collapse to a single element. Add `(assert (distinct a_1 ... a_n))` so the constants must take distinct values.",
+      );
+    }
+  }
+
+  // Layer 1 — suspicious forall over a small finite domain. The
+  // Round-1 size-26 false positive used `(forall ((i Int) (j Int)
+  // (k Int) (l Int)) (=> (and (<= 1 i) (<= i j) (<= j k) (<= k l)
+  // (<= l N)) ...))` — an ordering chain that misses most pair-vs-
+  // pair comparisons. forall over a small finite range is almost
+  // always wrong: enumerate the pairs explicitly with `(distinct
+  // ...)` instead. Heuristic: forall whose body restricts the bound
+  // variables to a small range with `<=`.
+  const forallSmallDomainRe = /\(\s*forall\s+\(\s*\([^)]+\s+Int\s*\)/;
+  if (forallSmallDomainRe.test(stripped)) {
+    // Estimate the upper bound declared inside the forall body
+    // by looking for `<= var N)` patterns where N is a small
+    // integer (under 100, say).
+    const upperBoundMatches = stripped.match(/<=\s+\w+\s+(\d+)\s*\)/g) ?? [];
+    const bounds = upperBoundMatches
+      .map((m) => Number(m.match(/\d+/)?.[0] ?? "0"))
+      .filter((n) => n > 0 && n < 100);
+    if (bounds.length > 0) {
+      warnings.push(
+        `\`(forall ((i Int) ...) ...)\` with a small finite range (max bound observed: ${Math.max(...bounds)}). Universal quantification over Int is hard for Z3 to discharge correctly when the property is really "for all members of a finite set" — and ordering-chain encodings (e.g., \`i ≤ j ≤ k ≤ l\`) routinely miss most cases. Enumerate the pairs explicitly with (distinct ...) instead. The Round-1 size-26 false positive in this harness used exactly this pattern.`,
+      );
+    }
+  }
+
   return { ok: warnings.length === 0, warnings };
 }
 
@@ -159,6 +214,21 @@ export function lintLean(snippet: string): LintResult {
     if (!hasDecl) {
       warnings.push(
         "Lean snippet has no `theorem` / `example` / `lemma` / `def` declaration after stripping comments. verify_lean expects a complete declaration; for individual tactics use `proof_step`.",
+      );
+    }
+    // Reject `sorry` and `admit` placeholders. Lean accepts both
+    // with only a warning (not an error), so without this check the
+    // harness would record "claimStatus: confirmed" for snippets
+    // whose proofs aren't actually closed. Observed in the Frankl
+    // run: a `two_element_set_lemma` artifact with two `sorry`
+    // statements got marked confirmed despite proving nothing.
+    //
+    // We scan word-boundary so identifiers like `mySorry` don't
+    // false-trigger.
+    const sorryRe = /\b(sorry|admit)\b/;
+    if (sorryRe.test(stripped)) {
+      warnings.push(
+        "Snippet contains `sorry` or `admit` — these are placeholder tactics that compile but do NOT prove anything (Lean only emits a warning). Replace them with real tactics, or split the work: `lean_define` adds the goal as an axiom you can use elsewhere, or `proof_start` lets you develop the closed proof step by step.",
       );
     }
   }

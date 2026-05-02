@@ -492,6 +492,600 @@ Use verify_lean. The standard Mathlib proof unfolds Even as ∃ k, _ = k + k (or
     maxSteps: 6,
   },
 
+  "erdos-straus-general": {
+    id: "erdos-straus-general",
+    type: "OPEN PROBLEM — Erdős–Straus conjecture, general proof attempt",
+    difficulty: "very-hard",
+    prompt: `## The conjecture
+
+**Erdős–Straus (1948).** For every integer $n \\geq 2$, there exist positive integers $x, y, z$ such that
+$$
+\\frac{4}{n} = \\frac{1}{x} + \\frac{1}{y} + \\frac{1}{z}.
+$$
+
+**Status as of 2026**: open. Computationally verified for all $n \\leq 10^{17}$ (Salez 2014 and successors). No general proof published in 78 years.
+
+## Your task
+
+**Find a general proof.** Or, if a full proof eludes you, prove it for a residue class that's still listed as open in the literature, OR develop a novel structural argument that reduces the open cases. The realistic outcome is partial progress on a famous open problem; even that is a contribution.
+
+This is not a benchmark — it's a research attempt. The harness's verification engines exist to check specific intermediate steps (residue-class proofs, identity verifications, witness searches). The creative part — picking the angle, choosing the abstraction, making unusual connections — is on you.
+
+## What's already been tried (so you don't repeat)
+
+Pre-existing partial results, all in the literature:
+
+- **Residue classes of $n$ mod 840**: most have explicit constructions. E.g., $n \\equiv 0 \\pmod 4$ admits $4/n = 1/(n/4) + 1/k + 1/(-k)$ trivially with appropriate algebra. Many other classes have published Erdős/Straus/Schinzel constructions.
+- **Probabilistic / heuristic arguments**: Heath-Brown 1996 showed the proportion of $n \\leq N$ where the conjecture holds is $1 - O((\\log N)^{-3})$. So almost all $n$ admit decompositions; the conjecture is for the residual sparse set.
+- **Continued fractions / Stern-Brocot tree**: structural representations of unit fraction sums.
+- **Mordell's identity** and its variations for specific residue classes.
+- **Computer search**: exhaustive verification up to $10^{17}$.
+
+The remaining open cases tend to involve specific congruence conditions on $n$ modulo small primes. Pick one and try.
+
+## Be creative — this is the whole point
+
+The conjecture has resisted classical attacks for 78 years. If a clean proof exists, it's likely from a **non-obvious angle**. Stretch your knowledge:
+
+- **Algebraic number theory**: think of $4/n$ as an element of $\\mathbb{Q}$ and try $K$-theoretic / class-group arguments.
+- **Algebraic geometry**: the condition $4/n = 1/x + 1/y + 1/z$ defines a variety over $\\mathbb{Q}$. Are there rational/integer point arguments from elliptic curves, modular forms, or Manin-style descent?
+- **Combinatorics on words**: the partial fractions have a Stern-Brocot tree structure — is there a coding-theoretic angle?
+- **Spectral / analytic methods**: $L$-functions, Hardy-Littlewood circle method, or character sums for specific residues.
+- **Probabilistic number theory**: extending Heath-Brown's density bound to a full proof for the residual set.
+- **Logical / proof-theoretic**: is there a reduction to a decidable fragment for specific classes?
+- **Computer algebra / symbolic computation**: a polynomial identity that proves the conjecture by exhibiting parametrised solutions for an infinite family.
+- **Cross-field surprises**: anything from physics (statistical mechanics on the integers?), CS (algorithm-design viewpoint?), or a recently-resolved problem in additive combinatorics that might transfer.
+
+Don't restrict yourself to "standard" Erdős–Straus literature. The conjecture has been picked at by experts using standard techniques for decades — that's exactly why it's open. **The likeliest path to progress is a connection nobody's tried.**
+
+## Tooling
+
+- **\`verify_lean\`** / **\`proof_start\`** for any structural proof step. Use this for residue-class proofs, polynomial identity proofs, anything Lean can elaborate.
+- **\`lean_define\`** to build up a development with the conjecture's definitions plus your auxiliary lemmas.
+- **\`lean_search\`** to find Mathlib's lemmas on \`Nat.gcd\`, \`Nat.div\`, modular arithmetic, partial fractions, etc.
+- **\`verify_smt\`** for witness-finding at specific $n$. Z3 can find $(x, y, z)$ for moderate $n$ in seconds.
+- **\`audit\`** if you produce a confirmed artifact and want a sub-LLM review for soundness before shipping.
+
+## Process
+
+1. **Survey** in your prose: what techniques have been tried, where have they hit a wall, and which under-explored angle would you bring?
+2. **Pick an angle** and commit. Don't try five things at 20% depth; try one at full depth.
+3. **Formalize the setup** in Lean via \`lean_define\` — at minimum, the conjecture statement.
+4. **Attack the load-bearing lemma.** What's the smallest claim that, if proven, implies the conjecture (or a meaningful subset)?
+5. **Verify what you can**, ship what you have. The done-gate requires your final answer to substantively match your verified artifacts.
+
+## Realistic outcomes
+
+- **Most likely**: formalize the conjecture in Lean, verify it for many small $n$ via SMT, prove for a residue class that has a known construction.
+- **Possible**: prove a residue class that's currently listed as open, or formalise a partial result that hasn't been Lean-verified before.
+- **Vanishingly unlikely**: full proof. We're not expecting to crack a 78-year-old conjecture in 80 turns. **But the goal is to TRY, with creativity.**
+
+## Budget: 80 turns
+
+Use them for genuine exploration. Don't rush to verify trivial cases — spend turns on the angle-of-attack discussion, then dig in.`,
+    expectedAnswer:
+      "Open. The Erdős–Straus conjecture (4/n = 1/x + 1/y + 1/z for all n ≥ 2) is unsolved in general. Realistic measure of success: any verified artifact that closes a residue class currently listed as open, or a structural lemma reducing the open cases. Full proof is not expected.",
+    maxSteps: 80,
+  },
+
+  "schur-coloring-frontier": {
+    id: "schur-coloring-frontier",
+    type: "OPEN-FRONTIER PROBLEM — Schur number S(5) and beyond",
+    difficulty: "very-hard",
+    prompt: `## The problem
+
+A *Schur k-coloring* of $[1, n]$ is a function $c : \\{1, \\ldots, n\\} \\to \\{1, \\ldots, k\\}$ such that there is no monochromatic Schur triple — no $x, y, z \\in [1, n]$ with $x + y = z$ and $c(x) = c(y) = c(z)$.
+
+The Schur number $S(k)$ is the largest $n$ for which a Schur $k$-coloring of $[1, n]$ exists. Known values:
+
+- $S(2) = 4$ (Schur 1916)
+- $S(3) = 13$ (Schur 1916)
+- $S(4) = 44$ (Baumert 1965, computer-assisted)
+- $S(5) = 160$ (Heule 2017, **massive SAT instance, 4 trillion clauses**)
+- $S(6)$ is **OPEN**: best known $S(6) \\geq 537$.
+
+## Starting point — RESUMING from a prior verified result
+
+A previous run of this harness produced a **verified 4-coloring of $[1, 40]$** (both Z3 and JS-enumeration cross-check agreed):
+
+\`\`\`
+[1, 2, 2, 1, 3, 3, 3, 3, 3, 1, 2, 2, 1,
+ 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4,
+ 1, 2, 2, 1, 3, 3, 3, 3, 3, 1, 2, 2, 1]
+\`\`\`
+
+(positions 1..40 in row-major order). Construction: a recursive Schur lift of the 3-coloring $[1,2,2,1,3,3,3,3,3,1,2,2,1]$ of $[1, 13]$, padding positions 14-27 with color 4 and recursing.
+
+**Resume by re-verifying this coloring as your first call** (so you can build on it), then attempt to extend to $[1, 44]$ (Goal A) by finding $c_{41}, c_{42}, c_{43}, c_{44}$ that preserve Schur-goodness. The previous run tried 17 different 4-colorings of $[1, 44]$ and all were refuted — so this is genuinely the hard part. Use **lean on knowledge from the literature** (Baumert 1965 used computer search; the structure is known to be irregular near the boundary).
+
+## Your goals (in order of difficulty)
+
+### Goal A (the resume target): exhibit a 4-coloring of $[1, 44]$
+
+Find $c : [1, 44] \\to \\{1, 2, 3, 4\\}$ with no monochromatic Schur triple. Verify with \`verify_template[schur_coloring]\`. **Strongly recommended**: extend the verified $[1, 40]$ above by finding 4 more positions, OR start fresh with a different known construction (e.g., Baumert's specific coloring from the literature). Settles $S(4) \\geq 44$.
+
+### Goal B (the main attempt): exhibit a 5-coloring of $[1, 160]$
+
+Find $c : [1, 160] \\to \\{1, 2, 3, 4, 5\\}$ with no monochromatic Schur triple. This was the Heule 2017 result; he produced an explicit coloring via SAT search. The model has read his paper and may know the structure (typical Schur colorings use **multiplicative** structure on a residue class). Settles $S(5) \\geq 160$ — well-known but a real demonstration of the harness on a near-frontier problem.
+
+### Goal C (the genuinely open one): exhibit a 6-coloring of $[1, 538]$
+
+This would push $S(6) \\geq 538$, beyond the published lower bound of 537. The exact value of $S(6)$ is open; if such a coloring exists, finding it would be a real contribution. Heule and others have searched extensively and not yet found 538 (or a refutation). The model is unlikely to find this — but exhibiting any large 6-coloring is informative.
+
+## Tooling
+
+Use \`verify_template\` with template \`"schur_coloring"\` and slots:
+
+\`\`\`
+{"name": "verify_template", "args": {
+  "claim": "5-coloring of [1, 160] with no monochromatic Schur triple",
+  "template": "schur_coloring",
+  "slots": {
+    "n": 160,
+    "k": 5,
+    "coloring": [1, 2, 3, 4, 5, 1, 2, 3, 4, 5, ...]
+  }
+}}
+\`\`\`
+
+The template runs both a Z3 existential check (UNSAT means no bad triple exists) and a JS-enumerated cross-check (all $\\binom{n+1}{2}$ pairs (x, y) with $x + y \\le n$). Both must agree.
+
+## Process
+
+1. **Range first.** Before submitting any candidate coloring, name 3-5 distinct construction families. Examples:
+   - **Multiplicative on residues mod p**: assign color based on $\\lfloor i / m \\rfloor$ mod something
+   - **Quadratic residues**: color by quadratic-residue class
+   - **Recursive Sidon-like**: build the coloring by lifting a smaller Schur-good coloring
+   - **SAT-derived**: cite Heule's explicit coloring (the model has seen it)
+   - **Multiplicative character of cyclic group**: c(i) = (i mod q) for some prime q with the property
+   For each, predict whether it scales to the target $n$.
+
+2. **Goal A first.** Match the Baumert 4-coloring of $[1, 44]$. Should take 2-3 attempts.
+
+3. **Goal B.** This is where it gets hard. The model knows Heule's paper exists; the explicit coloring is in the supplementary materials. If the model can reproduce or approximate it, the template will verify.
+
+4. **Goal C.** A genuine attempt at the open frontier. Even producing a verified 6-coloring of [1, 537] (matching the lower bound) is meaningful.
+
+5. **Report.** Final \`done\` answer must include: the colorings achieved, comparison to known bounds, and a clear statement of which goals were reached.
+
+## What success looks like
+
+- Goal A reached → harness demonstration on a known-hard combinatorial verification.
+- Goal B reached → matches a 2017 record, real demonstration of LLM + SAT-checker on a near-frontier problem.
+- Goal C — extremely unlikely but the attempt would be informative.
+
+## Caveats
+
+The Z3 verification scales as the coloring grows. For n=44 it's instant. For n=160 it could take 30s+ per call. For n=537+ it might time out. If templates time out, that's a finding too.
+
+**Budget: 60 turns.** Spend them on creative construction selection. Don't expect to brute-force search via Z3 — Z3 is a checker, not a searcher for this class.`,
+    expectedAnswer:
+      "Open at the S(6) frontier. S(2)=4, S(3)=13, S(4)=44, S(5)=160 known. Grade by largest verified coloring: |c|≥44 (Goal A) is working; |c|≥160 (Goal B) matches Heule 2017; |c|≥538 with k=6 (Goal C) would push the open frontier. The exact S(6) is unknown.",
+    maxSteps: 60,
+  },
+
+  "frankl-union-closed": {
+    id: "frankl-union-closed",
+    type: "OPEN CONJECTURE — Frankl's Union-Closed Sets (1979)",
+    difficulty: "very-hard",
+    prompt: `## The conjecture
+
+**Frankl's Union-Closed Sets Conjecture (Frankl, 1979).** Let $F$ be a finite, non-empty family of finite sets, closed under union (i.e., $A, B \\in F \\implies A \\cup B \\in F$), and suppose $F$ contains at least one non-empty set. Then there exists an element $x$ belonging to at least half the sets in $F$:
+$$
+\\exists x \\in \\bigcup F \\quad \\text{such that} \\quad |\\{ S \\in F : x \\in S \\}| \\geq |F| / 2.
+$$
+
+This conjecture is **open**. The best known unconditional bound is due to Gilmer (2022), giving roughly $|\\{ S \\ni x \\}| \\geq 0.38 |F|$ via an entropy argument. The originally-conjectured constant 0.5 is still unproven.
+
+## Your task: progressive Lean formalization
+
+We are NOT asking you to prove the conjecture in full. We want a structured, formally-verified progression:
+
+### Level 1 (mandatory): Formalize the statement
+
+In Lean 4 + Mathlib, define:
+- A predicate \`IsUnionClosed (F : Finset (Finset α)) : Prop\` capturing "closed under union and non-empty with some non-empty set."
+- The proposition \`FranklConjecture (F : Finset (Finset α)) : Prop\` stating "$\\exists x$ in $\\bigcup F$ with $|\\{S \\in F : x \\in S\\}| \\geq |F| / 2$."
+
+Use \`verify_lean\` to confirm the definitions compile against Mathlib.
+
+### Level 2: Trivial small cases
+
+Prove:
+- **L2a**: For $F = \\{\\emptyset, \\{a\\}\\}$ (where $a$ is some element), the conjecture holds.
+- **L2b**: For $|F| = 1$, the conjecture holds (any element of the single set belongs to all sets).
+- **L2c**: For $|F| = 2$, the conjecture holds.
+
+Each as a separate Lean theorem. These are sanity checks; they should not be hard.
+
+### Level 3 (the meaningful goal): The 2-element-set lemma
+
+**Lemma.** If $F$ is union-closed and contains a 2-element set $\\{a, b\\}$, then either $a$ or $b$ belongs to at least $|F|/2$ sets of $F$.
+
+This is a published, well-known partial result. The proof is a counting argument: pair off the sets in $F$ that contain $a$ with those that don't (and similarly for $b$); union-closure forces a balance. Look up the canonical proof in the literature; the model is expected to know it.
+
+Prove this in Lean. \`lean_search\` will help you find Mathlib lemmas about \`Finset.card\`, \`Finset.image\`, and pair injections.
+
+### Level 4 (bonus, ambitious): Specific structural cases
+
+Prove ANY of (in order of difficulty):
+- If the smallest set in $F$ has size $\\leq 2$, the conjecture holds (subsumes L3 plus the singleton case).
+- If $|F| \\leq 46$, the conjecture holds (computational; was verified by Lo Faro 1994 via case analysis).
+- A formal statement of Gilmer's 0.38 bound, with as much of the entropy argument as you can encode.
+
+These are MUCH harder; partial progress is fine. Don't attempt all of them — pick the one you can make most progress on and lean into it.
+
+## Tooling
+
+- \`proof_start\` + \`proof_step\` for stepwise Lean proofs (preferred for L2c, L3 — they involve case analysis or counting).
+- \`verify_lean\` for one-shot proofs of L1, L2a, L2b.
+- \`lean_search\` early and often. You'll need: \`Finset.card\`, \`Finset.image\`, \`Finset.union\`, \`Finset.filter\`, \`Nat.div_le_iff\`, \`Finset.sum_card_filter_attach\` and similar.
+
+## Output expectations
+
+A run that produces:
+- L1 (formalized statement) ⇒ baseline success.
+- L1 + L2 (statement + trivial cases) ⇒ solid demonstration of formalization capability.
+- L1 + L2 + L3 (statement + trivial cases + 2-element-set lemma) ⇒ **target outcome**. This means we have a Lean-verified proof of a genuine published partial result for an open conjecture.
+- L4 (any structural case) ⇒ stretch.
+
+**Budget: 80 turns.** Spend turns on Lean elaboration; don't reach for SMT (this is a structural mathematical theorem, not a finite-instance check). Use \`proof_start\` aggressively for L3 — the counting argument has multiple steps and benefits from per-tactic feedback.
+
+## Critical instructions
+
+1. **Don't try to prove the full conjecture.** It's open. Focus on the levels above.
+2. **Don't formalize from a blank slate.** Use Mathlib's \`Finset\` everywhere; don't redefine sets manually.
+3. **State theorems precisely.** Each Lean theorem statement should match the natural-language statement we wrote above. Mismatches in quantifier scope or division convention (\`|F| / 2\` is integer division in Nat; you may need to use \`2 * |{S ∋ x}| ≥ |F|\` instead) are common pitfalls.
+4. **Cross-check your L3 proof with \`review\`.** This is a mathematical proof, not a model-supplied SMT encoding, but the discipline of cross-checking still applies — sketch the proof informally before/after the formal version and compare.
+5. **Call \`done\` when you have your highest-level achievement, with a precise summary of which levels you reached and which you didn't.**`,
+    expectedAnswer:
+      "A Lean 4 + Mathlib formalization with at least Level 1 (statement) and Level 2 (trivial cases) verified. Target is Level 3 (the 2-element-set lemma). Level 4 is a stretch. Frankl's full conjecture is open and not expected.",
+    maxSteps: 80,
+  },
+
+  "rigging-no-equivocation": {
+    id: "rigging-no-equivocation",
+    type: "Cryptographic protocol theorem — hitch non-equivocation guarantee",
+    difficulty: "very-hard",
+    prompt: `**Prove the fundamental rigging guarantee** (TODA Rigging Specifications v0.9876, §6).
+
+## Background
+
+A *line* is a sequence of *twists* (each twist is a hash-identified data structure that succeeds the previous one). A line *equivocates* if a single twist has two distinct valid successors — i.e., the line forks. The cryptographic question of interest: under what construction can we guarantee that an untrusted line cannot equivocate?
+
+A **hitch** is the fundamental unit of rigging. It connects two segments — a *footline* (untrusted) to a *topline* (trusted), via 5 distinguished twists:
+- **fastener** — the first twist of the topline
+- **lead** — the first twist of the footline; supplies a secret \`lead.shld\`
+- **meet** — the last twist of the footline; the canonical successor of \`lead\`
+- **hoist** — the twist on the topline that incorporates the lead-meet binding
+- **post** — succeeds the hoist; carries the rigging trie containing the binding
+
+**Shielding.** The footline operator keeps \`lead.shld\` secret. The shield function is
+$$
+S(\\text{hitch}, x) = H_{\\text{alg}(I(\\text{lead}))}\\bigl(C(\\text{lead.shld}) \\mid\\mid x\\bigr)
+$$
+where $H_a$ is the hash for algorithm $a$, $I(\\cdot)$ is the twist identifier, and $C(\\cdot)$ extracts content bytes.
+
+**Hitch validity.** A valid hitch requires the hoist's rigging trie to contain BOTH:
+1. \`hoist.rigs[S(hitch, I(lead))] = I(meet)\`
+2. \`hoist.rigs[S(hitch, S(hitch, I(lead)))] = S(hitch, I(meet))\`
+
+Plus a "no-collision proof" that no twist between fastener and hoist contains a conflicting pair under the same shielded keys.
+
+## Theorem to prove
+
+**Theorem (Hitch non-equivocation).** Assume:
+- $H$ is a *collision-resistant cryptographic hash function* (treated as an injective oracle for proof purposes — no two distinct inputs map to the same output).
+- Twist identifiers are determined by hashing twist contents, so distinct twists have distinct identifiers.
+- The footline operator's secret \`lead.shld\` is unknown to any other party until disclosed.
+
+If the **topline** (segment from fastener to hoist) has not equivocated — i.e., the topline has a unique sequence of twists from \`fastener\` to \`hoist\` — then the **footline** (segment from \`lead\` to \`meet\`) has not equivocated either: the meet identified by the hoist's rigging trie is the unique canonical successor of \`lead\` in the footline.
+
+## Proof obligations
+
+You don't need a single Lean script that compiles end-to-end (formalising the entire rigging protocol in Mathlib would take weeks). Instead, produce a **structured proof argument** with as much formalisation as is feasible:
+
+1. **Setup**: state the abstract types (twists, identifiers, hashes) and the collision-resistance axiom in Lean (using \`opaque\` or \`axiom\`).
+
+2. **Key lemmas**: prove or formally state:
+   - **L1 (uniqueness of shielded key-value)**: given the secret \`lead.shld\`, only the footline operator can produce a valid second pair \`[S(S(lead)), S(meet)]\` matching a chosen \`[S(lead), meet]\`. Any forgery requires a hash collision.
+   - **L2 (hoist uniqueness)**: any two valid hitches with the same lead and same hoist must have the same meet. This is the heart of the theorem.
+   - **L3 (canonical succession)**: from L2, \`meet\` is the unique canonical successor of \`lead\` modulo the topline.
+
+3. **Main theorem**: if the topline is unique (uses the L2 lemma), the meet is determined → the footline up to meet is unique.
+
+## Tools
+
+- \`verify_lean\` / \`proof_start\` / \`proof_step\` for the formal lemmas. Mathlib has injection-style lemmas (\`Function.Injective\`) you can leverage.
+- \`lean_search\` to find Mathlib lemmas on injectivity, hash-like structures, or unique-existence.
+- \`verify_smt\` for any small finite-instance sanity checks (e.g., a 2-twist hitch model).
+
+## Output expectations
+
+A valid attempt has:
+- Definitions of the relevant abstract types in Lean (twist, hitch, hoist's rigging trie as a function/finmap)
+- The collision-resistance axiom stated explicitly
+- L1, L2, or L3 proven (any one is meaningful progress; all three is the goal)
+- The main theorem stated formally (proof can defer to lemmas)
+- A natural-language summary of why the proof works
+
+This is a structural/cryptographic theorem, not a constructive combinatorial problem. Lean is the right tool. Don't try to verify with SMT-LIB existential queries — they'll time out. Prefer \`proof_start\` + tactic-by-tactic development.
+
+**Budget: 50 turns.** Use them for genuine proof construction, not encoding fiddling. If you can't make the formalisation work in 5 turns, pivot to writing a precise informal proof with whichever lemmas you CAN formalise sprinkled in.
+
+**What success looks like:** at minimum, a Lean snippet that compiles defining the abstract setup + the collision-resistance axiom. Better: at least one of L1/L2/L3 proven. Best: the main theorem stated and proven from the lemmas.`,
+    expectedAnswer:
+      "A structured proof of hitch non-equivocation. The core argument: shielded key-value pairs in the hoist's rigging trie cryptographically bind lead to meet via the footline operator's secret lead.shld; any equivocation in the footline (two distinct meets for the same lead) would require either a hash collision (violating the assumption) or an unauthorized party knowing lead.shld (also assumed impossible). Formal Lean grounding for the collision-resistance axiom and the bind-lemma is the meaningful deliverable; full formalisation of the protocol is out of scope.",
+    maxSteps: 50,
+  },
+
+  "open-capset-f3-7": {
+    id: "open-capset-f3-7",
+    type: "GENUINELY OPEN PROBLEM — maximum cap set in F_3^7",
+    difficulty: "very-hard",
+    prompt: `**THIS IS A GENUINELY OPEN PROBLEM.** A cap set in $F_3^n$ is a subset $S \\subset F_3^n$ with no three distinct elements $x, y, z$ satisfying $x + y + z = 0$ in $F_3^n$ (component-wise modular sum). The maximum cap set size $r_3(F_3^n)$ is the central object of the cap-set conjecture.
+
+**Status of $r_3(F_3^n)$:**
+- $n = 1$: 2  (trivial)
+- $n = 2$: 4  (corner)
+- $n = 3$: 9  (Pellegrino 1971)
+- $n = 4$: 20 (proved in the 1980s)
+- $n = 5$: 45 (Edel et al. 2002)
+- $n = 6$: 112 (Potechin 2008, exhaustive)
+- $n = 7$: **OPEN.** Best known lower bound is around 236 (explicit constructions by Edel, Calderbank-Fishburn variants); best known upper bound is the Ellenberg-Gijswijt asymptotic specialised to $n=7$, giving roughly 290-300.
+
+**Goal.** Construct an explicit cap set $S \\subset F_3^7$ of size as large as possible. The harness will verify it via the \`cap_set_f3n\` template (primary Z3 + independent enumeration cross-check; both must agree).
+
+**Reward gradient.**
+- **Trivial (~50-100):** any small construction. Easy.
+- **150-200:** algebraic construction (e.g., projective lines in PG(6, 3) variant).
+- **220-235:** known sub-frontier results from the literature.
+- **236+:** matches the published lower bound.
+- **240+:** at or beyond the literature frontier. Worth recording.
+- **250+:** would push the lower bound. Major result.
+
+**Tooling.**
+
+Use \`verify_template\` with \`template: "cap_set_f3n"\` and slots:
+\`\`\`
+{
+  "n": 7,
+  "elements": [<base-3 integer encoding of each F_3^7 vector>]
+}
+\`\`\`
+
+**Encoding convention:** an F_3^7 vector $v = (v_0, v_1, \\ldots, v_6)$ with each $v_i \\in \\{0, 1, 2\\}$ is encoded as the integer $V = v_0 + 3 v_1 + 9 v_2 + 27 v_3 + 81 v_4 + 243 v_5 + 729 v_6$, ranging $[0, 2186]$.
+
+**Process.**
+
+1. **Range first.** Before submitting any candidate, name 3-5 distinct construction families from different mathematical traditions:
+   - **Algebraic / projective:** caps in PG(n-1, 3); Kuijken-van Maldeghem constructions.
+   - **Coding theory:** ternary BCH codes, dual codes of small weight.
+   - **Combinatorial / direct:** Pellegrino-style block constructions.
+   - **Computational:** SAT-grown cap from a smaller seed cap.
+   - **Hybrid:** lift a smaller cap (e.g., the 112-cap in $F_3^6$) and extend.
+   For each, predict the size at $n=7$.
+
+2. **Pick one. Construct.** Output the explicit subset as a list of base-3 integers in [0, 2186].
+
+3. **Verify** with \`verify_template\`. The template runs both encodings; on PASSED, your result is robustly cross-verified.
+
+4. **Iterate.** If verified at size N, can you grow to N+1? Try adding individual elements, re-verify. Each grow attempt is one verify_template call.
+
+5. **Report.** Final \`done\` answer must include: chosen construction, the explicit set (or its generating description if compact), verified size, comparison to the published lower bound (~236) and upper bound (~290-300).
+
+**Budget: 80 turns.** Cap-set verification is heavier than Sidon (more elements, more constraints) so expect each verify call to take a few seconds. Use the budget for genuine exploration of multiple constructions.
+
+**What success looks like:** a verified cap set of size $\\geq 200$ matches solid published constructions; $\\geq 236$ matches the best-known lower bound; $\\geq 240$ would be at the frontier; $\\geq 250$ would be a real result. Even at smaller sizes, exhibiting a clean verified construction has demonstrative value.
+
+**What failure looks like:** the model writes constructions that fail verification (either size collapses or the template refutes them). That's normal — cap sets are hard. Use \`give_up\` if the surviving branches plateau at a small size with no path forward.
+
+We are not expecting to match 236 on first try. The exercise is: how large a cap set can we get with cross-checked verification, and does the system make any progress?`,
+    expectedAnswer:
+      "Open. The maximum cap set in F_3^7 is unknown. Published lower bound ≈ 236; upper bound ≈ 290. Grade by verified size: ≥ 100 = working; ≥ 200 = real; ≥ 236 = matches frontier; > 236 = potentially novel.",
+    maxSteps: 80,
+  },
+
+  "open-3ap-free-300": {
+    id: "open-3ap-free-300",
+    type: "OPEN PROBLEM — large 3-AP-free subset of [1, 300]",
+    difficulty: "very-hard",
+    prompt: `**THIS IS AN OPEN PROBLEM.** The exact maximum size of a 3-AP-free subset of {1, 2, …, n} (denoted r_3(n)) is computed exactly in OEIS A003002 only for small n; for n in the few-hundred range, only bounds are recorded. The general behaviour is r_3(n) = n / (log n)^{Ω(√log log n)} (Behrend 1946; Elkin's 2010 improvement; Croot–Lev–Pach / Ellenberg–Gijswijt for the F_3^n cousin). This is NOT a problem with a known closed-form answer — your job is creative.
+
+**Goal.** Construct a subset S ⊆ {1, 2, …, 300} of size as large as possible such that S contains NO three-term arithmetic progression (i.e., no a, d ≥ 1 with a, a+d, a+2d all in S; note d > 0, and a, a+d, a+2d distinct).
+
+**Reward gradient.**
+  - **Floor (~30):** the greedy / random construction. Easy. Not interesting.
+  - **Behrend-like (~40–50):** the Behrend 1946 construction or its Elkin-style refinement at n=300. This is the published baseline. Match it and you've executed the literature correctly.
+  - **Above 50:** plausibly novel. Genuinely worth writing down if verified.
+  - **Above the Mathematica/SAT-derived bounds for this scale:** a publishable result.
+
+**Tooling rules — read these before doing anything else.**
+
+  - **Strongly preferred: use \`verify_template\` with template "no_3ap_subset".** The harness has a vetted template for this exact problem shape that runs BOTH a primary encoding (existence-of-3AP via Z3) AND an independent cross-check (explicit triple enumeration), and records the artifact as confirmed only if both encodings agree. Eliminates encoding bugs entirely. Use:
+    \`\`\`
+    {"name": "verify_template", "args": {
+      "claim": "S = {...} is 3-AP-free in [1, 300]",
+      "template": "no_3ap_subset",
+      "slots": {"elements": [1, 2, 4, 5, ...]}
+    }}
+    \`\`\`
+    On confirmation, no separate \`review\` is needed — the cross-check is built in.
+  - **Fallback only**: \`verify_smt\` is available but you'll need to manually \`review\` with an independent encoding before \`done\`.
+  - **Do NOT spend turns building Prolog generators with \`add_rule\` / \`verify\`** — Prolog is the wrong fit for this problem; compute candidate sets in your head and submit the explicit list of integers.
+  - **You must call \`done\` at the end.** Pick your best verified set, summarise it, and call \`done\`.
+  - **Budget: 60 turns.** Plenty for both range-first exploration AND a clean ship cycle.
+
+**Process — this is the part we care about.**
+
+You are NOT proving R(3,3); the answer is unknown. We want creative problem-solving.
+
+  1. **Range first.** Before producing any candidate set, propose 3–5 *distinct constructions from different mathematical traditions*. Examples to spark thought (don't use these verbatim — pick your own):
+     - Number-theoretic: Behrend's "high-dimensional sphere" lift via base-q digits with bounded digit-sum-of-squares.
+     - Multiplicative-character: residues that avoid certain quadratic patterns.
+     - Probabilistic / explicit pseudo-random: random sets conditioned on no 3-AP, then derandomised.
+     - Algebraic: subsets of Z/pZ avoiding 3-APs lifted to [1, n].
+     - Computational: SAT-driven construction starting from a Behrend skeleton, swapping elements to grow.
+     - Geometric: lattice points on a sphere in Z^k, mapped to [1, n] via base-q.
+     For each, write 2-3 sentences: what's the construction, why might it work at n=300, what's the predicted size?
+
+  2. **Pick one. Commit.** Choose the most promising. Justify briefly.
+
+  3. **Construct.** Output the explicit subset S as a sorted list of integers.
+
+  4. **Verify.** Encode "S contains no 3-AP" in SMT-LIB and call \`verify_smt\`. The encoding is short:
+     - declare S as a fixed list of integers (e.g., \`(define-fun S () (Array Int Bool) (store (store ... (const false) ...)))\` or simply enumerate membership predicates).
+     - assert: \`(exists ((a Int) (d Int)) (and (> d 0) (in-S a) (in-S (+ a d)) (in-S (+ a (* 2 d)))))\`
+     - expected: UNSAT (no 3-AP in S).
+     A simpler encoding: declare elements as constants, assert distinctness, and assert NOT (any of the C(|S|, 3) candidate triples form an AP — there are only ~|S|² such pairs to check, manageable for |S| ≤ 60). Pick whichever encoding you can write cleanly.
+
+  5. **Iterate.** If verification rejects S (some 3-AP slipped in), explain what you learned, repair or pivot, try again. Verification failure is data, not defeat.
+
+  6. **Report.** Final answer must include:
+     - The chosen construction (named, with citation if applicable).
+     - The explicit subset S.
+     - The verified |S|.
+     - Comparison: is this above, at, or below the published Behrend bound for n=300? (Give a numerical estimate.)
+
+**What success looks like.**
+  - Produce a set S of size ≥ 40 with verified no-3-AP property.
+  - The reasoning trace shows genuine cross-subfield exploration, not regurgitation.
+  - The construction is explainable: a future reader can understand WHY this set has no 3-AP without re-running the verifier.
+
+**What failure looks like (still useful!).**
+  - A construction that the verifier rejects. (You learned something about the construction.)
+  - A construction smaller than the trivial bound. (You learned something about your encoding.)
+  - The model confidently proposing a "clever" construction that's actually 3-AP-rich. (Verification catches this — that's the whole point.)
+
+You have lots of turns; don't rush. The interesting trace is one where you propose something, the verifier disagrees, and you iterate.`,
+    expectedAnswer:
+      "Open. Floor: ~30 from greedy. Behrend baseline at n=300 yields roughly 35–50 (depends on parameter choice). Anything ≥ 40 with template-verified no-3-AP is an honest result; ≥ 50 is plausibly novel. The harness should not declare a 'correct' answer here — judge by the *cross-checked size achieved*.",
+    maxSteps: 60,
+  },
+
+  "open-sidon-set-500": {
+    id: "open-sidon-set-500",
+    type: "OPEN PROBLEM — large Sidon set in [1, 500]",
+    difficulty: "very-hard",
+    prompt: `**THIS IS AN OPEN PROBLEM (computational instance at the literature frontier).** A Sidon set (or B_2 set) in {1, …, n} is a subset S where all pairwise sums a+b (a ≤ b in S) are DISTINCT. Equivalently: all non-zero pairwise differences are distinct. The maximum size F_2(n) is known to be √n + O(n^{1/4}) (Erdős–Turán 1941; Lindström 1969), but exact values for n in the few-hundred-to-thousand range are not in standard tables. **For n = 500, the published Singer bound gives ≥ 23** (Singer's projective-plane construction with prime power q=23 yields q+1 = 24 elements in [0, q² + q] = [0, 552], with 23 of them landing in [0, 500]). Best-known constructions at this scale typically reach 23-24; reaching 25 would be at or near the literature frontier; matching/beating 24 is genuinely interesting territory.
+
+**Goal.** Construct a Sidon set S ⊆ {1, 2, …, 500} of size as large as possible.
+
+**Reward gradient.**
+  - **Trivial (~15-18):** greedy / Mian-Chowla truncation. Easy.
+  - **20-22:** scaled Erdős-Turán or partial Singer construction. Honest result.
+  - **23:** match the published Singer bound for q=23 cropped to [1, 500]. Solid target.
+  - **24+:** at or beyond the typical construction frontier at this n. Genuinely interesting.
+  - **25+:** would beat known explicit constructions at this scale. Verify carefully — if the verifier accepts, this is a real result.
+
+**Tooling rules — read FIRST.**
+
+  - **Strongly preferred: use \`verify_template\` with template "sidon_set".** The harness has a vetted template for exactly this problem shape that runs BOTH encodings (distinct-sums + existence-of-collision) and records the artifact as confirmed only if both agree. Eliminates encoding bugs entirely — past runs lost results to forall-ordering-chain mistakes and missing-distinctness false positives. Use:
+    \`\`\`
+    {"name": "verify_template", "args": {
+      "claim": "S = {...} is a Sidon set in [1, 500]",
+      "template": "sidon_set",
+      "slots": {"elements": [1, 2, 4, 8, 13, ...]}
+    }}
+    \`\`\`
+    On confirmation, no separate \`review\` is needed — the cross-check is built in.
+  - **Fallback only**: \`verify_smt\` is available for shapes the templates don't cover, but you'll need to manually \`review\` with an independent encoding before \`done\`.
+  - **ALWAYS pass \`expectedVerdict\`** in your verify_smt args. The harness needs to know which Z3 verdict supports your claim. Without it, your call is logged as "ambiguous" and the user can't tell from the artifact whether your claim was confirmed.
+  - **Recommended encoding (with explicit expectedVerdict, if you must use verify_smt):**
+    \`\`\`
+    {"name": "verify_smt", "args": {
+      "claim": "S = {1, 2, 5, ...} is a Sidon set in [1, 500]",
+      "smtlib": "(declare-const a1 Int) (assert (= a1 1)) ... (assert (distinct (+ a1 a2) (+ a1 a3) ... (+ a_{k-1} a_k)))",
+      "expectedVerdict": "sat"
+    }}
+    \`\`\`
+    Here SAT means "the (distinct) constraint is satisfiable with these fixed values" → S IS Sidon. UNSAT would mean the distinctness fails → S is NOT Sidon. So expectedVerdict is "sat".
+  - **Alternative encoding** (existence-of-collision): assert that two distinct unordered pairs have the same sum; then UNSAT means no collision exists, i.e., S is Sidon. expectedVerdict would be "unsat".
+  - **Cross-check before \`done\`.** Once you have a verified set you're considering shipping, run \`review\` with an INDEPENDENT encoding before calling \`done\`. Recommended cross-check: existence-of-collision encoding. If your original used \`(distinct (+ a_i a_j) ...)\`, your review check should use \`(exists ((a Int) (b Int) (c Int) (d Int)) (and (inS a) (inS b) (inS c) (inS d) (< a b) (< c d) (or (< a c) (and (= a c) (not (= b d)))) (= (+ a b) (+ c d))))\` with expectedVerdict="unsat" (no collision exists ⟺ S is Sidon). If the two encodings DISAGREE, your original encoding had a logic gap (e.g., a forall whose ordering chain misses cases) — find and fix it.
+  - **You must call \`done\` at the end** with the largest *cross-checked* verified S. Greedy "try more" after a strong result is how good results get lost.
+  - **Budget: 30 turns.** Use them wisely. A finalize cycle is verify_smt → review → done, so reserve 2-3 turns at the end.
+
+**Process.**
+
+  1. **Range across constructions.** Before submitting any candidate, name 3–5 *distinct* construction families and predict their size at n=500:
+     - **Singer difference set.** For prime power q, lift a difference set in Z/(q²+q+1) to a Sidon set of size q+1 in [0, q²+q]. q=22 (not prime power), q=23 (prime!) gives 24 elements in [0, 552] — 23 land in [0, 500] after dropping the largest.
+     - **Erdős-Turán quadratic residues.** For prime p, S_p = {2pi + (i² mod p) : 0 ≤ i < p} is Sidon of size p in [0, 2p² - 1]. For p=15 (not prime), p=17, p=19: size 17 or 19 in [0, 578] or [0, 722].
+     - **Perfect difference family / Bose-Chowla.** Algebraic construction over finite fields giving size ~√n.
+     - **Greedy Mian-Chowla.** Adds the next integer that preserves Sidon. At n=500 reaches ~25 elements (less than Singer's 24 because Mian-Chowla is wasteful but easy).
+     - **Hybrid / SAT-grown.** Start from a Singer set, swap or add elements via SMT search.
+     For each, two sentences max: what's the construction, predicted size at n=500.
+
+  2. **Pick one. Commit. Construct the explicit S.**
+
+  3. **Verify with verify_smt + expectedVerdict.** If rejected, diagnose, repair, retry.
+
+  4. **Iterate to grow.** If you have a verified S of size k, try adding integers in [1, 500] not in S and re-verify. One verify_smt per candidate addition.
+
+  5. **Report.** Final \`done\` answer must include: chosen construction, explicit S, verified size, comparison to F_2(500) bounds.
+
+The interesting trace shows: range → pick → construct → verify (perhaps reject) → repair → grow. Five SMT calls is plenty for that arc.`,
+    expectedAnswer:
+      "F_2(500) lies between 23 (Singer q=23 cropped) and ≈ 25 (upper bound from √500 + O(n^{1/4})). A verified, cross-checked |S| ≥ 20 is a useful trace; |S| = 23 matches Singer; |S| ≥ 24 is genuinely interesting; |S| ≥ 25 would beat known explicit constructions. Grade by cross-checked size: a single review-passed result counts more than three same-encoding confirmations.",
+    maxSteps: 60,
+  },
+
+  "open-sidon-set-200": {
+    id: "open-sidon-set-200",
+    type: "OPEN PROBLEM — large Sidon set in [1, 200]",
+    difficulty: "very-hard",
+    prompt: `**THIS IS AN OPEN PROBLEM (specifically: an open computational instance).** A Sidon set (or B_2 set) in {1, …, n} is a subset S where all pairwise sums a+b (a, b in S, a ≤ b) are DISTINCT. Equivalently: all non-zero pairwise differences a-b (a > b) are distinct. The maximum size F_2(n) of a Sidon set in [1, n] is known to be √n + O(n^{1/4}) (Erdős–Turán 1941; Lindström 1969). Exact values F_2(n) are tabulated in OEIS A005282 for small n. **For n = 200, the exact value is 14** (long-established by exhaustive search) — but constructing an explicit size-14 Sidon set in [1, 200] from scratch, without recourse to the table, is a non-trivial exercise. **For larger n** (say n = 500 or 1000) the gap between best-known constructions and the upper bound is open territory.
+
+We're targeting n = 200 here as a calibration run: the answer is known (14), so we can grade the model's process while still requiring a real construction. If the model performs well, we'll bump n higher.
+
+**Goal.** Construct a Sidon set S ⊆ {1, 2, …, 200} of size as large as possible. The known maximum is 14; matching 14 with a verified construction is success. Above 14 is impossible (and a verifier-rejected claim above 14 would be a healthy failure mode).
+
+**Reward gradient.**
+  - **Trivial (~10):** any greedy / arithmetic construction. Boring.
+  - **12–13:** a thoughtful construction (Singer difference set, Erdős-Turán quadratic residues, perfect difference family lift). Honest result.
+  - **14 (the maximum):** match the published bound. This is the target.
+  - **>14:** impossible — if the verifier accepts, your encoding is buggy.
+
+**Tooling rules — read these before doing anything.**
+
+  - **Use \`verify_smt\` exclusively for verification.** Do NOT use \`add_rule\` / \`verify\` (Prolog) — those are inappropriate for this problem and prior runs wasted turns on Prolog generators. Submit candidate sets as explicit lists of integers via \`verify_smt\`.
+  - **Encoding.** Two clean options; pick whichever you can write cleanly:
+    1. **Pairwise-distinct sums.** For each pair (i, j) with i < j in your candidate set S, compute s_{ij} = S[i] + S[j]. Assert all such sums are pairwise distinct via \`(distinct sum_1_2 sum_1_3 ... sum_{|S|-1}_{|S|})\`. UNSAT means non-distinct (BAD); SAT (or unstated, since distinct is just a constraint) means good. Better: simply assert \`(assert (distinct s12 s13 ... s_{n-1,n}))\` and check sat.
+    2. **Existence-of-collision.** Like the 3-AP encoding: \`(assert (exists ((a Int) (b Int) (c Int) (d Int)) (and (inS a) (inS b) (inS c) (inS d) (or (not (= a b)) (not (= c d))) (= (+ a b) (+ c d)))))\` — UNSAT means no collision (S is Sidon).
+    Pick option 1 if you can compute the pairwise sums; option 2 lets Z3 search.
+  - **You must call \`done\` at the end** with a summary of the largest verified S. Without \`done\`, the harness can't surface the result to the user. Verified artifacts ARE captured even on partial runs now, but the rendered final answer needs \`done\`.
+  - **Budget: 25 turns.** Use them wisely.
+
+**Process.**
+
+  1. **Range across constructions.** Before submitting any candidate, name 3–5 *distinct* construction families from different mathematical traditions:
+     - Algebraic: Singer difference sets (projective planes over F_q).
+     - Number-theoretic: Erdős-Turán \`{2pi + (i² mod p) : 0 ≤ i < p}\` for prime p.
+     - Combinatorial: greedy (Mian-Chowla) or perfect difference families.
+     - Computational: SAT-grown sets seeded from a small known one.
+     For each, write 2-3 sentences on the construction and the predicted size at n=200.
+
+  2. **Pick one. Commit. Construct.** Output the explicit S.
+
+  3. **Verify via \`verify_smt\`.** If the verifier rejects (some pair-sum collides), explain what went wrong, repair, retry. Iteration is expected.
+
+  4. **Iterate to grow.** If you have a verified S of size 12, can you add one more element? Try each integer in [1, 200] not in S, check if adding it preserves the Sidon property. Walking up from 12 to 14 is 2 verification calls per added element.
+
+  5. **Report.** Final answer must include the chosen construction, the explicit S, the verified size, and a comparison to the published F_2(200) = 14.
+
+**What success looks like.**
+  - Reach |S| = 14 with verified Sidon property.
+  - Trace shows actual cross-construction reasoning, not regurgitation.
+  - The construction is explainable.
+
+**What failure looks like (still useful).**
+  - Verifier rejects a candidate (genuine mistake — informative).
+  - Reach only 11 or 12 — fine, gives us a baseline for "what does the model achieve unaided."
+  - Confidently claiming size 15+ — verifier should reject; if it accepts, our encoding has a bug.`,
+    expectedAnswer:
+      "F_2(200) ≈ 14 (Singer's construction with p=13 yields a 14-element Sidon set in [0, 182] ⊂ [0, 200]). Many explicit witnesses exist; we don't pin one. Grade by the verified size achieved: ≥ 12 is a useful trace, 14 is full success, > 14 indicates an encoding bug.",
+    maxSteps: 25,
+  },
+
   "einstein-4x4": {
     id: "einstein-4x4",
     type: "Einstein-style logic puzzle (4 houses, 4 attribute categories, 9 clues)",

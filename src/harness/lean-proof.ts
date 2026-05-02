@@ -64,6 +64,11 @@ export interface ProofStartArgs {
   claim: string;
   theorem: string;
   name?: string;
+  /** Optional env id from a previous incremental Lean command. When
+   *  provided, the proof opens against that state — so user
+   *  definitions (added via lean_define) are visible in the theorem
+   *  statement and tactic body. Defaults to the bare-Mathlib env. */
+  baseEnv?: number;
 }
 
 export interface ProofStepResult {
@@ -100,7 +105,7 @@ export async function startSession(args: ProofStartArgs): Promise<ProofSession> 
   // Open the proof against the REPL — this types-checks the theorem
   // statement and returns the initial goal/state. Errors here mean
   // the type itself was malformed.
-  const opened = await openProof(uniqueName, theorem);
+  const opened = await openProof(uniqueName, theorem, args.baseEnv);
   const initial: ProofCheckpoint = {
     proofState: opened.proofState,
     goals: opened.goal,
@@ -143,6 +148,25 @@ export async function applyStep(
       status: "tactic_error",
       goals: session.goals,
       errors: [{ severity: "error", data: "tactic is empty" }],
+      tacticCount: session.tactics.length,
+    };
+  }
+  // Soundness guard: reject `sorry` / `admit` as tactics. Both close
+  // the goal in Lean's eyes — `sorry` with a warning, `admit` with
+  // none — but they prove nothing. Without this guard a model could
+  // call proof_step with `sorry` and the harness would mark the
+  // proof closed and ship a non-proof.
+  if (/^\s*(sorry|admit)\s*$/.test(t)) {
+    return {
+      status: "tactic_error",
+      goals: session.goals,
+      errors: [
+        {
+          severity: "error",
+          data:
+            "tactic `sorry`/`admit` is rejected — they close the goal without proving it. Use real tactics, or proof_abandon if you can't close this proof.",
+        },
+      ],
       tacticCount: session.tactics.length,
     };
   }
