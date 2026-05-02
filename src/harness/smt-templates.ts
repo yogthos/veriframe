@@ -236,9 +236,139 @@ export const noThreeApTemplate: SmtTemplate = {
   },
 };
 
+/**
+ * Cap-set template for F_3^n. A cap set in F_3^n is a subset with
+ * no three distinct elements x, y, z satisfying x + y + z = 0 in
+ * F_3^n (component-wise modular sum). Equivalently: no three-term
+ * arithmetic progression in the F_3 vector space.
+ *
+ * Element encoding: each F_3^n vector v = (v_0, v_1, …, v_{n-1})
+ * is encoded as the integer V = sum_i v_i * 3^i, ranging 0 to
+ * 3^n − 1. The model passes the subset as a list of these integer
+ * encodings.
+ *
+ * Slots:
+ *   - n: number — the dimension (e.g., 7 for F_3^7).
+ *   - elements: number[] — the subset members as base-3 integers
+ *     in [0, 3^n − 1]. Distinct.
+ *
+ * PRIMARY: existence-of-3AP via Z3. Declare X, Y, Z, assert each is
+ *          in S, distinct, and the per-component F_3 sum is zero.
+ *          UNSAT → no 3-AP exists → S is a cap set.
+ *
+ * CROSS-CHECK: explicit JS enumeration of pairs at assembly time.
+ *              For each unordered pair (a, b) in S, compute the
+ *              forced third element c = (−a − b) in F_3^n. If c is
+ *              in S and c ≠ a, c ≠ b, emit `(assert false)` to make
+ *              the SMT-LIB UNSAT. If no collision found, the SMT-LIB
+ *              is trivially SAT.
+ */
+export const capSetF3nTemplate: SmtTemplate = {
+  name: "cap_set_f3n",
+  description:
+    "Verify that a candidate subset S of F_3^n is a cap set (no 3-term AP in the F_3 vector space). Slots: {n, elements}; elements are base-3 integer encodings 0..3^n-1.",
+  slots: {
+    n: "Dimension of the F_3 vector space (e.g., 7 for F_3^7).",
+    elements:
+      "Array of distinct integers in [0, 3^n - 1], each encoding an F_3^n vector via v_0 + 3*v_1 + 9*v_2 + … + 3^{n-1}*v_{n-1}.",
+  },
+  primaryExpectedVerdict: "unsat",
+  crossCheckExpectedVerdict: "sat",
+
+  assemble(slots): string {
+    const n = slots.n;
+    if (typeof n !== "number" || !Number.isInteger(n) || n < 1) {
+      throw new Error("`n` must be a positive integer (the dimension).");
+    }
+    const v = validateIntegerSet(slots);
+    if (!v.ok) throw new Error(v.error);
+    const max = 3 ** n - 1;
+    for (const x of v.values!) {
+      if (x < 0 || x > max) {
+        throw new Error(
+          `element ${x} is outside [0, ${max}] for F_3^${n}`,
+        );
+      }
+    }
+    const elements = v.values!;
+    // Build the inS membership predicate.
+    const memberships = elements.map((x) => `(= v ${x})`).join(" ");
+    const lines: string[] = [
+      `(define-fun inS ((v Int)) Bool (or ${memberships}))`,
+      "(declare-const X Int)",
+      "(declare-const Y Int)",
+      "(declare-const Z Int)",
+      "(assert (inS X)) (assert (inS Y)) (assert (inS Z))",
+      "(assert (distinct X Y Z))",
+    ];
+    // Per-component F_3 sum constraints. For each component i in
+    // [0, n), the sum of (v / 3^i) mod 3 across X, Y, Z is 0 mod 3.
+    for (let i = 0; i < n; i++) {
+      const pow = 3 ** i;
+      lines.push(
+        `(assert (= 0 (mod (+ (mod (div X ${pow}) 3) (mod (div Y ${pow}) 3) (mod (div Z ${pow}) 3)) 3)))`,
+      );
+    }
+    lines.push("(check-sat)");
+    return lines.join("\n");
+  },
+
+  assembleCrossCheck(slots): string {
+    const n = slots.n;
+    if (typeof n !== "number" || !Number.isInteger(n) || n < 1) {
+      throw new Error("`n` must be a positive integer.");
+    }
+    const v = validateIntegerSet(slots);
+    if (!v.ok) throw new Error(v.error);
+    const elements = v.values!;
+    const set = new Set(elements);
+    // Helper: decompose an integer into n base-3 digits.
+    const digits = (x: number): number[] => {
+      const out: number[] = [];
+      for (let i = 0; i < n; i++) {
+        out.push(Math.floor(x / 3 ** i) % 3);
+      }
+      return out;
+    };
+    // Helper: assemble n base-3 digits into an integer.
+    const fromDigits = (ds: number[]): number =>
+      ds.reduce((acc, d, i) => acc + d * 3 ** i, 0);
+    // For each unordered pair (a, b) in S with a < b, compute the
+    // forced third c such that a + b + c = 0 in F_3^n.
+    const collisions: string[] = [];
+    for (let i = 0; i < elements.length; i++) {
+      for (let j = i + 1; j < elements.length; j++) {
+        const a = elements[i];
+        const b = elements[j];
+        const da = digits(a);
+        const db = digits(b);
+        const dc = da.map((_, k) => (3 - ((da[k] + db[k]) % 3)) % 3);
+        const c = fromDigits(dc);
+        if (set.has(c) && c !== a && c !== b) {
+          collisions.push(
+            `; collision: a=${a}=(${da.join(",")}), b=${b}=(${db.join(",")}), c=${c}=(${dc.join(",")})`,
+          );
+        }
+      }
+    }
+    if (collisions.length > 0) {
+      // S has a 3-AP — emit UNSAT to refute.
+      return [...collisions, "(assert false)", "(check-sat)"].join("\n");
+    }
+    // No collisions found by enumeration — trivially SAT.
+    return [
+      "; cross-check enumerated all pairs; no 3-AP collision found",
+      "(declare-const ok Bool)",
+      "(assert ok)",
+      "(check-sat)",
+    ].join("\n");
+  },
+};
+
 export const TEMPLATES: Record<string, SmtTemplate> = {
   [sidonSetTemplate.name]: sidonSetTemplate,
   [noThreeApTemplate.name]: noThreeApTemplate,
+  [capSetF3nTemplate.name]: capSetF3nTemplate,
 };
 
 export function listTemplates(): string {

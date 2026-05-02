@@ -492,6 +492,73 @@ Use verify_lean. The standard Mathlib proof unfolds Even as ∃ k, _ = k + k (or
     maxSteps: 6,
   },
 
+  "open-capset-f3-7": {
+    id: "open-capset-f3-7",
+    type: "GENUINELY OPEN PROBLEM — maximum cap set in F_3^7",
+    difficulty: "very-hard",
+    prompt: `**THIS IS A GENUINELY OPEN PROBLEM.** A cap set in $F_3^n$ is a subset $S \\subset F_3^n$ with no three distinct elements $x, y, z$ satisfying $x + y + z = 0$ in $F_3^n$ (component-wise modular sum). The maximum cap set size $r_3(F_3^n)$ is the central object of the cap-set conjecture.
+
+**Status of $r_3(F_3^n)$:**
+- $n = 1$: 2  (trivial)
+- $n = 2$: 4  (corner)
+- $n = 3$: 9  (Pellegrino 1971)
+- $n = 4$: 20 (proved in the 1980s)
+- $n = 5$: 45 (Edel et al. 2002)
+- $n = 6$: 112 (Potechin 2008, exhaustive)
+- $n = 7$: **OPEN.** Best known lower bound is around 236 (explicit constructions by Edel, Calderbank-Fishburn variants); best known upper bound is the Ellenberg-Gijswijt asymptotic specialised to $n=7$, giving roughly 290-300.
+
+**Goal.** Construct an explicit cap set $S \\subset F_3^7$ of size as large as possible. The harness will verify it via the \`cap_set_f3n\` template (primary Z3 + independent enumeration cross-check; both must agree).
+
+**Reward gradient.**
+- **Trivial (~50-100):** any small construction. Easy.
+- **150-200:** algebraic construction (e.g., projective lines in PG(6, 3) variant).
+- **220-235:** known sub-frontier results from the literature.
+- **236+:** matches the published lower bound.
+- **240+:** at or beyond the literature frontier. Worth recording.
+- **250+:** would push the lower bound. Major result.
+
+**Tooling.**
+
+Use \`verify_template\` with \`template: "cap_set_f3n"\` and slots:
+\`\`\`
+{
+  "n": 7,
+  "elements": [<base-3 integer encoding of each F_3^7 vector>]
+}
+\`\`\`
+
+**Encoding convention:** an F_3^7 vector $v = (v_0, v_1, \\ldots, v_6)$ with each $v_i \\in \\{0, 1, 2\\}$ is encoded as the integer $V = v_0 + 3 v_1 + 9 v_2 + 27 v_3 + 81 v_4 + 243 v_5 + 729 v_6$, ranging $[0, 2186]$.
+
+**Process.**
+
+1. **Range first.** Before submitting any candidate, name 3-5 distinct construction families from different mathematical traditions:
+   - **Algebraic / projective:** caps in PG(n-1, 3); Kuijken-van Maldeghem constructions.
+   - **Coding theory:** ternary BCH codes, dual codes of small weight.
+   - **Combinatorial / direct:** Pellegrino-style block constructions.
+   - **Computational:** SAT-grown cap from a smaller seed cap.
+   - **Hybrid:** lift a smaller cap (e.g., the 112-cap in $F_3^6$) and extend.
+   For each, predict the size at $n=7$.
+
+2. **Pick one. Construct.** Output the explicit subset as a list of base-3 integers in [0, 2186].
+
+3. **Verify** with \`verify_template\`. The template runs both encodings; on PASSED, your result is robustly cross-verified.
+
+4. **Iterate.** If verified at size N, can you grow to N+1? Try adding individual elements, re-verify. Each grow attempt is one verify_template call.
+
+5. **Report.** Final \`done\` answer must include: chosen construction, the explicit set (or its generating description if compact), verified size, comparison to the published lower bound (~236) and upper bound (~290-300).
+
+**Budget: 80 turns.** Cap-set verification is heavier than Sidon (more elements, more constraints) so expect each verify call to take a few seconds. Use the budget for genuine exploration of multiple constructions.
+
+**What success looks like:** a verified cap set of size $\\geq 200$ matches solid published constructions; $\\geq 236$ matches the best-known lower bound; $\\geq 240$ would be at the frontier; $\\geq 250$ would be a real result. Even at smaller sizes, exhibiting a clean verified construction has demonstrative value.
+
+**What failure looks like:** the model writes constructions that fail verification (either size collapses or the template refutes them). That's normal — cap sets are hard. Use \`give_up\` if the surviving branches plateau at a small size with no path forward.
+
+We are not expecting to match 236 on first try. The exercise is: how large a cap set can we get with cross-checked verification, and does the system make any progress?`,
+    expectedAnswer:
+      "Open. The maximum cap set in F_3^7 is unknown. Published lower bound ≈ 236; upper bound ≈ 290. Grade by verified size: ≥ 100 = working; ≥ 200 = real; ≥ 236 = matches frontier; > 236 = potentially novel.",
+    maxSteps: 80,
+  },
+
   "open-3ap-free-300": {
     id: "open-3ap-free-300",
     type: "OPEN PROBLEM — large 3-AP-free subset of [1, 300]",
