@@ -613,8 +613,8 @@ You have lots of turns; don't rush. The interesting trace is one where you propo
 
 The interesting trace shows: range → pick → construct → verify (perhaps reject) → repair → grow. Five SMT calls is plenty for that arc.`,
     expectedAnswer:
-      "F_2(500) lies between 23 (Singer q=23 cropped) and ≈ 25 (upper bound from √500 + O(n^{1/4})). A verified |S| ≥ 22 is a useful trace; |S| = 23 matches Singer; |S| ≥ 24 is genuinely interesting; |S| ≥ 25 would beat known explicit constructions and warrant careful re-verification. Grade by verified size + whether expectedVerdict is consistently used.",
-    maxSteps: 30,
+      "F_2(500) lies between 23 (Singer q=23 cropped) and ≈ 25 (upper bound from √500 + O(n^{1/4})). A verified, cross-checked |S| ≥ 20 is a useful trace; |S| = 23 matches Singer; |S| ≥ 24 is genuinely interesting; |S| ≥ 25 would beat known explicit constructions. Grade by cross-checked size: a single review-passed result counts more than three same-encoding confirmations.",
+    maxSteps: 60,
   },
 
   "open-sidon-set-200": {
