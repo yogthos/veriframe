@@ -410,52 +410,6 @@ NOT VERIFIED is a green light to **rethink the step**. Re-examine your reasoning
 
 \`verify_lean\` returns VERIFIED or NOT VERIFIED with diagnostics. Lean is a real proof assistant — the proof must compile against Mathlib. Useful tactics to know: \`norm_num\` (arithmetic identities), \`linarith\` / \`nlinarith\` / \`polyrith\` (linear/nonlinear inequalities), \`ring\` (ring identities), \`field_simp\` (field simplification), \`decide\` (decidable propositions), \`omega\` (linear integer/nat arithmetic), \`positivity\` (positivity of expressions), \`exact?\` / \`apply?\` / \`hint\` (Mathlib search & suggestion). Combine with \`intro\`, \`cases\`, \`rcases\`, \`induction\`, \`refine\`, \`have\`, \`show\`, \`use\`, \`rw\`. If a tactic fails on a side-condition, fall back to manual steps — but try the hammers first.
 
-## Lean idioms — what works for which goal shape
-
-When you're proving things in Lean (especially with \`Finset\` over generic types), the choice of tactic matters a lot. Some patterns that consistently work, and some traps to avoid.
-
-**Finset cardinality / counting goals:**
-- \`Finset.card_filter_le\` — \`(s.filter p).card ≤ s.card\`
-- \`Finset.card_image_le\` — \`(s.image f).card ≤ s.card\`
-- \`Finset.card_image_of_injOn\` — when \`f\` is injective on \`s\`, \`.image\` preserves cardinality
-- \`Finset.card_le_card\` — subset gives ≤ on cardinality
-- \`Finset.one_le_card\` — \`s.Nonempty ↔ 1 ≤ s.card\`
-- \`Finset.card_eq_one\` — characterises singletons
-- \`Finset.card_insert_of_notMem\`, \`Finset.card_insert_le\`
-- \`Finset.sum_card_filter\` — \`s.card = ∑ x ∈ s, 1\` etc.
-
-**Avoid these tactics on goals containing free type variables:**
-- \`decide\` / \`native_decide\` — needs a *computable* decidable instance; free \`α\` doesn't have one
-- \`omega\` — works on \`ℕ\`/\`ℤ\` directly but won't unfold \`Finset.card\` for you
-- \`dec_trivial\` — same as \`decide\`
-- \`simp\` *without arguments* on Finset cardinality often makes "no progress"; pass it specific lemmas: \`simp [Finset.card_filter_le, Finset.mem_insert]\` etc.
-
-**Prefer these tactics for generic-type Finset proofs:**
-- \`apply Finset.card_filter_le\` then chain
-- \`exact Finset.card_le_card hSubset\` — direct subset bound
-- \`calc\` blocks — chain inequalities explicitly
-- \`refine ⟨witness, ?_, ?_⟩\` — provide existential witnesses, leave proof goals
-- \`Finset.induction_on s\` — induct over a Finset structurally
-
-**Concrete-instance goals** (e.g., proving things about \`{∅, {a}}\`):
-- \`simp [Finset.mem_insert, Finset.mem_singleton]\` for membership
-- \`decide\` *only* if the entire goal is on a decidable type with no free vars (use \`α := ℕ\` or \`Fin n\` if needed for a sanity check)
-- \`Finset.card_pair\` for two-element sets
-
-**Existential goals** (\`∃ x, P x\`):
-- \`exact ⟨witness, proof⟩\` or \`refine ⟨witness, ?_⟩\` — never \`exact?\` for these (it tends to time out)
-- \`use witness; <prove P witness>\` — short syntax
-
-**Type-class trouble** (\`failed to synthesize instance of type class ...\`):
-- Add the missing instance as an assumption: \`[DecidableEq α]\`, \`[Fintype α]\`
-- For \`Finset α\` membership, you almost always need \`[DecidableEq α]\`
-- Wrap in \`Classical.dec\` only as last resort — it makes everything noncomputable
-
-**Building up a development incrementally:**
-- Use \`lean_define\` to add definitions to your branch's persistent env
-- Then \`proof_start\` for each theorem — your definitions are already in scope
-- Don't paste the whole prelude into every \`verify_lean\` snippet — use \`lean_define\` once per definition
-
 ## Stepwise Lean proofs — when verify_lean isn't enough
 
 For multi-step math proofs (induction, contradiction, chained rewrites, case splits) prefer the *stateful* proof tools over a single \`verify_lean\` call. The stateful flow lets you see the goal state after every tactic — exactly how a human writes a proof in Lean's tactic mode.
@@ -1989,6 +1943,43 @@ function buildBranchTurnContext(
 }
 
 /**
+ * Temperature schedule per (branch, turn). Two effects compose:
+ *
+ *   1. **Per-branch base.** Each branch has a different base
+ *      temperature so the beam explores the creativity axis along
+ *      with the hypothesis axis. B1 is conservative (0.5 — picks
+ *      the safest, most-cited approach), B5 is wild (1.3 — reaches
+ *      for unusual connections). Branches are independent so the
+ *      cull rule weeds out branches whose temp choice didn't fit
+ *      the problem.
+ *
+ *   2. **Per-turn boost on recent failure.** Consecutive failures
+ *      within a branch increase the temperature linearly until
+ *      the branch is culled. This pushes the model toward
+ *      genuinely different ideas after a rejection rather than
+ *      patching the same broken approach.
+ *
+ * The point is to make creativity a structural feature of the
+ * search — not a thing we ask the model for politely.
+ */
+const PER_BRANCH_BASE_TEMP: Record<string, number> = {
+  B1: 0.5,
+  B2: 0.7,
+  B3: 0.9,
+  B4: 1.1,
+  B5: 1.3,
+};
+
+function temperatureForBranchTurn(branch: BranchState): number {
+  const base = PER_BRANCH_BASE_TEMP[branch.id] ?? 0.7;
+  // After a rejection, jack temperature up to encourage a different
+  // angle on the next turn. Each consecutive failure adds 0.2 to
+  // the base, capped to keep things from going incoherent.
+  const boost = Math.min(branch.consecutiveFailures * 0.2, 0.5);
+  return Math.min(base + boost, 1.6);
+}
+
+/**
  * Spin up one BranchState ready to participate in the beam. Each
  * branch gets its own Prolog session for full isolation.
  */
@@ -2042,9 +2033,10 @@ async function runBranchTurn(
 ): Promise<BranchTurnOutcome> {
   if (branch.hintCooldownTurns > 0) branch.hintCooldownTurns--;
   const messages = buildBranchTurnContext(branch, state);
+  const temperature = temperatureForBranchTurn(branch);
   let response: string;
   try {
-    const resp = await llm.chat(messages, { signal });
+    const resp = await llm.chat(messages, { signal, temperature });
     response = resp.content;
   } catch (e) {
     // Branch-level chat failure: mark this branch as dead but let

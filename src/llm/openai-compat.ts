@@ -239,7 +239,11 @@ export function createOpenAICompatProvider(
               : m.content,
         })),
         max_tokens: config.maxTokens ?? 4096,
-        temperature: config.temperature ?? 0.7,
+        // Per-call temperature override takes precedence so the
+        // agent can dial creativity up/down based on context (e.g.,
+        // high after a verification rejection to break out of a
+        // local minimum; low when consolidating a confirmed result).
+        temperature: options?.temperature ?? config.temperature ?? 0.7,
       };
       if (config.topP !== undefined) body.top_p = config.topP;
 
