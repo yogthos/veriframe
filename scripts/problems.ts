@@ -492,6 +492,85 @@ Use verify_lean. The standard Mathlib proof unfolds Even as ∃ k, _ = k + k (or
     maxSteps: 6,
   },
 
+  "frankl-union-closed": {
+    id: "frankl-union-closed",
+    type: "OPEN CONJECTURE — Frankl's Union-Closed Sets (1979)",
+    difficulty: "very-hard",
+    prompt: `## The conjecture
+
+**Frankl's Union-Closed Sets Conjecture (Frankl, 1979).** Let $F$ be a finite, non-empty family of finite sets, closed under union (i.e., $A, B \\in F \\implies A \\cup B \\in F$), and suppose $F$ contains at least one non-empty set. Then there exists an element $x$ belonging to at least half the sets in $F$:
+$$
+\\exists x \\in \\bigcup F \\quad \\text{such that} \\quad |\\{ S \\in F : x \\in S \\}| \\geq |F| / 2.
+$$
+
+This conjecture is **open**. The best known unconditional bound is due to Gilmer (2022), giving roughly $|\\{ S \\ni x \\}| \\geq 0.38 |F|$ via an entropy argument. The originally-conjectured constant 0.5 is still unproven.
+
+## Your task: progressive Lean formalization
+
+We are NOT asking you to prove the conjecture in full. We want a structured, formally-verified progression:
+
+### Level 1 (mandatory): Formalize the statement
+
+In Lean 4 + Mathlib, define:
+- A predicate \`IsUnionClosed (F : Finset (Finset α)) : Prop\` capturing "closed under union and non-empty with some non-empty set."
+- The proposition \`FranklConjecture (F : Finset (Finset α)) : Prop\` stating "$\\exists x$ in $\\bigcup F$ with $|\\{S \\in F : x \\in S\\}| \\geq |F| / 2$."
+
+Use \`verify_lean\` to confirm the definitions compile against Mathlib.
+
+### Level 2: Trivial small cases
+
+Prove:
+- **L2a**: For $F = \\{\\emptyset, \\{a\\}\\}$ (where $a$ is some element), the conjecture holds.
+- **L2b**: For $|F| = 1$, the conjecture holds (any element of the single set belongs to all sets).
+- **L2c**: For $|F| = 2$, the conjecture holds.
+
+Each as a separate Lean theorem. These are sanity checks; they should not be hard.
+
+### Level 3 (the meaningful goal): The 2-element-set lemma
+
+**Lemma.** If $F$ is union-closed and contains a 2-element set $\\{a, b\\}$, then either $a$ or $b$ belongs to at least $|F|/2$ sets of $F$.
+
+This is a published, well-known partial result. The proof is a counting argument: pair off the sets in $F$ that contain $a$ with those that don't (and similarly for $b$); union-closure forces a balance. Look up the canonical proof in the literature; the model is expected to know it.
+
+Prove this in Lean. \`lean_search\` will help you find Mathlib lemmas about \`Finset.card\`, \`Finset.image\`, and pair injections.
+
+### Level 4 (bonus, ambitious): Specific structural cases
+
+Prove ANY of (in order of difficulty):
+- If the smallest set in $F$ has size $\\leq 2$, the conjecture holds (subsumes L3 plus the singleton case).
+- If $|F| \\leq 46$, the conjecture holds (computational; was verified by Lo Faro 1994 via case analysis).
+- A formal statement of Gilmer's 0.38 bound, with as much of the entropy argument as you can encode.
+
+These are MUCH harder; partial progress is fine. Don't attempt all of them — pick the one you can make most progress on and lean into it.
+
+## Tooling
+
+- \`proof_start\` + \`proof_step\` for stepwise Lean proofs (preferred for L2c, L3 — they involve case analysis or counting).
+- \`verify_lean\` for one-shot proofs of L1, L2a, L2b.
+- \`lean_search\` early and often. You'll need: \`Finset.card\`, \`Finset.image\`, \`Finset.union\`, \`Finset.filter\`, \`Nat.div_le_iff\`, \`Finset.sum_card_filter_attach\` and similar.
+
+## Output expectations
+
+A run that produces:
+- L1 (formalized statement) ⇒ baseline success.
+- L1 + L2 (statement + trivial cases) ⇒ solid demonstration of formalization capability.
+- L1 + L2 + L3 (statement + trivial cases + 2-element-set lemma) ⇒ **target outcome**. This means we have a Lean-verified proof of a genuine published partial result for an open conjecture.
+- L4 (any structural case) ⇒ stretch.
+
+**Budget: 80 turns.** Spend turns on Lean elaboration; don't reach for SMT (this is a structural mathematical theorem, not a finite-instance check). Use \`proof_start\` aggressively for L3 — the counting argument has multiple steps and benefits from per-tactic feedback.
+
+## Critical instructions
+
+1. **Don't try to prove the full conjecture.** It's open. Focus on the levels above.
+2. **Don't formalize from a blank slate.** Use Mathlib's \`Finset\` everywhere; don't redefine sets manually.
+3. **State theorems precisely.** Each Lean theorem statement should match the natural-language statement we wrote above. Mismatches in quantifier scope or division convention (\`|F| / 2\` is integer division in Nat; you may need to use \`2 * |{S ∋ x}| ≥ |F|\` instead) are common pitfalls.
+4. **Cross-check your L3 proof with \`review\`.** This is a mathematical proof, not a model-supplied SMT encoding, but the discipline of cross-checking still applies — sketch the proof informally before/after the formal version and compare.
+5. **Call \`done\` when you have your highest-level achievement, with a precise summary of which levels you reached and which you didn't.**`,
+    expectedAnswer:
+      "A Lean 4 + Mathlib formalization with at least Level 1 (statement) and Level 2 (trivial cases) verified. Target is Level 3 (the 2-element-set lemma). Level 4 is a stretch. Frankl's full conjecture is open and not expected.",
+    maxSteps: 80,
+  },
+
   "rigging-no-equivocation": {
     id: "rigging-no-equivocation",
     type: "Cryptographic protocol theorem — hitch non-equivocation guarantee",
