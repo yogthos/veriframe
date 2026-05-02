@@ -157,6 +157,43 @@ describe("lintLean", () => {
     expect(r.ok).toBe(false);
     expect(r.warnings.join(" ")).toMatch(/no `theorem` \/ `example` \/ `lemma` \/ `def`/);
   });
+
+  it("rejects `sorry` placeholders (Frankl L3 false-positive shape)", () => {
+    const r = lintLean(`
+      import Mathlib
+      theorem two_element_set_lemma : True := by
+        sorry
+    `);
+    expect(r.ok).toBe(false);
+    expect(r.warnings.join(" ")).toMatch(/sorry|admit/i);
+  });
+
+  it("rejects `admit` placeholders too", () => {
+    const r = lintLean(`
+      import Mathlib
+      theorem foo : True := by admit
+    `);
+    expect(r.ok).toBe(false);
+    expect(r.warnings.join(" ")).toMatch(/sorry|admit/i);
+  });
+
+  it("does NOT flag `sorry` inside a comment", () => {
+    const r = lintLean(`
+      import Mathlib
+      -- TODO: sorry, fix this later
+      theorem foo : True := by trivial
+    `);
+    expect(r.ok).toBe(true);
+  });
+
+  it("does NOT trigger on identifiers like 'sorrySafe' or 'mySorry'", () => {
+    const r = lintLean(`
+      import Mathlib
+      def mySorry : Nat := 0
+      theorem foo : mySorry = 0 := by rfl
+    `);
+    expect(r.ok).toBe(true);
+  });
 });
 
 describe("lintPrologProgram", () => {

@@ -216,6 +216,21 @@ export function lintLean(snippet: string): LintResult {
         "Lean snippet has no `theorem` / `example` / `lemma` / `def` declaration after stripping comments. verify_lean expects a complete declaration; for individual tactics use `proof_step`.",
       );
     }
+    // Reject `sorry` and `admit` placeholders. Lean accepts both
+    // with only a warning (not an error), so without this check the
+    // harness would record "claimStatus: confirmed" for snippets
+    // whose proofs aren't actually closed. Observed in the Frankl
+    // run: a `two_element_set_lemma` artifact with two `sorry`
+    // statements got marked confirmed despite proving nothing.
+    //
+    // We scan word-boundary so identifiers like `mySorry` don't
+    // false-trigger.
+    const sorryRe = /\b(sorry|admit)\b/;
+    if (sorryRe.test(stripped)) {
+      warnings.push(
+        "Snippet contains `sorry` or `admit` — these are placeholder tactics that compile but do NOT prove anything (Lean only emits a warning). Replace them with real tactics, or split the work: `lean_define` adds the goal as an axiom you can use elsewhere, or `proof_start` lets you develop the closed proof step by step.",
+      );
+    }
   }
 
   return { ok: warnings.length === 0, warnings };

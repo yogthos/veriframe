@@ -230,10 +230,25 @@ export async function runLean(
       if (d) diagnostics.push(d);
     }
     const hasErrors = diagnostics.some((d) => d.severity === "error");
-    if (out.code !== 0 || hasErrors) {
+    // Belt-and-suspenders soundness check: even if Lean reports no
+    // errors, a `sorry` (or `admit`) in the snippet leaves the
+    // theorem unproven and Lean only logs a warning. We promote
+    // that warning to an error so the harness never marks
+    // sorry-containing artifacts as confirmed. The lint pre-check
+    // catches this earlier; this is the second line of defense in
+    // case the lint missed something (string interpolation, lean's
+    // own auto-`sorry`, etc).
+    const usesSorryWarning = diagnostics.find(
+      (d) =>
+        d.severity === "warning" &&
+        /uses\s+['`]?sorry|declaration uses .*sorry/i.test(d.message),
+    );
+    if (out.code !== 0 || hasErrors || usesSorryWarning) {
       const errMsg = hasErrors
         ? "Lean rejected the proof — see diagnostics."
-        : `lake exited with status ${out.code}${out.stderr.trim() ? `\n${out.stderr.trim().slice(0, 1500)}` : ""}`;
+        : usesSorryWarning
+          ? `Lean accepted the snippet but the proof uses 'sorry' or 'admit' — the theorem is NOT actually proven. Replace the placeholder tactics with real ones. (warning: ${usesSorryWarning.message.slice(0, 200)})`
+          : `lake exited with status ${out.code}${out.stderr.trim() ? `\n${out.stderr.trim().slice(0, 1500)}` : ""}`;
       return { status: "error", error: errMsg, diagnostics };
     }
     return { status: "ok", diagnostics };

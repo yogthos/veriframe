@@ -151,6 +151,25 @@ export async function applyStep(
       tacticCount: session.tactics.length,
     };
   }
+  // Soundness guard: reject `sorry` / `admit` as tactics. Both close
+  // the goal in Lean's eyes — `sorry` with a warning, `admit` with
+  // none — but they prove nothing. Without this guard a model could
+  // call proof_step with `sorry` and the harness would mark the
+  // proof closed and ship a non-proof.
+  if (/^\s*(sorry|admit)\s*$/.test(t)) {
+    return {
+      status: "tactic_error",
+      goals: session.goals,
+      errors: [
+        {
+          severity: "error",
+          data:
+            "tactic `sorry`/`admit` is rejected — they close the goal without proving it. Use real tactics, or proof_abandon if you can't close this proof.",
+        },
+      ],
+      tacticCount: session.tactics.length,
+    };
+  }
   if (session.status === "closed") {
     return {
       status: "tactic_error",
