@@ -492,6 +492,82 @@ Use verify_lean. The standard Mathlib proof unfolds Even as ∃ k, _ = k + k (or
     maxSteps: 6,
   },
 
+  "erdos-straus-general": {
+    id: "erdos-straus-general",
+    type: "OPEN PROBLEM — Erdős–Straus conjecture, general proof attempt",
+    difficulty: "very-hard",
+    prompt: `## The conjecture
+
+**Erdős–Straus (1948).** For every integer $n \\geq 2$, there exist positive integers $x, y, z$ such that
+$$
+\\frac{4}{n} = \\frac{1}{x} + \\frac{1}{y} + \\frac{1}{z}.
+$$
+
+**Status as of 2026**: open. Computationally verified for all $n \\leq 10^{17}$ (Salez 2014 and successors). No general proof published in 78 years.
+
+## Your task
+
+**Find a general proof.** Or, if a full proof eludes you, prove it for a residue class that's still listed as open in the literature, OR develop a novel structural argument that reduces the open cases. The realistic outcome is partial progress on a famous open problem; even that is a contribution.
+
+This is not a benchmark — it's a research attempt. The harness's verification engines exist to check specific intermediate steps (residue-class proofs, identity verifications, witness searches). The creative part — picking the angle, choosing the abstraction, making unusual connections — is on you.
+
+## What's already been tried (so you don't repeat)
+
+Pre-existing partial results, all in the literature:
+
+- **Residue classes of $n$ mod 840**: most have explicit constructions. E.g., $n \\equiv 0 \\pmod 4$ admits $4/n = 1/(n/4) + 1/k + 1/(-k)$ trivially with appropriate algebra. Many other classes have published Erdős/Straus/Schinzel constructions.
+- **Probabilistic / heuristic arguments**: Heath-Brown 1996 showed the proportion of $n \\leq N$ where the conjecture holds is $1 - O((\\log N)^{-3})$. So almost all $n$ admit decompositions; the conjecture is for the residual sparse set.
+- **Continued fractions / Stern-Brocot tree**: structural representations of unit fraction sums.
+- **Mordell's identity** and its variations for specific residue classes.
+- **Computer search**: exhaustive verification up to $10^{17}$.
+
+The remaining open cases tend to involve specific congruence conditions on $n$ modulo small primes. Pick one and try.
+
+## Be creative — this is the whole point
+
+The conjecture has resisted classical attacks for 78 years. If a clean proof exists, it's likely from a **non-obvious angle**. Stretch your knowledge:
+
+- **Algebraic number theory**: think of $4/n$ as an element of $\\mathbb{Q}$ and try $K$-theoretic / class-group arguments.
+- **Algebraic geometry**: the condition $4/n = 1/x + 1/y + 1/z$ defines a variety over $\\mathbb{Q}$. Are there rational/integer point arguments from elliptic curves, modular forms, or Manin-style descent?
+- **Combinatorics on words**: the partial fractions have a Stern-Brocot tree structure — is there a coding-theoretic angle?
+- **Spectral / analytic methods**: $L$-functions, Hardy-Littlewood circle method, or character sums for specific residues.
+- **Probabilistic number theory**: extending Heath-Brown's density bound to a full proof for the residual set.
+- **Logical / proof-theoretic**: is there a reduction to a decidable fragment for specific classes?
+- **Computer algebra / symbolic computation**: a polynomial identity that proves the conjecture by exhibiting parametrised solutions for an infinite family.
+- **Cross-field surprises**: anything from physics (statistical mechanics on the integers?), CS (algorithm-design viewpoint?), or a recently-resolved problem in additive combinatorics that might transfer.
+
+Don't restrict yourself to "standard" Erdős–Straus literature. The conjecture has been picked at by experts using standard techniques for decades — that's exactly why it's open. **The likeliest path to progress is a connection nobody's tried.**
+
+## Tooling
+
+- **\`verify_lean\`** / **\`proof_start\`** for any structural proof step. Use this for residue-class proofs, polynomial identity proofs, anything Lean can elaborate.
+- **\`lean_define\`** to build up a development with the conjecture's definitions plus your auxiliary lemmas.
+- **\`lean_search\`** to find Mathlib's lemmas on \`Nat.gcd\`, \`Nat.div\`, modular arithmetic, partial fractions, etc.
+- **\`verify_smt\`** for witness-finding at specific $n$. Z3 can find $(x, y, z)$ for moderate $n$ in seconds.
+- **\`audit\`** if you produce a confirmed artifact and want a sub-LLM review for soundness before shipping.
+
+## Process
+
+1. **Survey** in your prose: what techniques have been tried, where have they hit a wall, and which under-explored angle would you bring?
+2. **Pick an angle** and commit. Don't try five things at 20% depth; try one at full depth.
+3. **Formalize the setup** in Lean via \`lean_define\` — at minimum, the conjecture statement.
+4. **Attack the load-bearing lemma.** What's the smallest claim that, if proven, implies the conjecture (or a meaningful subset)?
+5. **Verify what you can**, ship what you have. The done-gate requires your final answer to substantively match your verified artifacts.
+
+## Realistic outcomes
+
+- **Most likely**: formalize the conjecture in Lean, verify it for many small $n$ via SMT, prove for a residue class that has a known construction.
+- **Possible**: prove a residue class that's currently listed as open, or formalise a partial result that hasn't been Lean-verified before.
+- **Vanishingly unlikely**: full proof. We're not expecting to crack a 78-year-old conjecture in 80 turns. **But the goal is to TRY, with creativity.**
+
+## Budget: 80 turns
+
+Use them for genuine exploration. Don't rush to verify trivial cases — spend turns on the angle-of-attack discussion, then dig in.`,
+    expectedAnswer:
+      "Open. The Erdős–Straus conjecture (4/n = 1/x + 1/y + 1/z for all n ≥ 2) is unsolved in general. Realistic measure of success: any verified artifact that closes a residue class currently listed as open, or a structural lemma reducing the open cases. Full proof is not expected.",
+    maxSteps: 80,
+  },
+
   "schur-coloring-frontier": {
     id: "schur-coloring-frontier",
     type: "OPEN-FRONTIER PROBLEM — Schur number S(5) and beyond",
