@@ -4,7 +4,7 @@
  */
 
 import { describe, it, expect } from "vitest";
-import { runSmt } from "../src/harness/smt.js";
+import { runSmt, parseModel } from "../src/harness/smt.js";
 
 describe("z3 SMT backend", () => {
   it("returns sat for a satisfiable formula", () => {
@@ -51,6 +51,67 @@ describe("z3 SMT backend", () => {
     `);
     expect(r.status).toBe("ok");
     if (r.status === "ok") expect(r.verdict).toBe("unsat");
+  });
+
+  it("returns a witness model on SAT", () => {
+    const r = runSmt(`
+      (declare-const x Int)
+      (declare-const b Bool)
+      (assert (= x 7))
+      (assert b)
+    `);
+    expect(r.status).toBe("ok");
+    if (r.status !== "ok") return;
+    expect(r.verdict).toBe("sat");
+    expect(r.model).toBeDefined();
+    expect(r.model?.x).toBe("7");
+    expect(r.model?.b).toBe("true");
+  });
+
+  it("captures negative-integer values via paren-balanced parsing", () => {
+    const r = runSmt(`
+      (declare-const y Int)
+      (assert (= y (- 5)))
+    `);
+    expect(r.status).toBe("ok");
+    if (r.status !== "ok") return;
+    expect(r.verdict).toBe("sat");
+    // Z3 may print the value as `(- 5)` or `-5` depending on version.
+    const v = r.model?.y ?? "";
+    expect(v).toMatch(/^(-5|\(-\s*5\))$/);
+  });
+
+  it("returns no model on UNSAT", () => {
+    const r = runSmt(`
+      (declare-const x Int)
+      (assert (> x 5))
+      (assert (< x 3))
+    `);
+    expect(r.status).toBe("ok");
+    if (r.status !== "ok") return;
+    expect(r.verdict).toBe("unsat");
+    expect(r.model).toBeUndefined();
+  });
+
+  it("parseModel handles boolean and integer assignments", () => {
+    const sample = `(
+      (define-fun e01 () Bool true)
+      (define-fun e02 () Bool false)
+      (define-fun x () Int 42)
+      (define-fun y () Int (- 5))
+    )`;
+    const m = parseModel(sample);
+    expect(m.e01).toBe("true");
+    expect(m.e02).toBe("false");
+    expect(m.x).toBe("42");
+    // (- 5) should preserve the parens.
+    expect(m.y).toBe("(- 5)");
+  });
+
+  it("parseModel returns empty map when there are no define-funs", () => {
+    expect(parseModel("sat")).toEqual({});
+    expect(parseModel("")).toEqual({});
+    expect(parseModel("(error \"line 1\")")).toEqual({});
   });
 
   it("reports an error verdict when input is malformed", () => {

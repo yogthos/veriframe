@@ -107,6 +107,8 @@ interface VerifiedArtifact {
   code: string;
   /** Z3 verdict for SMT artifacts; absent for Lean. */
   verdict?: "sat" | "unsat" | "unknown";
+  /** Z3 witness model for SAT artifacts (var → assigned value). */
+  model?: Record<string, string>;
 }
 
 const SYSTEM_PROMPT = `You're solving a problem the way a mathematician proves a theorem: by reasoning out the next step in natural language, then verifying that one step with Prolog. **You are not writing a Prolog solver.** You are deriving the answer step by step, with Prolog as the proof checker for each derivation.
@@ -637,13 +639,16 @@ async function runTool(
       const outcome: VerifyOutcome = r.verdict === "unknown" ? "not_verified" : "verified";
       recordVerify(session, claim, outcome);
       // Capture the verified SMT-LIB so it shows up in the final
-      // answer. Skip unknown (not actually verified anything).
+      // answer. Skip unknown (not actually verified anything). On
+      // SAT we also capture Z3's witness model — the constructive
+      // proof that whatever the model claimed exists, actually does.
       if (r.verdict !== "unknown") {
         session.verifiedArtifacts.push({
           kind: "smt",
           claim,
           code: smtlib,
           verdict: r.verdict,
+          model: r.verdict === "sat" ? r.model : undefined,
         });
       }
       const hint = checkStuckHint(session);
@@ -1179,6 +1184,17 @@ function renderFinalAnswer(session: AgentSession): string {
       lines.push(a.kind === "smt" ? "```smt" : "```lean");
       lines.push(a.code.trimEnd());
       lines.push("```");
+      // For SAT artifacts, also include the witness model — the
+      // actual variable assignment Z3 found. This is the
+      // constructive proof of existence; without it the user would
+      // have to re-run Z3 to see the witness.
+      if (a.kind === "smt" && a.verdict === "sat" && a.model && Object.keys(a.model).length > 0) {
+        lines.push("Witness model (Z3 (get-model)):");
+        const entries = Object.entries(a.model).sort(([x], [y]) => x.localeCompare(y));
+        for (const [name, value] of entries) {
+          lines.push(`  ${name} = ${value}`);
+        }
+      }
     }
   }
 
