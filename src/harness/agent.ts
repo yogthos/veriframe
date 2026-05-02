@@ -89,14 +89,24 @@ interface AgentSession {
    *  a time — see lean-proof.ts for rationale. */
   leanProof: ProofSession | null;
   /**
-   * Last successful Lean proof snippet — set whenever verify_lean
-   * accepts a snippet, OR when a proof_start session reaches "closed"
-   * status. Surfaced verbatim in the final answer so the user
-   * receives the actual Lean code that verified, not just the
+   * Every successful verification accumulated this run — `verify_lean`
+   * snippets, closed `proof_start` sessions, and `verify_smt` runs
+   * (sat or unsat both count; the verdict tells the consumer what
+   * the model proved). Rendered verbatim in the final answer so the
+   * caller receives the actual machine-checked code, not just the
    * model's natural-language summary.
    */
-  lastVerifiedLean: string | null;
+  verifiedArtifacts: VerifiedArtifact[];
   messages: ChatMessage[];
+}
+
+interface VerifiedArtifact {
+  kind: "lean" | "smt";
+  claim: string;
+  /** Full Lean snippet (for `lean`) or SMT-LIB body (for `smt`). */
+  code: string;
+  /** Z3 verdict for SMT artifacts; absent for Lean. */
+  verdict?: "sat" | "unsat" | "unknown";
 }
 
 const SYSTEM_PROMPT = `You're solving a problem the way a mathematician proves a theorem: by reasoning out the next step in natural language, then verifying that one step with Prolog. **You are not writing a Prolog solver.** You are deriving the answer step by step, with Prolog as the proof checker for each derivation.
@@ -626,6 +636,16 @@ async function runTool(
       // model's job. Only `unknown` and errors count as not-progressing.
       const outcome: VerifyOutcome = r.verdict === "unknown" ? "not_verified" : "verified";
       recordVerify(session, claim, outcome);
+      // Capture the verified SMT-LIB so it shows up in the final
+      // answer. Skip unknown (not actually verified anything).
+      if (r.verdict !== "unknown") {
+        session.verifiedArtifacts.push({
+          kind: "smt",
+          claim,
+          code: smtlib,
+          verdict: r.verdict,
+        });
+      }
       const hint = checkStuckHint(session);
       return { result: formatSmtResult(claim, r.verdict) + hint };
     }
@@ -702,7 +722,11 @@ async function runTool(
         lines.push("");
         lines.push("(proof_close is optional — you can call `done` next.)");
         // Stash the verified proof for inclusion in the final answer.
-        session.lastVerifiedLean = `import Mathlib\n\n${proofText}\n`;
+        session.verifiedArtifacts.push({
+          kind: "lean",
+          claim: ps.claim,
+          code: `import Mathlib\n\n${proofText}\n`,
+        });
       } else if (stepResult.status === "open") {
         lines.push(
           `STEP ACCEPTED — ${stepResult.tacticCount} tactic(s) applied.`,
@@ -881,7 +905,11 @@ async function runTool(
         // Capture the verified snippet so the final answer can include
         // the actual Lean proof that compiled, not just the model's
         // natural-language summary.
-        session.lastVerifiedLean = snippet;
+        session.verifiedArtifacts.push({
+          kind: "lean",
+          claim,
+          code: snippet,
+        });
       }
       const hint = checkStuckHint(session);
       // On NOT VERIFIED or compile-error, auto-surface relevant
@@ -1010,7 +1038,7 @@ export async function runAgent(
     verifyHistory: [],
     hintCooldownTurns: 0,
     leanProof: null,
-    lastVerifiedLean: null,
+    verifiedArtifacts: [],
     messages: [{ role: "user", content: buildInitialUserMessage(problem) }],
   };
 
@@ -1130,22 +1158,28 @@ function renderFinalAnswer(session: AgentSession): string {
   lines.push("Final answer (model-claimed):");
   lines.push(session.finalAnswer ?? "(none)");
 
-  // Surface the actual verified Lean proof if we have one — preferring
-  // a closed stepwise session (richer; includes intermediate tactics)
-  // over a one-shot verify_lean snippet, but falling back to whatever
-  // the run last verified.
-  let proof: string | null = null;
-  if (session.leanProof?.status === "closed") {
-    proof = `import Mathlib\n\n${buildLeanProofText(session.leanProof)}\n`;
-  } else if (session.lastVerifiedLean) {
-    proof = session.lastVerifiedLean;
-  }
-  if (proof) {
+  // Surface every machine-verified artifact this run produced. The
+  // user gets the actual proof code (Lean snippets / SMT-LIB) — not
+  // just the model's natural-language summary — so they can copy,
+  // re-run, and trust the verification independently.
+  const artifacts = session.verifiedArtifacts;
+  if (artifacts.length > 0) {
     lines.push("");
-    lines.push("Verified Lean proof:");
-    lines.push("```lean");
-    lines.push(proof.trimEnd());
-    lines.push("```");
+    lines.push(`Verified artifacts (${artifacts.length}):`);
+    for (let i = 0; i < artifacts.length; i++) {
+      const a = artifacts[i];
+      lines.push("");
+      const tag =
+        a.kind === "smt" && a.verdict
+          ? `SMT (${a.verdict})`
+          : a.kind === "lean"
+            ? "Lean"
+            : a.kind.toUpperCase();
+      lines.push(`[${i + 1}/${artifacts.length}] ${tag} — claim: "${a.claim}"`);
+      lines.push(a.kind === "smt" ? "```smt" : "```lean");
+      lines.push(a.code.trimEnd());
+      lines.push("```");
+    }
   }
 
   lines.push("");

@@ -343,6 +343,45 @@ Use the verify_lean tool: write the proof in Lean 4 with Mathlib. Useful tactics
     maxSteps: 8,
   },
 
+  "ramsey-3-3": {
+    id: "ramsey-3-3",
+    type: "Math theorem (Ramsey number R(3,3) = 6)",
+    difficulty: "hard",
+    prompt: `Prove that the Ramsey number R(3,3) = 6.
+
+**Definition.** R(s,t) is the smallest natural number N such that every 2-coloring of the edges of the complete graph K_N (each edge colored red or blue) contains either a red K_s (red clique on s vertices) or a blue K_t (blue clique on t vertices). For R(3,3): the smallest N where every 2-edge-coloring of K_N has a monochromatic triangle.
+
+**What you must prove.** R(3,3) = 6 has two halves; both are required:
+
+  (a) **Upper bound, R(3,3) ≤ 6.** Every 2-edge-coloring of K_6 contains a monochromatic K_3.
+
+  (b) **Lower bound, R(3,3) > 5** (equivalently, R(3,3) ≥ 6). There EXISTS a 2-edge-coloring of K_5 with no monochromatic K_3.
+
+The combined statement is R(3,3) = 6.
+
+**Suggested approaches.**
+
+For (a) — a textbook pigeon-hole argument:
+  1. Pick any vertex v of K_6. Its 5 incident edges are 2-colored, so by pigeonhole at least 3 are the same color, say red. Let those neighbors be a, b, c.
+  2. If any edge among {a, b, c} is red, that edge plus v forms a red triangle. If all three of {ab, ac, bc} are blue, they form a blue triangle. Either way: a monochromatic triangle.
+  This pigeon-hole step is short enough to do in Lean, but you can also encode "every 2-edge-coloring of K_6 has a monochromatic K_3" as a SAT query in Z3 (assert the negation; Z3 returns UNSAT). Z3 will solve it in milliseconds.
+
+For (b) — exhibit the *pentagon* coloring of K_5: arrange the 5 vertices as a regular 5-cycle; color the 5 cycle edges red and the 5 chord (diagonal) edges blue. No three vertices form a monochromatic K_3 because:
+  - Three vertices forming a red triangle would require three pairwise-cycle-adjacent vertices, but the 5-cycle has no triangle.
+  - Three vertices forming a blue triangle would require three pairwise-non-adjacent vertices on the cycle, but C_5 has independence number 2.
+  This is verifiable by Z3 in milliseconds (assert the coloring and check there's no monochromatic K_3) or formalizable in Lean.
+
+**Tools you have.**
+  - \`lean_search\` and \`verify_lean\` / \`proof_start\` for formal Lean+Mathlib proofs. Mathlib has \`SimpleGraph\`, \`Finset\`, and clique predicates; \`SimpleGraph.IsNClique\` is the basic lemma. Search for "Ramsey", "monochromatic", "IsNClique" to find the relevant infrastructure.
+  - \`verify_smt\` for Z3-based SAT/UNSAT verification of small finite cases (K_5 and K_6 are tiny — 10 and 15 edges respectively, all triangle constraints fit comfortably).
+  - The Prolog engines aren't a great fit for this finite-clique problem; stick to Lean + Z3.
+
+**Output expectations.** A correct proof of R(3,3) = 6 needs both halves. The Lean proof (or Z3 verification) of each half is what counts as the answer; the natural-language prose is supporting commentary. State the final answer as: "R(3,3) = 6, established by [your method for upper bound] and [your method for lower bound]." Include the Lean proofs / SMT-LIB encodings in the response — they'll be auto-appended via the harness's verified-proof channel when you call \`done\`.`,
+    expectedAnswer:
+      "R(3,3) = 6. Upper bound R(3,3) ≤ 6 by pigeon-hole on a vertex's 5 neighbours (Lean or Z3 UNSAT on K_6 with no monochromatic triangle). Lower bound R(3,3) ≥ 6 by exhibiting the pentagon coloring of K_5 (cycle edges red, chords blue — no monochromatic triangle).",
+    maxSteps: 80,
+  },
+
   "math-sqrt-2-irrational": {
     id: "math-sqrt-2-irrational",
     type: "Math theorem (proof by contradiction: √2 is irrational)",
