@@ -94,22 +94,56 @@ export function createOpenAICompatProvider(
     callerSignal: AbortSignal | undefined,
   ): Promise<LLMResponse> {
     const ctrl = new AbortController();
+    // Soft cancel: AbortController fires at the configured timeoutMs
+    // and *should* cause fetch to reject. Empirically (deepseek-reasoner,
+    // long-running silent hangs) the abort sometimes fails to propagate
+    // — the underlying TCP connection sits ESTABLISHED with zero
+    // throughput while fetch awaits forever. The hard race below
+    // catches that case so the harness recovers instead of stalling
+    // the entire run.
     const timer = setTimeout(() => ctrl.abort(new Error("timeout")), timeoutMs);
     const onCallerAbort = () => ctrl.abort();
     if (callerSignal) {
       if (callerSignal.aborted) ctrl.abort();
       else callerSignal.addEventListener("abort", onCallerAbort, { once: true });
     }
+    // Heartbeat: print elapsed time at intervals so silent hangs are
+    // visible in the server log instead of looking identical to a
+    // legitimately-slow LLM call.
+    const startedAt = Date.now();
+    console.log(`[${opts.name}] LLM request started (timeoutMs=${timeoutMs}, model=${config.model})`);
+    const heartbeat = setInterval(() => {
+      const elapsed = Math.round((Date.now() - startedAt) / 1000);
+      console.log(`[${opts.name}] still waiting (${elapsed}s elapsed)`);
+    }, 30_000);
+    // Hard wall-clock: a 30s grace beyond the soft timeout. If fetch
+    // hasn't returned by then, the AbortController didn't work; we
+    // reject ourselves and let the caller's retry/error path run.
+    // The dangling fetch keeps running in the background — undesirable
+    // but vastly better than blocking the run forever.
+    let hardTimer: NodeJS.Timeout | null = null;
+    const hardTimeout = new Promise<never>((_, reject) => {
+      hardTimer = setTimeout(() => {
+        reject(
+          new Error(
+            `${opts.name} hard timeout after ${timeoutMs + 30_000}ms — AbortController did not cancel the fetch (likely a stuck TCP connection). The dangling request will leak.`,
+          ),
+        );
+      }, timeoutMs + 30_000);
+    });
     try {
-      const response = await fetch(url, {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          Authorization: `Bearer ${apiKey}`,
-        },
-        body: JSON.stringify(body),
-        signal: ctrl.signal,
-      });
+      const response = await Promise.race([
+        fetch(url, {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            Authorization: `Bearer ${apiKey}`,
+          },
+          body: JSON.stringify(body),
+          signal: ctrl.signal,
+        }),
+        hardTimeout,
+      ]);
       if (!response.ok) {
         let errBody = "";
         try {
@@ -162,6 +196,10 @@ export function createOpenAICompatProvider(
       };
     } finally {
       clearTimeout(timer);
+      if (hardTimer) clearTimeout(hardTimer);
+      clearInterval(heartbeat);
+      const elapsed = Math.round((Date.now() - startedAt) / 1000);
+      console.log(`[${opts.name}] LLM request finished in ${elapsed}s`);
       if (callerSignal) callerSignal.removeEventListener("abort", onCallerAbort);
     }
   }
@@ -174,6 +212,9 @@ export function createOpenAICompatProvider(
       if (msg.includes("ECONNRESET") || msg.includes("socket hang up")) {
         return true;
       }
+      // Hard wall-clock timeout when AbortController failed to cancel
+      // a stuck fetch. Retrying gives a fresh TCP connection a chance.
+      if (msg.includes("hard timeout after")) return true;
     }
     return false;
   }
