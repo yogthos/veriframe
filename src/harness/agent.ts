@@ -260,7 +260,24 @@ interface VerifiedArtifact {
    * `expectedVerdict`. Without it, status defaults to "ambiguous" and
    * the rendered output flags the call as needing reader judgement.
    */
-  claimStatus: "confirmed" | "refuted" | "ambiguous";
+  /**
+   * - "confirmed" — engine verdict matched the model's expectedVerdict
+   *   (or the cross-check passed for verify_template). Counts toward
+   *   the done-gate substantiation check.
+   * - "refuted" — engine disagreed with the claim.
+   * - "ambiguous" — verify_smt called without expectedVerdict, or
+   *   verdict was UNKNOWN.
+   * - "existential" — SAT verdict on a verify_smt with FREE variables
+   *   (Z3 chose values to satisfy the constraints; the artifact does
+   *   NOT certify a specific witness the model claimed). This bucket
+   *   exists because models often confuse "Z3 says a solution exists"
+   *   with "I have the solution" — observed in the Schur run where
+   *   B5 confirmed several "Z3 finds a 4-coloring of [1,44]" SAT
+   *   queries and tried to ship a coloring it never actually pinned.
+   *   The done-gate refuses to count existential artifacts as
+   *   substantiating a concrete-instance answer.
+   */
+  claimStatus: "confirmed" | "refuted" | "ambiguous" | "existential";
 }
 
 const SYSTEM_PROMPT = `You're solving a problem the way a creative researcher solves a hard one: by **forming hypotheses, drawing on the broadest mathematical knowledge you can reach, and using formal verification engines to validate or reject each idea**. Your unique value is intuition — knowing which technique to try given current evidence, and recognising a dead end quickly. The harness keeps you honest by checking each idea formally.
@@ -960,7 +977,7 @@ async function runTool(
       // tells whether the verdict supports the claim, refutes it, or
       // is ambiguous because the model didn't declare which verdict
       // it expected.
-      let claimStatus: "confirmed" | "refuted" | "ambiguous";
+      let claimStatus: "confirmed" | "refuted" | "ambiguous" | "existential";
       if (r.verdict === "unknown") {
         claimStatus = "ambiguous";
       } else if (expectedVerdict === null) {
@@ -969,6 +986,21 @@ async function runTool(
         claimStatus = "confirmed";
       } else {
         claimStatus = "refuted";
+      }
+      // Existential downgrade: if the verdict is SAT and the
+      // smt-lib has free `(declare-const X)` constants that aren't
+      // pinned by `(assert (= X <literal>))`, then Z3 *chose*
+      // values to satisfy the formula — the artifact certifies
+      // existence, not a specific witness. Models often confuse
+      // these; the done-gate will not count existential artifacts
+      // as substantiating concrete-instance claims.
+      let existentialNote = "";
+      if (claimStatus === "confirmed" && r.verdict === "sat") {
+        const free = detectFreeVariables(smtlib);
+        if (free.length > 0) {
+          claimStatus = "existential";
+          existentialNote = `\n\n⚠ Existential SAT — Z3 chose values for free variable(s): ${free.slice(0, 8).join(", ")}${free.length > 8 ? `, +${free.length - 8} more` : ""}. This artifact certifies that a satisfying assignment EXISTS, but it does NOT pin a specific witness. To ship a specific instance, either (a) extract the model values from \`r.model\` and re-verify with concrete \`(assert (= var literal))\` lines, or (b) use \`verify_template\` whose slot values become the pinned witness automatically. The done-gate will not count this artifact as substantiating a concrete-instance claim.`;
+        }
       }
       session.verifiedArtifacts.push({
         kind: "smt",
@@ -998,7 +1030,7 @@ async function runTool(
             ? "failure"
             : "neutral";
       return {
-        result: formatSmtResult(claim, r.verdict) + expectedNote + hint,
+        result: formatSmtResult(claim, r.verdict) + expectedNote + existentialNote + hint,
         category,
       };
     }
@@ -1900,6 +1932,53 @@ async function runTool(
  * contract so we want to lock it in.
  */
 /**
+ * Identify SMT-LIB constants declared via `(declare-const ...)` that
+ * are NOT pinned by an explicit `(assert (= name <literal>))`. These
+ * are FREE for Z3 to choose values for — meaning a SAT verdict
+ * proves existence, not a specific witness the model intended.
+ *
+ * Heuristic: pulls all declared names, then removes those bound by
+ * a pinning equality. Returns the names that remain free. We
+ * EXCLUDE names that participate in the `inS` / `inSet` membership
+ * predicates of cross-check encodings (those declarations are
+ * intentional searchers; the constants whose values matter are the
+ * `define-fun`-encoded set elements).
+ */
+export function detectFreeVariables(smtlib: string): string[] {
+  const declared: string[] = [];
+  const declareRe = /\(\s*declare-const\s+([A-Za-z_][\w]*)\s+/g;
+  let m: RegExpExecArray | null;
+  while ((m = declareRe.exec(smtlib)) !== null) declared.push(m[1]);
+  if (declared.length === 0) return [];
+  const pinned = new Set<string>();
+  for (const v of declared) {
+    // Match (assert (= v <literal>)) ignoring whitespace
+    const escV = v.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    const pinRe = new RegExp(
+      `\\(\\s*assert\\s+\\(\\s*=\\s+${escV}\\s+(?:-?\\d+|true|false|"[^"]*")`,
+    );
+    if (pinRe.test(smtlib)) pinned.add(v);
+  }
+  // A common false-positive: cross-check / search encodings declare
+  // `(declare-const a Int) (declare-const b Int)` etc as the
+  // SEARCH variables (Z3 looking for a counterexample/witness in a
+  // set defined elsewhere). These are *legitimately* free — the
+  // VERIFICATION is the search. So we ALSO check whether the
+  // smt-lib has a `(define-fun inS` or `(define-fun c (` shape
+  // that defines the actual structure being verified. If yes, the
+  // free variables are search-locals, not the witness; suppress
+  // the existential warning.
+  const hasInlineDefinitions =
+    /\(\s*define-fun\s+(inS|c|coloring|S|Sidon|Cap)\b/.test(smtlib);
+  if (hasInlineDefinitions) {
+    // The actual witness is in the define-fun. Free variables are
+    // search-locals; not a misleading existential confirmation.
+    return [];
+  }
+  return declared.filter((v) => !pinned.has(v));
+}
+
+/**
  * Pull "distinctive" tokens from a string — numbers, bracketed
  * lists like `[1, 500]`, identifiers ≥ 4 chars that aren't common
  * words. These are the substantive content tokens that should
@@ -2539,6 +2618,7 @@ function renderFinalAnswer(state: GlobalRunState): string {
   const confirmed = allArtifacts.filter((x) => x.artifact.claimStatus === "confirmed");
   const refuted = allArtifacts.filter((x) => x.artifact.claimStatus === "refuted");
   const ambiguous = allArtifacts.filter((x) => x.artifact.claimStatus === "ambiguous");
+  const existential = allArtifacts.filter((x) => x.artifact.claimStatus === "existential");
 
   const renderArtifact = (
     tagged: { branchId: string; artifact: VerifiedArtifact },
@@ -2580,6 +2660,11 @@ function renderFinalAnswer(state: GlobalRunState): string {
     lines.push("");
     lines.push(`Ambiguous calls — verdict not interpretable without expectedVerdict (${ambiguous.length}):`);
     ambiguous.forEach((a, i) => renderArtifact(a, i, ambiguous.length));
+  }
+  if (existential.length > 0) {
+    lines.push("");
+    lines.push(`Existential SAT artifacts — Z3 confirmed a witness exists, but no SPECIFIC witness was pinned (${existential.length}). These do NOT certify a concrete instance:`);
+    existential.forEach((a, i) => renderArtifact(a, i, existential.length));
   }
 
   const totalTurns = state.branches.reduce((acc, b) => acc + b.turns.length, 0);

@@ -508,11 +508,25 @@ The Schur number $S(k)$ is the largest $n$ for which a Schur $k$-coloring of $[1
 - $S(5) = 160$ (Heule 2017, **massive SAT instance, 4 trillion clauses**)
 - $S(6)$ is **OPEN**: best known $S(6) \\geq 537$.
 
+## Starting point — RESUMING from a prior verified result
+
+A previous run of this harness produced a **verified 4-coloring of $[1, 40]$** (both Z3 and JS-enumeration cross-check agreed):
+
+\`\`\`
+[1, 2, 2, 1, 3, 3, 3, 3, 3, 1, 2, 2, 1,
+ 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4,
+ 1, 2, 2, 1, 3, 3, 3, 3, 3, 1, 2, 2, 1]
+\`\`\`
+
+(positions 1..40 in row-major order). Construction: a recursive Schur lift of the 3-coloring $[1,2,2,1,3,3,3,3,3,1,2,2,1]$ of $[1, 13]$, padding positions 14-27 with color 4 and recursing.
+
+**Resume by re-verifying this coloring as your first call** (so you can build on it), then attempt to extend to $[1, 44]$ (Goal A) by finding $c_{41}, c_{42}, c_{43}, c_{44}$ that preserve Schur-goodness. The previous run tried 17 different 4-colorings of $[1, 44]$ and all were refuted — so this is genuinely the hard part. Use **lean on knowledge from the literature** (Baumert 1965 used computer search; the structure is known to be irregular near the boundary).
+
 ## Your goals (in order of difficulty)
 
-### Goal A (warm-up): exhibit a 4-coloring of $[1, 44]$
+### Goal A (the resume target): exhibit a 4-coloring of $[1, 44]$
 
-Find $c : [1, 44] \\to \\{1, 2, 3, 4\\}$ with no monochromatic Schur triple. Verify with \`verify_template[schur_coloring]\`. This is a known target — many such colorings exist in the literature; the model is expected to know one or derive one. Settles $S(4) \\geq 44$.
+Find $c : [1, 44] \\to \\{1, 2, 3, 4\\}$ with no monochromatic Schur triple. Verify with \`verify_template[schur_coloring]\`. **Strongly recommended**: extend the verified $[1, 40]$ above by finding 4 more positions, OR start fresh with a different known construction (e.g., Baumert's specific coloring from the literature). Settles $S(4) \\geq 44$.
 
 ### Goal B (the main attempt): exhibit a 5-coloring of $[1, 160]$
 

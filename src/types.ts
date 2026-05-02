@@ -34,7 +34,7 @@ export interface RunVerifiedArtifact {
   code: string;
   verdict?: "sat" | "unsat" | "unknown";
   model?: Record<string, string>;
-  claimStatus: "confirmed" | "refuted" | "ambiguous";
+  claimStatus: "confirmed" | "refuted" | "ambiguous" | "existential";
 }
 
 export type RunResult =

@@ -9,6 +9,7 @@ import {
   renderBranchHistory,
   repairControlCharsInJsonStrings,
   checkAnswerCoversArtifacts,
+  detectFreeVariables,
   type BranchState,
   type GlobalRunState,
 } from "../src/harness/agent.js";
@@ -121,6 +122,61 @@ describe("repairControlCharsInJsonStrings", () => {
     // raw newline mid-string should still get repaired.
     expect(out).toBe('{"k": "say \\"hi\\" then\\nbye"}');
     expect(() => JSON.parse(out)).not.toThrow();
+  });
+});
+
+describe("detectFreeVariables (existential SAT detection)", () => {
+  it("finds free declare-const that's not pinned (the Schur cheat shape)", () => {
+    const smt = `
+      (declare-const c1 Int) (declare-const c2 Int) (declare-const c3 Int)
+      (assert (and (>= c1 1) (<= c1 4)))
+      (assert (and (>= c2 1) (<= c2 4)))
+      (assert (and (>= c3 1) (<= c3 4)))
+      (assert (not (and (= c1 c2) (= c2 c3))))
+      (check-sat)
+    `;
+    expect(detectFreeVariables(smt)).toContain("c1");
+    expect(detectFreeVariables(smt)).toContain("c2");
+    expect(detectFreeVariables(smt)).toContain("c3");
+  });
+
+  it("returns empty when every declare-const is pinned via (assert (= var literal))", () => {
+    const smt = `
+      (declare-const a1 Int) (declare-const a2 Int)
+      (assert (= a1 1))
+      (assert (= a2 2))
+      (assert (distinct a1 a2))
+      (check-sat)
+    `;
+    expect(detectFreeVariables(smt)).toEqual([]);
+  });
+
+  it("suppresses the existential warning for cross-check encodings (define-fun inS)", () => {
+    // The cap_set_f3n cross-check declares search variables a, b, c, d,
+    // but the actual structure is in (define-fun inS ...). That's
+    // legitimate verification, not "model didn't pin a witness."
+    const smt = `
+      (define-fun inS ((y Int)) Bool (or (= y 1) (= y 2) (= y 4)))
+      (declare-const a Int) (declare-const b Int)
+      (assert (inS a)) (assert (inS b))
+      (assert (= a b))
+      (check-sat)
+    `;
+    expect(detectFreeVariables(smt)).toEqual([]);
+  });
+
+  it("suppresses the warning for Schur template encodings (define-fun c)", () => {
+    const smt = `
+      (define-fun c ((i Int)) Int (ite (= i 1) 1 (ite (= i 2) 2 1)))
+      (declare-const x Int) (declare-const y Int)
+      (assert (= (c x) (c y)))
+      (check-sat)
+    `;
+    expect(detectFreeVariables(smt)).toEqual([]);
+  });
+
+  it("returns empty when no declare-const at all", () => {
+    expect(detectFreeVariables("(assert true) (check-sat)")).toEqual([]);
   });
 });
 
