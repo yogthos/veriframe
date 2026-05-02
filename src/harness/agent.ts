@@ -27,6 +27,7 @@ import type { LLMClient, ChatMessage } from "../llm/types.js";
 import { type ReasoningStep, type RunResult } from "../types.js";
 import { createSession, type PrologSession } from "./prolog.js";
 import { runSmt } from "./smt.js";
+import { TEMPLATES, listTemplates } from "./smt-templates.js";
 import { runLean } from "./lean.js";
 import {
   searchLemmas,
@@ -315,6 +316,25 @@ Free-form prose around the fence is allowed and encouraged for your reasoning; o
 **assume** — \`{"name": "...", "fact": "..."}\`. Open a *named hypothetical scope*. \`fact\` is Prolog code asserted while the scope is open. Anything you \`verify\` afterward is conditional on this assumption. Used for "assume A, derive B; therefore A → B" reasoning.
 
 **discharge** — \`{"name": "..."}\`. Close a previously-opened scope, retracting its assumption. Whatever you proved while it was open now stands as a conditional ("under hypothesis X, conclusion Y holds").
+
+**verify_template** — \`{"claim": "...", "template": "...", "slots": {...}}\`. **Preferred over verify_smt for any problem matching a known template.** The harness assembles BOTH a primary encoding AND an independent cross-check from a vetted template, runs both, and records the artifact as confirmed only if both agree. This eliminates encoding bugs entirely for templated problem shapes.
+
+Available templates:
+  • \`sidon_set\` — verify a candidate set is Sidon (all pairwise sums distinct). Slots: \`elements\` (number[]), optional \`upper_bound\` (number).
+  • \`no_3ap_subset\` — verify a candidate set has no 3-term arithmetic progression. Slots: \`elements\` (number[]).
+
+Example:
+\`\`\`tool-call
+{"name": "verify_template", "args": {
+  "claim": "Mian-Chowla 20 is a Sidon set in [1, 500]",
+  "template": "sidon_set",
+  "slots": {"elements": [1, 2, 4, 8, 13, 21, 31, 45, 66, 81, 97, 123, 148, 182, 204, 252, 290, 361, 401, 475]}
+}}
+\`\`\`
+
+When verify_template confirms, **the cross-check is built in** — \`done\` is unblocked without needing a separate \`review\` call. For non-templated problems, fall back to \`verify_smt\` and run \`review\` manually.
+
+**audit** — \`{"claim": "..."}\`. **Independent LLM auditor pass over your most recent confirmed artifact.** A separate model call reads the original problem, your claim, and the SMT-LIB / Lean code, then looks specifically for encoding bugs (vacuous SAT, missing distinctness, quantifier scope, polarity, witness sanity). Returns AUDIT PASSED or AUDIT FAILED. On FAILED, the audited artifact is automatically downgraded to refuted. On PASSED, the audit counts as a passing review — \`done\` is unblocked. Use when no template fits and writing an independent encoding for \`review\` is impractical. Slower than \`verify_template\` but generic.
 
 **review** — \`{"claim": "...", "rationale": "...", "independent_smtlib"?: "...", "expectedVerdict"?: "sat"|"unsat", "independent_lean"?: "...", "optOut"?: boolean}\`. **Cross-check a confirmed result with an INDEPENDENT verification before declaring \`done\`.** This is the harness's guard against your-own-encoding-was-wrong false positives. Two distinct encodings of the same property (different style, different tool, different polarity) should agree; if they disagree, one is buggy. Examples of independent encodings:
   - Original encoding asserted distinctness via \`(distinct (+ a_i a_j) ...)\` enumerating all pairs. Independent: existence-of-collision via \`(exists ((a Int) (b Int) (c Int) (d Int)) (and (inS a) ... (= (+ a b) (+ c d))))\` — UNSAT means no collision.
@@ -789,6 +809,7 @@ async function runTool(
   session: BranchState,
   call: ToolCall,
   signal?: AbortSignal,
+  llm?: LLMClient,
 ): Promise<RunToolResult> {
   const { name, args } = call;
   switch (name) {
@@ -1317,6 +1338,252 @@ async function runTool(
       };
     }
 
+    case "verify_template": {
+      // Layer 3 + 4: vetted SMT template with built-in cross-check.
+      // The model picks a known problem class (sidon_set,
+      // no_3ap_subset, ...), provides the slot values, and the
+      // harness assembles BOTH the primary encoding AND an
+      // independent cross-check from a tested template. Both must
+      // agree for the artifact to be marked confirmed. This
+      // eliminates the entire class of "model wrote a buggy
+      // encoding" false positives for templated problem shapes.
+      const claim = typeof args.claim === "string" ? args.claim.trim() : "";
+      const templateName =
+        typeof args.template === "string" ? args.template.trim() : "";
+      const slots =
+        args.slots && typeof args.slots === "object" && !Array.isArray(args.slots)
+          ? (args.slots as Record<string, unknown>)
+          : null;
+      if (!claim) {
+        return {
+          result:
+            "[error] verify_template requires {claim, template, slots}. State the one-sentence claim before invoking the template.",
+        };
+      }
+      if (!templateName) {
+        return {
+          result: `[error] verify_template requires {template: string}. Available templates:\n${listTemplates()}`,
+        };
+      }
+      if (!slots) {
+        return {
+          result:
+            "[error] verify_template requires {slots: object} mapping slot names to values for this template. See the template's slot spec.",
+        };
+      }
+      const tmpl = TEMPLATES[templateName];
+      if (!tmpl) {
+        return {
+          result: `[error] unknown template "${templateName}". Available:\n${listTemplates()}`,
+        };
+      }
+      // Assemble both encodings; both must succeed.
+      let primarySmt: string;
+      let crossSmt: string;
+      try {
+        primarySmt = tmpl.assemble(slots);
+        crossSmt = tmpl.assembleCrossCheck(slots);
+      } catch (e) {
+        return {
+          result: `[verify_template error] template "${templateName}" rejected your slots: ${e instanceof Error ? e.message : String(e)}`,
+        };
+      }
+      // Run primary first.
+      const pr = runSmt(primarySmt);
+      if (pr.status === "error") {
+        return {
+          result: `[verify_template error] primary encoding failed in Z3: ${pr.error}`,
+          category: "failure",
+        };
+      }
+      const primaryConfirms = pr.verdict === tmpl.primaryExpectedVerdict;
+      // Run cross-check.
+      const cr = runSmt(crossSmt);
+      if (cr.status === "error") {
+        return {
+          result: `[verify_template error] cross-check encoding failed in Z3: ${cr.error}`,
+          category: "failure",
+        };
+      }
+      const crossConfirms = cr.verdict === tmpl.crossCheckExpectedVerdict;
+      if (primaryConfirms && crossConfirms) {
+        // Both agree — solid confirmation. Record one artifact for
+        // the primary plus one for the cross-check, both confirmed.
+        session.verifiedArtifacts.push({
+          kind: "smt",
+          claim,
+          code: primarySmt,
+          verdict: pr.verdict,
+          model: pr.verdict === "sat" ? pr.model : undefined,
+          claimStatus: "confirmed",
+        });
+        session.verifiedArtifacts.push({
+          kind: "smt",
+          claim: `[template cross-check of] ${claim}`,
+          code: crossSmt,
+          verdict: cr.verdict,
+          model: cr.verdict === "sat" ? cr.model : undefined,
+          claimStatus: "confirmed",
+        });
+        if (session.lastReview) session.lastReview = null;
+        // Template confirmation IS its own review — both encodings
+        // already cross-checked. Record a passing review so `done`
+        // is unblocked without an extra `review` call.
+        session.lastReview = {
+          passed: true,
+          claim,
+          rationale: `verify_template[${templateName}]: primary ${pr.verdict.toUpperCase()} + cross-check ${cr.verdict.toUpperCase()} both agree`,
+        };
+        return {
+          result: `verify_template[${templateName}] PASSED. Primary encoding returned ${pr.verdict.toUpperCase()} (expected ${tmpl.primaryExpectedVerdict.toUpperCase()}); cross-check returned ${cr.verdict.toUpperCase()} (expected ${tmpl.crossCheckExpectedVerdict.toUpperCase()}). Both encodings agree — the claim is robustly verified. Review state set; you may call \`done\` without an extra review.`,
+          category: "success",
+        };
+      }
+      // Disagreement or single-side failure.
+      session.verifiedArtifacts.push({
+        kind: "smt",
+        claim: `[template-disagree] ${claim}`,
+        code: `; primary:\n${primarySmt}\n; cross-check:\n${crossSmt}`,
+        verdict: pr.verdict,
+        claimStatus: "refuted",
+      });
+      const diag = !primaryConfirms && !crossConfirms
+        ? "BOTH encodings refuted the claim"
+        : !primaryConfirms
+          ? `primary refuted (returned ${pr.verdict.toUpperCase()}, expected ${tmpl.primaryExpectedVerdict.toUpperCase()})`
+          : `cross-check refuted (returned ${cr.verdict.toUpperCase()}, expected ${tmpl.crossCheckExpectedVerdict.toUpperCase()})`;
+      return {
+        result: `verify_template[${templateName}] FAILED — ${diag}. Either your slot values don't satisfy the property, or the property doesn't hold. The template is vetted; the disagreement is real.`,
+        category: "failure",
+      };
+    }
+
+    case "audit": {
+      // Layer 5 — LLM auditor. A sub-LLM call asks an independent
+      // pass over the most recent confirmed artifact whether the
+      // SMT-LIB actually captures the claimed property. Catches
+      // logical bugs that no static check could detect (forall
+      // ordering chains, scope errors, missing constraints).
+      // Slower than verify_template but generic — works for any
+      // claim. Use when no template fits and writing an
+      // independent-encoding `review` is hard.
+      const claim = typeof args.claim === "string" ? args.claim.trim() : "";
+      if (!claim) {
+        return {
+          result:
+            "[error] audit requires {claim: string}. State the claim being audited.",
+        };
+      }
+      if (!llm) {
+        return {
+          result:
+            "[audit error] no LLM client available in this context. The auditor needs to call the model.",
+        };
+      }
+      // Find the most recent confirmed artifact for this claim.
+      // We match loosely (claim text contains the same first words)
+      // since the claim phrasing in audit may differ slightly.
+      const candidates = session.verifiedArtifacts.filter(
+        (a) => a.claimStatus === "confirmed" && !a.claim.startsWith("[review of]") && !a.claim.startsWith("[template "),
+      );
+      const target = candidates[candidates.length - 1];
+      if (!target) {
+        return {
+          result:
+            "[audit error] no confirmed artifact in this branch to audit. Run a verify_* call first.",
+        };
+      }
+      // Build the auditor prompt. Keep it tight: this is a
+      // soundness check, not a creativity exercise. The model is
+      // asked to look for specific failure patterns we've seen.
+      const auditorPrompt = [
+        "You are an independent verification auditor. Your only job is to find encoding bugs in formal-verification artifacts. Be skeptical — finding a flaw is more valuable than rubber-stamping.",
+        "",
+        `Original problem statement:\n${session.problem.slice(0, 4000)}`,
+        "",
+        `Model's claim being audited:\n${target.claim}`,
+        "",
+        `${target.kind === "smt" ? "SMT-LIB" : "Lean"} the model wrote, plus engine verdict (${target.verdict ?? "n/a"}):`,
+        "```",
+        target.code.slice(0, 6000),
+        "```",
+        target.model
+          ? `Witness model: ${JSON.stringify(target.model)}`
+          : "",
+        "",
+        "Audit checklist — look for these specific failure patterns:",
+        "  1. **Vacuous satisfiability**: did the formula constrain WHAT THE CLAIM IMPLIES, or did Z3/Lean satisfy a subset that doesn't capture the property?",
+        "  2. **Missing distinctness**: if the claim is about distinct values (Sidon, AP-free, coloring), are the underlying variables ASSERTED distinct, or could the witness collapse them to a single value?",
+        "  3. **Quantifier scope**: any forall/exists with bounded variables — does the body's restriction (e.g., ordering chain `i ≤ j ≤ k ≤ l`) miss cases the claim covers?",
+        "  4. **Polarity / direction**: is the asserted formula the property itself, or its negation? Does the engine's verdict match what the model said it should mean?",
+        "  5. **Witness sanity**: if SAT, does the model's witness satisfy every claim-relevant constraint? If the witness has a value that violates a stated bound or repeats where distinctness was implied, that's a bug.",
+        "",
+        "Respond in this exact format:",
+        "  Verdict: AUDIT PASSED  — OR — Verdict: AUDIT FAILED",
+        "  Reasoning: <2-4 sentences>",
+        "",
+        "If AUDIT FAILED, name the specific failure pattern from the checklist and a concrete witness or counterexample where possible.",
+      ].join("\n");
+      let auditorReply: string;
+      try {
+        const r = await llm.chat(
+          [
+            { role: "system", content: "You are a verification auditor. Brief, skeptical, technical." },
+            { role: "user", content: auditorPrompt },
+          ],
+          { signal },
+        );
+        auditorReply = r.content;
+      } catch (e) {
+        return {
+          result: `[audit error] auditor LLM call failed: ${e instanceof Error ? e.message : String(e)}`,
+        };
+      }
+      // Strip <think> blocks from reasoning models; only the
+      // declarative reply matters for the verdict.
+      const reply = auditorReply.replace(/<think>[\s\S]*?<\/think>/g, "").trim();
+      const failed = /AUDIT\s+FAILED/i.test(reply);
+      const passed = /AUDIT\s+PASSED/i.test(reply);
+      if (failed && !passed) {
+        // Downgrade the audited artifact: flip claimStatus to
+        // refuted so it doesn't surface as confirmed in the final
+        // answer or unblock done().
+        const idx = session.verifiedArtifacts.indexOf(target);
+        if (idx >= 0) {
+          session.verifiedArtifacts[idx] = {
+            ...session.verifiedArtifacts[idx],
+            claimStatus: "refuted",
+          };
+        }
+        // Clear any prior review for this claim — the audit
+        // contradicts it.
+        session.lastReview = null;
+        return {
+          result: `AUDIT FAILED — auditor identified a bug in the verification:\n\n${reply.slice(0, 1500)}\n\nThe artifact has been downgraded from CONFIRMED to REFUTED. Investigate and re-verify before declaring \`done\`.`,
+          category: "failure",
+        };
+      }
+      if (passed && !failed) {
+        // Audit passes — record this as a passing review state
+        // (treat it like a manual review with the auditor as the
+        // independent check).
+        session.lastReview = {
+          passed: true,
+          claim,
+          rationale: `LLM audit on "${target.claim.slice(0, 60)}…": ${reply.slice(0, 200)}`,
+        };
+        return {
+          result: `AUDIT PASSED — auditor reviewed the artifact and found no encoding bugs.\n\n${reply.slice(0, 1500)}\n\nReview state set; you may call \`done\`.`,
+          category: "success",
+        };
+      }
+      // Auditor reply was ambiguous (no PASSED/FAILED marker, or
+      // both). Surface raw to the model.
+      return {
+        result: `[audit ambiguous] Auditor returned a reply without a clear PASSED/FAILED marker. Read it and decide:\n\n${reply.slice(0, 2000)}`,
+      };
+    }
+
     case "review": {
       const claim = typeof args.claim === "string" ? args.claim.trim() : "";
       const rationale =
@@ -1505,7 +1772,7 @@ async function runTool(
 
     default:
       return {
-        result: `[error] unknown tool "${name}". Valid: add_rule, retract_rule, commit, verify, verify_smt, verify_lean, lean_search, proof_start, proof_step, proof_state, proof_undo, proof_close, proof_abandon, assume, discharge, review, done, give_up.`,
+        result: `[error] unknown tool "${name}". Valid: add_rule, retract_rule, commit, verify, verify_smt, verify_template, verify_lean, lean_search, proof_start, proof_step, proof_state, proof_undo, proof_close, proof_abandon, assume, discharge, review, audit, done, give_up.`,
       };
   }
 }
@@ -1694,7 +1961,7 @@ async function runBranchTurn(
     };
   }
 
-  const { result, done, gaveUp, category } = await runTool(branch, call, signal);
+  const { result, done, gaveUp, category } = await runTool(branch, call, signal, llm);
   // If the parser had to auto-repair the JSON, prepend a one-line
   // warning to the tool result so the model learns to escape next
   // time. We don't make this a fatal error — the repair worked, the
