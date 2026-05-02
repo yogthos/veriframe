@@ -508,10 +508,19 @@ Use verify_lean. The standard Mathlib proof unfolds Even as ∃ k, _ = k + k (or
 
 **Tooling rules — read these before doing anything else.**
 
-  - **Use \`verify_smt\` exclusively for verification.** Do NOT spend turns building Prolog generators with \`add_rule\` / \`verify\` — Prolog is the wrong fit for this problem and prior runs burned dozens of turns on it. Compute candidate sets in your head (or by reasoning about the construction directly) and submit the explicit list of integers via \`verify_smt\`.
-  - **Encoding to use.** \`(define-fun inS ((x Int)) Bool (or (= x v1) (= x v2) ...))\` then \`(assert (exists ((a Int) (d Int)) (and (> d 0) (inS a) (inS (+ a d)) (inS (+ a (* 2 d))))))\`. Z3 returns UNSAT iff S is 3-AP-free. The harness appends \`(check-sat)\` for you.
-  - **You must call \`done\` at the end.** Pick your best verified set, summarise it, and call \`done\`. The harness records artifacts and surfaces them only when you finalise. If you never call \`done\`, your work is invisible to the user.
-  - **Budget: 30 turns.** Plenty if you don't waste them. Aim for one verify_smt call every 2–3 turns of thinking.
+  - **Strongly preferred: use \`verify_template\` with template "no_3ap_subset".** The harness has a vetted template for this exact problem shape that runs BOTH a primary encoding (existence-of-3AP via Z3) AND an independent cross-check (explicit triple enumeration), and records the artifact as confirmed only if both encodings agree. Eliminates encoding bugs entirely. Use:
+    \`\`\`
+    {"name": "verify_template", "args": {
+      "claim": "S = {...} is 3-AP-free in [1, 300]",
+      "template": "no_3ap_subset",
+      "slots": {"elements": [1, 2, 4, 5, ...]}
+    }}
+    \`\`\`
+    On confirmation, no separate \`review\` is needed — the cross-check is built in.
+  - **Fallback only**: \`verify_smt\` is available but you'll need to manually \`review\` with an independent encoding before \`done\`.
+  - **Do NOT spend turns building Prolog generators with \`add_rule\` / \`verify\`** — Prolog is the wrong fit for this problem; compute candidate sets in your head and submit the explicit list of integers.
+  - **You must call \`done\` at the end.** Pick your best verified set, summarise it, and call \`done\`.
+  - **Budget: 60 turns.** Plenty for both range-first exploration AND a clean ship cycle.
 
 **Process — this is the part we care about.**
 
@@ -556,8 +565,8 @@ You are NOT proving R(3,3); the answer is unknown. We want creative problem-solv
 
 You have lots of turns; don't rush. The interesting trace is one where you propose something, the verifier disagrees, and you iterate.`,
     expectedAnswer:
-      "Open. Floor: ~30 from greedy. Behrend baseline at n=300 yields roughly 35–50 (depends on parameter choice). Anything ≥ 40 with verified no-3-AP is an honest result; ≥ 50 is plausibly novel. The harness should not declare a 'correct' answer here — judge by the *size achieved* and whether the verifier accepted it.",
-    maxSteps: 30,
+      "Open. Floor: ~30 from greedy. Behrend baseline at n=300 yields roughly 35–50 (depends on parameter choice). Anything ≥ 40 with template-verified no-3-AP is an honest result; ≥ 50 is plausibly novel. The harness should not declare a 'correct' answer here — judge by the *cross-checked size achieved*.",
+    maxSteps: 60,
   },
 
   "open-sidon-set-500": {
