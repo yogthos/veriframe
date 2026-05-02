@@ -28,8 +28,14 @@ async function main(): Promise<void> {
   }
   const problem = PROBLEMS[id];
 
+  // Honour the per-problem maxSteps when set; fall back to 80 only when
+  // unspecified. The previous hardcode silently overrode problem-level
+  // budgets, leading to runs that blew past their intended scope and
+  // burned API tokens on wandering trajectories.
+  const maxTurns = problem.maxSteps ?? 80;
   console.log(`Problem: ${problem.id}`);
   console.log(`Type:    ${problem.type}`);
+  console.log(`max_turns: ${maxTurns}`);
 
   const t0 = Date.now();
   const res = await undiciFetch(ENDPOINT, {
@@ -39,7 +45,7 @@ async function main(): Promise<void> {
       model: "local-model",
       messages: [{ role: "user", content: problem.prompt }],
       mode: "agent",
-      max_turns: 80,
+      max_turns: maxTurns,
     }),
     dispatcher: agentDispatcher,
   });

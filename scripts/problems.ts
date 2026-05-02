@@ -506,6 +506,13 @@ Use verify_lean. The standard Mathlib proof unfolds Even as ∃ k, _ = k + k (or
   - **Above 50:** plausibly novel. Genuinely worth writing down if verified.
   - **Above the Mathematica/SAT-derived bounds for this scale:** a publishable result.
 
+**Tooling rules — read these before doing anything else.**
+
+  - **Use \`verify_smt\` exclusively for verification.** Do NOT spend turns building Prolog generators with \`add_rule\` / \`verify\` — Prolog is the wrong fit for this problem and prior runs burned dozens of turns on it. Compute candidate sets in your head (or by reasoning about the construction directly) and submit the explicit list of integers via \`verify_smt\`.
+  - **Encoding to use.** \`(define-fun inS ((x Int)) Bool (or (= x v1) (= x v2) ...))\` then \`(assert (exists ((a Int) (d Int)) (and (> d 0) (inS a) (inS (+ a d)) (inS (+ a (* 2 d))))))\`. Z3 returns UNSAT iff S is 3-AP-free. The harness appends \`(check-sat)\` for you.
+  - **You must call \`done\` at the end.** Pick your best verified set, summarise it, and call \`done\`. The harness records artifacts and surfaces them only when you finalise. If you never call \`done\`, your work is invisible to the user.
+  - **Budget: 30 turns.** Plenty if you don't waste them. Aim for one verify_smt call every 2–3 turns of thinking.
+
 **Process — this is the part we care about.**
 
 You are NOT proving R(3,3); the answer is unknown. We want creative problem-solving.
@@ -550,7 +557,120 @@ You are NOT proving R(3,3); the answer is unknown. We want creative problem-solv
 You have lots of turns; don't rush. The interesting trace is one where you propose something, the verifier disagrees, and you iterate.`,
     expectedAnswer:
       "Open. Floor: ~30 from greedy. Behrend baseline at n=300 yields roughly 35–50 (depends on parameter choice). Anything ≥ 40 with verified no-3-AP is an honest result; ≥ 50 is plausibly novel. The harness should not declare a 'correct' answer here — judge by the *size achieved* and whether the verifier accepted it.",
-    maxSteps: 60,
+    maxSteps: 30,
+  },
+
+  "open-sidon-set-500": {
+    id: "open-sidon-set-500",
+    type: "OPEN PROBLEM — large Sidon set in [1, 500]",
+    difficulty: "very-hard",
+    prompt: `**THIS IS AN OPEN PROBLEM (computational instance at the literature frontier).** A Sidon set (or B_2 set) in {1, …, n} is a subset S where all pairwise sums a+b (a ≤ b in S) are DISTINCT. Equivalently: all non-zero pairwise differences are distinct. The maximum size F_2(n) is known to be √n + O(n^{1/4}) (Erdős–Turán 1941; Lindström 1969), but exact values for n in the few-hundred-to-thousand range are not in standard tables. **For n = 500, the published Singer bound gives ≥ 23** (Singer's projective-plane construction with prime power q=23 yields q+1 = 24 elements in [0, q² + q] = [0, 552], with 23 of them landing in [0, 500]). Best-known constructions at this scale typically reach 23-24; reaching 25 would be at or near the literature frontier; matching/beating 24 is genuinely interesting territory.
+
+**Goal.** Construct a Sidon set S ⊆ {1, 2, …, 500} of size as large as possible.
+
+**Reward gradient.**
+  - **Trivial (~15-18):** greedy / Mian-Chowla truncation. Easy.
+  - **20-22:** scaled Erdős-Turán or partial Singer construction. Honest result.
+  - **23:** match the published Singer bound for q=23 cropped to [1, 500]. Solid target.
+  - **24+:** at or beyond the typical construction frontier at this n. Genuinely interesting.
+  - **25+:** would beat known explicit constructions at this scale. Verify carefully — if the verifier accepts, this is a real result.
+
+**Tooling rules — read FIRST.**
+
+  - **Use \`verify_smt\` exclusively.** No \`add_rule\` / \`verify\` (Prolog) — wrong fit, wastes turns.
+  - **ALWAYS pass \`expectedVerdict\`** in your verify_smt args. The harness needs to know which Z3 verdict supports your claim. Without it, your call is logged as "ambiguous" and the user can't tell from the artifact whether your claim was confirmed.
+  - **Recommended encoding (with explicit expectedVerdict):**
+    \`\`\`
+    {"name": "verify_smt", "args": {
+      "claim": "S = {1, 2, 5, ...} is a Sidon set in [1, 500]",
+      "smtlib": "(declare-const a1 Int) (assert (= a1 1)) ... (assert (distinct (+ a1 a2) (+ a1 a3) ... (+ a_{k-1} a_k)))",
+      "expectedVerdict": "sat"
+    }}
+    \`\`\`
+    Here SAT means "the (distinct) constraint is satisfiable with these fixed values" → S IS Sidon. UNSAT would mean the distinctness fails → S is NOT Sidon. So expectedVerdict is "sat".
+  - **Alternative encoding** (existence-of-collision): assert that two distinct unordered pairs have the same sum; then UNSAT means no collision exists, i.e., S is Sidon. expectedVerdict would be "unsat".
+  - **You must call \`done\` at the end** with the largest verified S.
+  - **Budget: 30 turns.** Use them wisely.
+
+**Process.**
+
+  1. **Range across constructions.** Before submitting any candidate, name 3–5 *distinct* construction families and predict their size at n=500:
+     - **Singer difference set.** For prime power q, lift a difference set in Z/(q²+q+1) to a Sidon set of size q+1 in [0, q²+q]. q=22 (not prime power), q=23 (prime!) gives 24 elements in [0, 552] — 23 land in [0, 500] after dropping the largest.
+     - **Erdős-Turán quadratic residues.** For prime p, S_p = {2pi + (i² mod p) : 0 ≤ i < p} is Sidon of size p in [0, 2p² - 1]. For p=15 (not prime), p=17, p=19: size 17 or 19 in [0, 578] or [0, 722].
+     - **Perfect difference family / Bose-Chowla.** Algebraic construction over finite fields giving size ~√n.
+     - **Greedy Mian-Chowla.** Adds the next integer that preserves Sidon. At n=500 reaches ~25 elements (less than Singer's 24 because Mian-Chowla is wasteful but easy).
+     - **Hybrid / SAT-grown.** Start from a Singer set, swap or add elements via SMT search.
+     For each, two sentences max: what's the construction, predicted size at n=500.
+
+  2. **Pick one. Commit. Construct the explicit S.**
+
+  3. **Verify with verify_smt + expectedVerdict.** If rejected, diagnose, repair, retry.
+
+  4. **Iterate to grow.** If you have a verified S of size k, try adding integers in [1, 500] not in S and re-verify. One verify_smt per candidate addition.
+
+  5. **Report.** Final \`done\` answer must include: chosen construction, explicit S, verified size, comparison to F_2(500) bounds.
+
+The interesting trace shows: range → pick → construct → verify (perhaps reject) → repair → grow. Five SMT calls is plenty for that arc.`,
+    expectedAnswer:
+      "F_2(500) lies between 23 (Singer q=23 cropped) and ≈ 25 (upper bound from √500 + O(n^{1/4})). A verified |S| ≥ 22 is a useful trace; |S| = 23 matches Singer; |S| ≥ 24 is genuinely interesting; |S| ≥ 25 would beat known explicit constructions and warrant careful re-verification. Grade by verified size + whether expectedVerdict is consistently used.",
+    maxSteps: 30,
+  },
+
+  "open-sidon-set-200": {
+    id: "open-sidon-set-200",
+    type: "OPEN PROBLEM — large Sidon set in [1, 200]",
+    difficulty: "very-hard",
+    prompt: `**THIS IS AN OPEN PROBLEM (specifically: an open computational instance).** A Sidon set (or B_2 set) in {1, …, n} is a subset S where all pairwise sums a+b (a, b in S, a ≤ b) are DISTINCT. Equivalently: all non-zero pairwise differences a-b (a > b) are distinct. The maximum size F_2(n) of a Sidon set in [1, n] is known to be √n + O(n^{1/4}) (Erdős–Turán 1941; Lindström 1969). Exact values F_2(n) are tabulated in OEIS A005282 for small n. **For n = 200, the exact value is 14** (long-established by exhaustive search) — but constructing an explicit size-14 Sidon set in [1, 200] from scratch, without recourse to the table, is a non-trivial exercise. **For larger n** (say n = 500 or 1000) the gap between best-known constructions and the upper bound is open territory.
+
+We're targeting n = 200 here as a calibration run: the answer is known (14), so we can grade the model's process while still requiring a real construction. If the model performs well, we'll bump n higher.
+
+**Goal.** Construct a Sidon set S ⊆ {1, 2, …, 200} of size as large as possible. The known maximum is 14; matching 14 with a verified construction is success. Above 14 is impossible (and a verifier-rejected claim above 14 would be a healthy failure mode).
+
+**Reward gradient.**
+  - **Trivial (~10):** any greedy / arithmetic construction. Boring.
+  - **12–13:** a thoughtful construction (Singer difference set, Erdős-Turán quadratic residues, perfect difference family lift). Honest result.
+  - **14 (the maximum):** match the published bound. This is the target.
+  - **>14:** impossible — if the verifier accepts, your encoding is buggy.
+
+**Tooling rules — read these before doing anything.**
+
+  - **Use \`verify_smt\` exclusively for verification.** Do NOT use \`add_rule\` / \`verify\` (Prolog) — those are inappropriate for this problem and prior runs wasted turns on Prolog generators. Submit candidate sets as explicit lists of integers via \`verify_smt\`.
+  - **Encoding.** Two clean options; pick whichever you can write cleanly:
+    1. **Pairwise-distinct sums.** For each pair (i, j) with i < j in your candidate set S, compute s_{ij} = S[i] + S[j]. Assert all such sums are pairwise distinct via \`(distinct sum_1_2 sum_1_3 ... sum_{|S|-1}_{|S|})\`. UNSAT means non-distinct (BAD); SAT (or unstated, since distinct is just a constraint) means good. Better: simply assert \`(assert (distinct s12 s13 ... s_{n-1,n}))\` and check sat.
+    2. **Existence-of-collision.** Like the 3-AP encoding: \`(assert (exists ((a Int) (b Int) (c Int) (d Int)) (and (inS a) (inS b) (inS c) (inS d) (or (not (= a b)) (not (= c d))) (= (+ a b) (+ c d)))))\` — UNSAT means no collision (S is Sidon).
+    Pick option 1 if you can compute the pairwise sums; option 2 lets Z3 search.
+  - **You must call \`done\` at the end** with a summary of the largest verified S. Without \`done\`, the harness can't surface the result to the user. Verified artifacts ARE captured even on partial runs now, but the rendered final answer needs \`done\`.
+  - **Budget: 25 turns.** Use them wisely.
+
+**Process.**
+
+  1. **Range across constructions.** Before submitting any candidate, name 3–5 *distinct* construction families from different mathematical traditions:
+     - Algebraic: Singer difference sets (projective planes over F_q).
+     - Number-theoretic: Erdős-Turán \`{2pi + (i² mod p) : 0 ≤ i < p}\` for prime p.
+     - Combinatorial: greedy (Mian-Chowla) or perfect difference families.
+     - Computational: SAT-grown sets seeded from a small known one.
+     For each, write 2-3 sentences on the construction and the predicted size at n=200.
+
+  2. **Pick one. Commit. Construct.** Output the explicit S.
+
+  3. **Verify via \`verify_smt\`.** If the verifier rejects (some pair-sum collides), explain what went wrong, repair, retry. Iteration is expected.
+
+  4. **Iterate to grow.** If you have a verified S of size 12, can you add one more element? Try each integer in [1, 200] not in S, check if adding it preserves the Sidon property. Walking up from 12 to 14 is 2 verification calls per added element.
+
+  5. **Report.** Final answer must include the chosen construction, the explicit S, the verified size, and a comparison to the published F_2(200) = 14.
+
+**What success looks like.**
+  - Reach |S| = 14 with verified Sidon property.
+  - Trace shows actual cross-construction reasoning, not regurgitation.
+  - The construction is explainable.
+
+**What failure looks like (still useful).**
+  - Verifier rejects a candidate (genuine mistake — informative).
+  - Reach only 11 or 12 — fine, gives us a baseline for "what does the model achieve unaided."
+  - Confidently claiming size 15+ — verifier should reject; if it accepts, our encoding has a bug.`,
+    expectedAnswer:
+      "F_2(200) ≈ 14 (Singer's construction with p=13 yields a 14-element Sidon set in [0, 182] ⊂ [0, 200]). Many explicit witnesses exist; we don't pin one. Grade by the verified size achieved: ≥ 12 is a useful trace, 14 is full success, > 14 indicates an encoding bug.",
+    maxSteps: 25,
   },
 
   "einstein-4x4": {

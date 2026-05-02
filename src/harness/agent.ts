@@ -109,6 +109,16 @@ interface VerifiedArtifact {
   verdict?: "sat" | "unsat" | "unknown";
   /** Z3 witness model for SAT artifacts (var → assigned value). */
   model?: Record<string, string>;
+  /**
+   * Whether the engine result actually supported the claim. The
+   * harness can't generically know which Z3 verdict supports a given
+   * claim — under different encodings UNSAT means "claim confirmed"
+   * (assertion of the negation) or "claim refuted" (direct
+   * assertion). The model declares this up front via
+   * `expectedVerdict`. Without it, status defaults to "ambiguous" and
+   * the rendered output flags the call as needing reader judgement.
+   */
+  claimStatus: "confirmed" | "refuted" | "ambiguous";
 }
 
 const SYSTEM_PROMPT = `You're solving a problem the way a mathematician proves a theorem: by reasoning out the next step in natural language, then verifying that one step with Prolog. **You are not writing a Prolog solver.** You are deriving the answer step by step, with Prolog as the proof checker for each derivation.
@@ -143,7 +153,7 @@ If verification PASSES, the step is proved; the next turn picks up from there. I
 
 **verify** — \`{"claim": "...", "check": "..."}\`. Both fields required. \`claim\` is your one-sentence natural-language statement of what you're proving this turn. \`check\` is the Prolog goal that succeeds iff the claim holds. The harness reports VERIFIED (claim supported, with bindings) or NOT VERIFIED (no answers — rethink).
 
-**verify_smt** — \`{"claim": "...", "smtlib": "..."}\`. Same shape as \`verify\` but the check is SMT-LIB code, executed by Z3 4.15. Use this when Prolog/CLP(FD) isn't enough: real arithmetic, nonlinear arithmetic, large bitvectors, theory combinations, optimisation. The harness reports SAT / UNSAT / UNKNOWN — read the description below for proof semantics. Don't include \`(check-sat)\`; the harness appends it.
+**verify_smt** — \`{"claim": "...", "smtlib": "...", "expectedVerdict"?: "sat"|"unsat"}\`. Same shape as \`verify\` but the check is SMT-LIB code, executed by Z3 4.15. Use this when Prolog/CLP(FD) isn't enough: real arithmetic, nonlinear arithmetic, large bitvectors, theory combinations, optimisation. The harness reports SAT / UNSAT / UNKNOWN — read the description below for proof semantics. Don't include \`(check-sat)\`; the harness appends it. **Always pass \`expectedVerdict\`** — declare which Z3 verdict supports your claim. If you assert the negation of P (proof-by-contradiction style), expectedVerdict is "unsat" (UNSAT means P holds). If you assert P directly and want a witness, expectedVerdict is "sat". Without expectedVerdict, the harness can't tell whether the verdict confirms or refutes your claim and will mark the artifact as "ambiguous" — readers won't know which bucket your work belongs in.
 
 **verify_lean** — \`{"claim": "...", "lean": "..."}\`. Same shape, but the check is a **Lean 4 snippet** evaluated against Mathlib. Use this for genuine mathematical theorems: real/complex analysis (continuity, limits, ε-δ proofs), inequalities, number theory (primes, divisibility), algebra (group/ring/field theory), basic geometry, anything with named lemmas in Mathlib. The harness reports VERIFIED if Lean accepts the proof; NOT VERIFIED with up to 3 error lines (line numbers, "unsolved goals" messages, etc.) when it doesn't. \`import Mathlib\` is auto-prepended if you don't include it. Use \`example\` for one-off claims and \`theorem name\` if you want to assert a name and reuse it later via \`add_rule\`. **On a failed verify, the harness automatically searches Mathlib for relevant lemmas** and appends the top-3 results — read them.
 
@@ -614,10 +624,22 @@ async function runTool(
       const claim = typeof args.claim === "string" ? args.claim.trim() : "";
       const smtlib =
         typeof args.smtlib === "string" ? args.smtlib.trim() : "";
+      // Optional: which Z3 verdict the model expects when its claim
+      // is true. Lets us classify the artifact as confirmed/refuted
+      // without guessing the encoding's polarity. Anything else =>
+      // "ambiguous" and the rendered output flags it for the reader.
+      const expectedVerdictRaw =
+        typeof args.expectedVerdict === "string"
+          ? args.expectedVerdict.trim().toLowerCase()
+          : "";
+      const expectedVerdict: "sat" | "unsat" | null =
+        expectedVerdictRaw === "sat" || expectedVerdictRaw === "unsat"
+          ? expectedVerdictRaw
+          : null;
       if (!claim) {
         return {
           result:
-            "[error] verify_smt requires {claim: string, smtlib: string}. State the one-sentence claim before writing SMT.",
+            "[error] verify_smt requires {claim: string, smtlib: string, expectedVerdict?: \"sat\"|\"unsat\"}. State the one-sentence claim before writing SMT.",
         };
       }
       if (!smtlib) {
@@ -638,21 +660,39 @@ async function runTool(
       // model's job. Only `unknown` and errors count as not-progressing.
       const outcome: VerifyOutcome = r.verdict === "unknown" ? "not_verified" : "verified";
       recordVerify(session, claim, outcome);
-      // Capture the verified SMT-LIB so it shows up in the final
-      // answer. Skip unknown (not actually verified anything). On
-      // SAT we also capture Z3's witness model — the constructive
-      // proof that whatever the model claimed exists, actually does.
-      if (r.verdict !== "unknown") {
-        session.verifiedArtifacts.push({
-          kind: "smt",
-          claim,
-          code: smtlib,
-          verdict: r.verdict,
-          model: r.verdict === "sat" ? r.model : undefined,
-        });
+      // Capture every concrete verdict (including UNKNOWN) so the
+      // user can see what was tried. The artifact's `claimStatus`
+      // tells whether the verdict supports the claim, refutes it, or
+      // is ambiguous because the model didn't declare which verdict
+      // it expected.
+      let claimStatus: "confirmed" | "refuted" | "ambiguous";
+      if (r.verdict === "unknown") {
+        claimStatus = "ambiguous";
+      } else if (expectedVerdict === null) {
+        claimStatus = "ambiguous";
+      } else if (expectedVerdict === r.verdict) {
+        claimStatus = "confirmed";
+      } else {
+        claimStatus = "refuted";
       }
+      session.verifiedArtifacts.push({
+        kind: "smt",
+        claim,
+        code: smtlib,
+        verdict: r.verdict,
+        model: r.verdict === "sat" ? r.model : undefined,
+        claimStatus,
+      });
       const hint = checkStuckHint(session);
-      return { result: formatSmtResult(claim, r.verdict) + hint };
+      const expectedNote =
+        expectedVerdict === null
+          ? "\n(no expectedVerdict declared — claim alignment will show as 'ambiguous'. Pass expectedVerdict: \"sat\" or \"unsat\" so the harness can tag this call.)"
+          : claimStatus === "refuted"
+            ? `\nNote: you said expectedVerdict=${expectedVerdict.toUpperCase()} would confirm the claim. Z3 returned the opposite — your claim is REFUTED by this check. Revise the claim or the encoding.`
+            : "";
+      return {
+        result: formatSmtResult(claim, r.verdict) + expectedNote + hint,
+      };
     }
 
     case "proof_start": {
@@ -731,6 +771,7 @@ async function runTool(
           kind: "lean",
           claim: ps.claim,
           code: `import Mathlib\n\n${proofText}\n`,
+          claimStatus: "confirmed",
         });
       } else if (stepResult.status === "open") {
         lines.push(
@@ -914,6 +955,7 @@ async function runTool(
           kind: "lean",
           claim,
           code: snippet,
+          claimStatus: "confirmed",
         });
       }
       const hint = checkStuckHint(session);
@@ -1072,6 +1114,7 @@ export async function runAgent(
           status: "failed",
           steps: turnsToSteps(session.turns),
           error: `chat failed at turn ${turn}: ${e instanceof Error ? e.message : String(e)}`,
+          verifiedArtifacts: [...session.verifiedArtifacts],
         };
       }
 
@@ -1111,11 +1154,18 @@ export async function runAgent(
     await session.prolog.dispose();
   }
 
+  // Snapshot verified artifacts onto every return path so the caller
+  // sees machine-checked partial progress even when the agent exhausts
+  // its budget or gives up. Without this, a run that produced a
+  // verified Lean snippet but failed to call `done()` looks like total
+  // failure to anyone reading the response.
+  const artifacts = [...session.verifiedArtifacts];
   if (outcome === "done") {
     return {
       status: "completed",
       steps: turnsToSteps(session.turns),
       finalAnswer: renderFinalAnswer(session),
+      verifiedArtifacts: artifacts,
     };
   }
   if (outcome === "gave_up") {
@@ -1123,12 +1173,18 @@ export async function runAgent(
       status: "failed",
       steps: turnsToSteps(session.turns),
       error: session.finalAnswer ?? "[gave up]",
+      verifiedArtifacts: artifacts,
     };
   }
+  const artifactNote =
+    artifacts.length > 0
+      ? ` ${artifacts.length} verified artifact(s) captured — see harness.verifiedArtifacts.`
+      : "";
   return {
     status: "failed",
     steps: turnsToSteps(session.turns),
-    error: `Turn budget (${maxTurns}) exhausted without calling done() or give_up().`,
+    error: `Turn budget (${maxTurns}) exhausted without calling done() or give_up().${artifactNote}`,
+    verifiedArtifacts: artifacts,
   };
 }
 
@@ -1142,6 +1198,10 @@ function turnsToSteps(turns: TurnEntry[]): ReasoningStep[] {
     }`,
     assertions: [],
     status: "accepted",
+    // Keep ~400 chars: enough to see VERIFIED / UNSAT / UNKNOWN /
+    // first error line, not enough to bloat the response payload.
+    result:
+      typeof t.result === "string" ? t.result.slice(0, 400) : undefined,
   }));
 }
 
@@ -1167,35 +1227,51 @@ function renderFinalAnswer(session: AgentSession): string {
   // user gets the actual proof code (Lean snippets / SMT-LIB) — not
   // just the model's natural-language summary — so they can copy,
   // re-run, and trust the verification independently.
-  const artifacts = session.verifiedArtifacts;
-  if (artifacts.length > 0) {
+  // Bucket artifacts by claim alignment. A `verify_smt` UNSAT under
+  // a `(distinct sums)` encoding means the claim is REFUTED; under
+  // an `(exists collision)` encoding it means the claim is
+  // CONFIRMED. The model declares which via `expectedVerdict` — we
+  // surface the three buckets separately so a reader doesn't mistake
+  // a refuted attempt for a verified one.
+  const confirmed = session.verifiedArtifacts.filter((a) => a.claimStatus === "confirmed");
+  const refuted = session.verifiedArtifacts.filter((a) => a.claimStatus === "refuted");
+  const ambiguous = session.verifiedArtifacts.filter((a) => a.claimStatus === "ambiguous");
+
+  const renderArtifact = (a: VerifiedArtifact, idx: number, total: number) => {
     lines.push("");
-    lines.push(`Verified artifacts (${artifacts.length}):`);
-    for (let i = 0; i < artifacts.length; i++) {
-      const a = artifacts[i];
-      lines.push("");
-      const tag =
-        a.kind === "smt" && a.verdict
-          ? `SMT (${a.verdict})`
-          : a.kind === "lean"
-            ? "Lean"
-            : a.kind.toUpperCase();
-      lines.push(`[${i + 1}/${artifacts.length}] ${tag} — claim: "${a.claim}"`);
-      lines.push(a.kind === "smt" ? "```smt" : "```lean");
-      lines.push(a.code.trimEnd());
-      lines.push("```");
-      // For SAT artifacts, also include the witness model — the
-      // actual variable assignment Z3 found. This is the
-      // constructive proof of existence; without it the user would
-      // have to re-run Z3 to see the witness.
-      if (a.kind === "smt" && a.verdict === "sat" && a.model && Object.keys(a.model).length > 0) {
-        lines.push("Witness model (Z3 (get-model)):");
-        const entries = Object.entries(a.model).sort(([x], [y]) => x.localeCompare(y));
-        for (const [name, value] of entries) {
-          lines.push(`  ${name} = ${value}`);
-        }
+    const tag =
+      a.kind === "smt" && a.verdict
+        ? `SMT (${a.verdict})`
+        : a.kind === "lean"
+          ? "Lean"
+          : a.kind.toUpperCase();
+    lines.push(`[${idx + 1}/${total}] ${tag} — claim: "${a.claim}"`);
+    lines.push(a.kind === "smt" ? "```smt" : "```lean");
+    lines.push(a.code.trimEnd());
+    lines.push("```");
+    if (a.kind === "smt" && a.verdict === "sat" && a.model && Object.keys(a.model).length > 0) {
+      lines.push("Witness model (Z3 (get-model)):");
+      const entries = Object.entries(a.model).sort(([x], [y]) => x.localeCompare(y));
+      for (const [name, value] of entries) {
+        lines.push(`  ${name} = ${value}`);
       }
     }
+  };
+
+  if (confirmed.length > 0) {
+    lines.push("");
+    lines.push(`Verified artifacts — claim CONFIRMED (${confirmed.length}):`);
+    confirmed.forEach((a, i) => renderArtifact(a, i, confirmed.length));
+  }
+  if (refuted.length > 0) {
+    lines.push("");
+    lines.push(`Refuted attempts — engine disagreed with the claim (${refuted.length}):`);
+    refuted.forEach((a, i) => renderArtifact(a, i, refuted.length));
+  }
+  if (ambiguous.length > 0) {
+    lines.push("");
+    lines.push(`Ambiguous calls — verdict not interpretable without expectedVerdict (${ambiguous.length}):`);
+    ambiguous.forEach((a, i) => renderArtifact(a, i, ambiguous.length));
   }
 
   lines.push("");

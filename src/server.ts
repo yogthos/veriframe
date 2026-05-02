@@ -142,6 +142,7 @@ export function createServer(
                 status: "completed",
                 steps: result.steps.length,
                 trace: result.steps,
+                verifiedArtifacts: result.verifiedArtifacts,
               },
             };
           } else {
@@ -153,6 +154,7 @@ export function createServer(
                 error: result.error,
                 steps: result.steps.length,
                 trace: result.steps,
+                verifiedArtifacts: result.verifiedArtifacts,
               },
             };
           }
