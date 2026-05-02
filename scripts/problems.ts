@@ -577,9 +577,18 @@ You have lots of turns; don't rush. The interesting trace is one where you propo
 
 **Tooling rules — read FIRST.**
 
-  - **Use \`verify_smt\` exclusively.** No \`add_rule\` / \`verify\` (Prolog) — wrong fit, wastes turns.
+  - **Strongly preferred: use \`verify_template\` with template "sidon_set".** The harness has a vetted template for exactly this problem shape that runs BOTH encodings (distinct-sums + existence-of-collision) and records the artifact as confirmed only if both agree. Eliminates encoding bugs entirely — past runs lost results to forall-ordering-chain mistakes and missing-distinctness false positives. Use:
+    \`\`\`
+    {"name": "verify_template", "args": {
+      "claim": "S = {...} is a Sidon set in [1, 500]",
+      "template": "sidon_set",
+      "slots": {"elements": [1, 2, 4, 8, 13, ...]}
+    }}
+    \`\`\`
+    On confirmation, no separate \`review\` is needed — the cross-check is built in.
+  - **Fallback only**: \`verify_smt\` is available for shapes the templates don't cover, but you'll need to manually \`review\` with an independent encoding before \`done\`.
   - **ALWAYS pass \`expectedVerdict\`** in your verify_smt args. The harness needs to know which Z3 verdict supports your claim. Without it, your call is logged as "ambiguous" and the user can't tell from the artifact whether your claim was confirmed.
-  - **Recommended encoding (with explicit expectedVerdict):**
+  - **Recommended encoding (with explicit expectedVerdict, if you must use verify_smt):**
     \`\`\`
     {"name": "verify_smt", "args": {
       "claim": "S = {1, 2, 5, ...} is a Sidon set in [1, 500]",
