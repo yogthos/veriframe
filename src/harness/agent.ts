@@ -59,6 +59,10 @@ export interface ToolCall {
   name: string;
   args: Record<string, unknown>;
   parseError?: string;
+  /** True if the JSON-lint pass had to auto-repair the body (e.g.,
+   *  literal newlines inside string values). Surfaces a warning back
+   *  to the model so it learns to escape correctly next time. */
+  autoRepaired?: boolean;
 }
 
 type VerifyOutcome = "verified" | "not_verified" | "error";
@@ -85,6 +89,19 @@ const CULL_THRESHOLD = 3;
  * threshold for thrashing branches.
  */
 const CULL_RECENT_WINDOW = 5;
+
+const MILESTONE_MARKER = "MILESTONE-FIRST-CONFIRMATION-MARKER";
+const MILESTONE_PROMPT = `${MILESTONE_MARKER}
+
+🎯 **First verified result reached.** Your branch just produced a confirmed artifact. The harness is intervening because runs that don't ship at this moment usually fail.
+
+**Default action**: cross-check this result with \`review\` (independent encoding), then call \`done\`. Two turns.
+
+**Exception**: if your verified result is *clearly far below the goal* (e.g., you verified size 5 on a problem asking for ≥ 20), keep going — but only if you're confident the next step has high probability of success.
+
+**The trap**: after a confirmation, the model's instinct is to push for "more" — try size+1, then size+2, then a different construction. This pattern almost always loses the verified result you already have. If your verified result is competitive (matches or approaches the published bound mentioned in the problem), STOP and ship. Greedy doesn't pay here.
+
+Your next move should be \`review\` unless you have a SPECIFIC reason to push further.`;
 
 const EMERGENCY_REVIEW_MARKER = "EMERGENCY-REVIEW-PROMPT-MARKER";
 const EMERGENCY_REVIEW_PROMPT = `${EMERGENCY_REVIEW_MARKER}
@@ -195,6 +212,11 @@ export interface BranchState {
    *  if a subsequent verify produces a NEW confirmed artifact (since
    *  the new artifact hasn't been cross-checked yet). */
   lastReview: ReviewState | null;
+  /** True once the harness has injected the "you have a verified
+   *  result, time to review and ship" milestone prompt. Fires the
+   *  first time the branch has any confirmed artifact. Prevents
+   *  re-injection on every subsequent turn. */
+  milestonePromptInjected: boolean;
   messages: ChatMessage[];
 }
 
@@ -313,6 +335,8 @@ If the original verification is so direct that no cross-check is meaningful (e.g
 - **Don't \`verify\` a goal you wrote without first writing a one-sentence claim.** The whole point is to commit to the *idea* before writing the *check*. Skipping the claim collapses back into "write Prolog and hope."
 - **Don't use \`write\`, \`format\`, \`nl\`, or other side-effects in queries.** The harness reads variable bindings; stdout is invisible.
 - **Don't run unbounded search.** Each query has a 50,000,000-inference budget (~5-15s). If you hit it, narrow the goal — don't widen it.
+- **Don't ask Z3 to FIND combinatorial witnesses for you.** Queries of the shape \`(declare-const x Int) ... (assert (exists ...)) (check-sat)\` over unbounded integers TIME OUT for non-trivial combinatorics. **Your knowledge of constructions is the source of truth.** Specify candidate values yourself (Mian-Chowla 20, Singer q=23, Behrend lift, etc.) and ask Z3 to *verify* them with a constraint check. Z3 is a *checker*, not a *searcher* for this class of problem.
+- **Escape your JSON.** Tool-call args are strict JSON. Inside string values, raw newlines and unescaped backslashes break the parser. Use \`\\n\` for newlines, \`\\\\\` for literal backslashes, \`\\"\` for quotes inside strings. SMT-LIB and Lean snippets often have these characters — escape them. The harness will auto-repair the most common case (literal \\n inside a string) and warn you, but other malformations will return a parse error.
 
 ## Output format
 
@@ -457,6 +481,60 @@ That's it — claim, check, accept, next. The flow is the proof.`;
 
 const TOOL_CALL_FENCE_RE = /```tool-call\s*\r?\n([\s\S]*?)```/;
 
+/**
+ * Walk a JSON-ish string and escape any literal control characters
+ * that appear *inside* string literals (where they're invalid per
+ * RFC 8259). Most-common offender: the model writes a multi-line
+ * SMT-LIB or Lean snippet directly into a string value, leaving
+ * raw newlines that crash JSON.parse.
+ *
+ * We track string boundaries with a small state machine: outside
+ * strings we copy as-is; inside, we replace bare \n / \r / \t with
+ * their escape sequences. Doesn't handle every malformed case —
+ * unmatched backslashes, smart quotes — but catches the dominant
+ * one we observed (5/35 turns in the n=500 Sidon run failed on
+ * raw control chars).
+ */
+export function repairControlCharsInJsonStrings(input: string): string {
+  let out = "";
+  let inString = false;
+  let escaped = false;
+  for (let i = 0; i < input.length; i++) {
+    const ch = input[i];
+    if (escaped) {
+      out += ch;
+      escaped = false;
+      continue;
+    }
+    if (ch === "\\") {
+      out += ch;
+      escaped = true;
+      continue;
+    }
+    if (ch === '"') {
+      out += ch;
+      inString = !inString;
+      continue;
+    }
+    if (inString) {
+      if (ch === "\n") {
+        out += "\\n";
+        continue;
+      }
+      if (ch === "\r") {
+        out += "\\r";
+        continue;
+      }
+      if (ch === "\t") {
+        out += "\\t";
+        continue;
+      }
+    }
+    out += ch;
+  }
+  return out;
+}
+
 function parseToolCall(response: string): ToolCall | null {
   const m = response.match(TOOL_CALL_FENCE_RE);
   if (!m) return null;
@@ -464,12 +542,33 @@ function parseToolCall(response: string): ToolCall | null {
   let parsed: unknown;
   try {
     parsed = JSON.parse(body);
-  } catch (e) {
-    return {
-      name: "__parse_error__",
-      args: {},
-      parseError: e instanceof Error ? e.message : String(e),
-    };
+  } catch (initialErr) {
+    // JSON-lint fallback: the most common malformation is a raw
+    // newline inside a string value (model wrote multi-line SMT-LIB
+    // or Lean code without escaping). Try one auto-repair pass —
+    // if it now parses, accept it. The model still sees a warning
+    // in the result so it learns to escape correctly.
+    const repaired = repairControlCharsInJsonStrings(body);
+    if (repaired !== body) {
+      try {
+        parsed = JSON.parse(repaired);
+        // Repair succeeded — fall through. We'll set autoRepaired
+        // on the returned ToolCall below so runTool can surface a
+        // one-time warning back to the model.
+      } catch {
+        return {
+          name: "__parse_error__",
+          args: {},
+          parseError: `${initialErr instanceof Error ? initialErr.message : String(initialErr)}. The harness tried auto-repairing literal control characters inside string values but the result still didn't parse — escape \\n, \\r, \\t, \\\\, and \\" inside string values.`,
+        };
+      }
+    } else {
+      return {
+        name: "__parse_error__",
+        args: {},
+        parseError: `${initialErr instanceof Error ? initialErr.message : String(initialErr)}. Common causes: (a) raw newline inside a string value — use \\n, (b) unescaped quote inside a string — use \\", (c) unescaped backslash — use \\\\.`,
+      };
+    }
   }
   if (
     !parsed ||
@@ -489,7 +588,13 @@ function parseToolCall(response: string): ToolCall | null {
     obj.args && typeof obj.args === "object" && !Array.isArray(obj.args)
       ? (obj.args as Record<string, unknown>)
       : {};
-  return { name: obj.name, args };
+  // The auto-repair pass mutates the parsed object body when raw
+  // control chars inside string values are escaped on a second
+  // attempt. Track that here so the caller can surface the warning.
+  const autoRepaired = body !== repairControlCharsInJsonStrings(body);
+  return autoRepaired
+    ? { name: obj.name, args, autoRepaired: true }
+    : { name: obj.name, args };
 }
 
 function buildInitialUserMessage(problem: string): string {
@@ -1508,6 +1613,7 @@ async function createBranch(
     verifiedArtifacts: [],
     consecutiveFailures: 0,
     lastReview: null,
+    milestonePromptInjected: false,
     messages: [{ role: "user", content: buildInitialUserMessage(problem) }],
   };
 }
@@ -1589,10 +1695,35 @@ async function runBranchTurn(
   }
 
   const { result, done, gaveUp, category } = await runTool(branch, call, signal);
-  branch.messages.push({ role: "user", content: truncateToolResult(result) });
-  const entry: TurnEntry = { turn, toolCall: call, result };
+  // If the parser had to auto-repair the JSON, prepend a one-line
+  // warning to the tool result so the model learns to escape next
+  // time. We don't make this a fatal error — the repair worked, the
+  // tool ran — but the model needs the signal.
+  const finalResult = call.autoRepaired
+    ? `[harness note] Your tool-call JSON had raw control characters inside a string value; the parser auto-escaped them. Please use \\n / \\r / \\t / \\\\ in future calls — relying on the repair is fragile.\n\n${result}`
+    : result;
+  branch.messages.push({ role: "user", content: truncateToolResult(finalResult) });
+  const entry: TurnEntry = { turn, toolCall: call, result: finalResult };
   branch.turns.push(entry);
   onTurn?.(entry);
+
+  // Fix D: milestone injection. The first time a branch lands a
+  // confirmed artifact, inject a "ship now" prompt so the model has
+  // an unmissable user-message-level signal (vs the system prompt's
+  // ship-don't-grind line, which the model often scrolls past).
+  // Skipped for the `review` tool itself (it produces a "[review of]
+  // …" artifact that isn't a primary result), and for runs where the
+  // model's first confirmation came from a Lean proof (the proof IS
+  // the cross-check, no separate review needed).
+  const justGotFirstConfirmation =
+    !branch.milestonePromptInjected &&
+    branch.verifiedArtifacts.some(
+      (a) => a.claimStatus === "confirmed" && !a.claim.startsWith("[review of]"),
+    );
+  if (justGotFirstConfirmation) {
+    branch.messages.push({ role: "user", content: MILESTONE_PROMPT });
+    branch.milestonePromptInjected = true;
+  }
 
   // Pull a one-line claim from the call's args if the tool surfaced
   // one (verify, verify_smt, verify_lean all use `claim`); otherwise

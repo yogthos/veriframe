@@ -7,6 +7,7 @@ import { describe, it, expect } from "vitest";
 import {
   leanSnippetHasImport,
   renderBranchHistory,
+  repairControlCharsInJsonStrings,
   type BranchState,
   type GlobalRunState,
 } from "../src/harness/agent.js";
@@ -29,6 +30,7 @@ function fakeBranch(over: Partial<BranchState> & { id: string }): BranchState {
     verifiedArtifacts: over.verifiedArtifacts ?? [],
     consecutiveFailures: over.consecutiveFailures ?? 0,
     lastReview: over.lastReview ?? null,
+    milestonePromptInjected: over.milestonePromptInjected ?? false,
     messages: over.messages ?? [],
   };
 }
@@ -71,6 +73,52 @@ describe("leanSnippetHasImport", () => {
   it("matches a specific Mathlib submodule import", () => {
     expect(leanSnippetHasImport("import Mathlib.Topology.Basic\nexample : True := trivial"))
       .toBe(true);
+  });
+});
+
+describe("repairControlCharsInJsonStrings", () => {
+  it("leaves well-formed JSON untouched", () => {
+    const input = '{"name": "verify_smt", "args": {"claim": "x = 1", "smtlib": "(assert true)"}}';
+    expect(repairControlCharsInJsonStrings(input)).toBe(input);
+  });
+
+  it("escapes a raw newline inside a string value (the n=500 Sidon failure mode)", () => {
+    const input = `{"name": "verify_smt", "args": {"smtlib": "(declare-const x Int)\n(assert (= x 1))"}}`;
+    const out = repairControlCharsInJsonStrings(input);
+    expect(out).toContain("\\n");
+    // The repaired version should now parse.
+    expect(() => JSON.parse(out)).not.toThrow();
+  });
+
+  it("escapes carriage returns and tabs too", () => {
+    const input = `{"k": "a\rb\tc"}`;
+    const out = repairControlCharsInJsonStrings(input);
+    expect(out).toBe('{"k": "a\\rb\\tc"}');
+    expect(() => JSON.parse(out)).not.toThrow();
+  });
+
+  it("does not double-escape already-escaped sequences", () => {
+    // The model wrote \n correctly; we shouldn't turn it into \\n.
+    const input = '{"k": "a\\nb"}';
+    const out = repairControlCharsInJsonStrings(input);
+    expect(out).toBe(input);
+  });
+
+  it("does not touch newlines OUTSIDE strings (formatting whitespace)", () => {
+    const input = '{\n  "k": "v"\n}';
+    const out = repairControlCharsInJsonStrings(input);
+    // Newlines outside the string are preserved verbatim — the JSON
+    // parser handles those fine.
+    expect(out).toBe(input);
+  });
+
+  it("handles escaped quotes inside strings without breaking state", () => {
+    const input = '{"k": "say \\"hi\\" then\nbye"}';
+    const out = repairControlCharsInJsonStrings(input);
+    // The escaped quotes should not flip the in-string flag; the
+    // raw newline mid-string should still get repaired.
+    expect(out).toBe('{"k": "say \\"hi\\" then\\nbye"}');
+    expect(() => JSON.parse(out)).not.toThrow();
   });
 });
 
