@@ -66,20 +66,17 @@ describe("prolog solver (SWI-WASM)", () => {
     expect(result.answers).toHaveLength(0);
   });
 
-  it("a syntax-error program produces no answers", async () => {
-    // SWI logs the parse error to stderr but recovers; the wrapper
-    // returns 0 answers rather than propagating an error term. This
-    // is a known limitation of the prolog-wasm-full stock query API
-    // — capturing stderr would require Emscripten print hooks at
-    // init time, which the package doesn't expose. The agent sees
-    // "no answers" and can retry.
+  it("rejects a syntax-broken program at lint stage", async () => {
+    // Lint now catches the missing `.` clause terminator before
+    // SWI ever sees the input — better than the old behaviour of
+    // silently returning 0 answers via SWI's recovery.
     const result = await runPrologSolver({
       program: "this is not prolog at all (((",
       query: "anything.",
     });
-    expect(result.status).toBe("success");
-    if (result.status !== "success") return;
-    expect(result.answers).toHaveLength(0);
+    expect(result.status).toBe("error");
+    if (result.status !== "error") return;
+    expect(result.error).toMatch(/lint|terminator/i);
   });
 
   it("CLP(FD): all_distinct + linear constraints (auto-loaded clpfd)", async () => {

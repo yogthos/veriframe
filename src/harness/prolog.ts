@@ -19,6 +19,7 @@
  */
 
 import { initProlog, type PrologFull } from "prolog-wasm-full";
+import { lintPrologProgram, lintPrologQuery } from "./lint.js";
 
 const MAX_ANSWERS = 1000;
 
@@ -308,6 +309,24 @@ export async function runPrologSolver(
     if (input.signal?.aborted) {
       return { status: "error", error: "aborted" };
     }
+    // Pre-execution lints — refuse empty / comment-only / dot-less
+    // programs and empty queries before consulting / running.
+    if (input.program.trim()) {
+      const programLint = lintPrologProgram(input.program);
+      if (!programLint.ok) {
+        return {
+          status: "error",
+          error: `Prolog program lint rejected the input — execution skipped:\n  • ${programLint.warnings.join("\n  • ")}`,
+        };
+      }
+    }
+    const queryLint = lintPrologQuery(input.query);
+    if (!queryLint.ok) {
+      return {
+        status: "error",
+        error: `Prolog query lint rejected the input — execution skipped:\n  • ${queryLint.warnings.join("\n  • ")}`,
+      };
+    }
     if (input.program.trim()) {
       try {
         pl.em.FS.writeFile(path, input.program);
@@ -440,6 +459,13 @@ export async function createSession(): Promise<PrologSession> {
       if (!trimmed) {
         return { status: "error", error: "assert requires non-empty code" };
       }
+      const lint = lintPrologProgram(trimmed);
+      if (!lint.ok) {
+        return {
+          status: "error",
+          error: `Prolog lint rejected the rule:\n  • ${lint.warnings.join("\n  • ")}`,
+        };
+      }
       const r = consultCode(trimmed);
       if ("error" in r) return { status: "error", error: r.error };
       anonymous.push(r.path);
@@ -454,6 +480,13 @@ export async function createSession(): Promise<PrologSession> {
       }
       if (!c) {
         return { status: "error", error: "addNamed requires non-empty code" };
+      }
+      const lint = lintPrologProgram(c);
+      if (!lint.ok) {
+        return {
+          status: "error",
+          error: `Prolog lint rejected the rule:\n  • ${lint.warnings.join("\n  • ")}`,
+        };
       }
       if (named.has(n)) {
         return {
@@ -513,6 +546,13 @@ export async function createSession(): Promise<PrologSession> {
     },
 
     async query(goal: string, signal?: AbortSignal) {
+      const lint = lintPrologQuery(goal);
+      if (!lint.ok) {
+        return {
+          status: "error",
+          error: `Prolog query lint rejected the input:\n  • ${lint.warnings.join("\n  • ")}`,
+        } as PrologResult;
+      }
       return executeQuery(pl, goal, signal);
     },
 
