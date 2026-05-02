@@ -589,8 +589,9 @@ You have lots of turns; don't rush. The interesting trace is one where you propo
     \`\`\`
     Here SAT means "the (distinct) constraint is satisfiable with these fixed values" → S IS Sidon. UNSAT would mean the distinctness fails → S is NOT Sidon. So expectedVerdict is "sat".
   - **Alternative encoding** (existence-of-collision): assert that two distinct unordered pairs have the same sum; then UNSAT means no collision exists, i.e., S is Sidon. expectedVerdict would be "unsat".
-  - **You must call \`done\` at the end** with the largest verified S.
-  - **Budget: 30 turns.** Use them wisely.
+  - **Cross-check before \`done\`.** Once you have a verified set you're considering shipping, run \`review\` with an INDEPENDENT encoding before calling \`done\`. Recommended cross-check: existence-of-collision encoding. If your original used \`(distinct (+ a_i a_j) ...)\`, your review check should use \`(exists ((a Int) (b Int) (c Int) (d Int)) (and (inS a) (inS b) (inS c) (inS d) (< a b) (< c d) (or (< a c) (and (= a c) (not (= b d)))) (= (+ a b) (+ c d))))\` with expectedVerdict="unsat" (no collision exists ⟺ S is Sidon). If the two encodings DISAGREE, your original encoding had a logic gap (e.g., a forall whose ordering chain misses cases) — find and fix it.
+  - **You must call \`done\` at the end** with the largest *cross-checked* verified S. Greedy "try more" after a strong result is how good results get lost.
+  - **Budget: 30 turns.** Use them wisely. A finalize cycle is verify_smt → review → done, so reserve 2-3 turns at the end.
 
 **Process.**
 

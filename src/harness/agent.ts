@@ -77,6 +77,47 @@ interface VerifyEvent {
  */
 const BEAM_WIDTH = 5;
 const CULL_THRESHOLD = 3;
+/**
+ * A branch is protected from culling if it produced a confirmed
+ * artifact within the last N turns. Lets incremental-growth
+ * strategies (verify size N → fail trying N+1 → verify N+1 → fail
+ * trying N+2 …) survive without artificially boosting the cull
+ * threshold for thrashing branches.
+ */
+const CULL_RECENT_WINDOW = 5;
+
+const EMERGENCY_REVIEW_MARKER = "EMERGENCY-REVIEW-PROMPT-MARKER";
+const EMERGENCY_REVIEW_PROMPT = `${EMERGENCY_REVIEW_MARKER}
+
+Your branch has hit ${CULL_THRESHOLD} consecutive failures, but you have at least one confirmed artifact in your recent history — that's why you're not culled. Possible interpretations:
+
+  1. Your best confirmed result IS the answer. Stop grinding for "more". Run \`review\` to cross-check it with an INDEPENDENT encoding (different style than the original confirmation), then call \`done\` with that result. A verified, cross-checked, near-frontier result is a real answer; chasing further is greedy.
+
+  2. Your encoding is wrong (false positive) and the recent failures are evidence. The independent encoding in \`review\` will catch this — if your two encodings disagree, that's the bug.
+
+  3. You're on the right path but stuck. Reach for a different sub-strategy in the next turn.
+
+Pick one. The harness will not auto-cull this turn, but if you don't change behaviour we'll be back here next time.`;
+
+function hasConfirmedInRecentTurns(
+  branch: BranchState,
+  window: number,
+): boolean {
+  // Walk the most recent `window` turn entries and check if any of
+  // them produced a confirmed verifiedArtifact. Cross-references
+  // turn entries with their position in the artifact stream.
+  const recentTurns = branch.turns.slice(-window);
+  if (recentTurns.length === 0) return false;
+  // Each verify_smt / verify_lean / proof_step that confirms pushes
+  // exactly one artifact in chronological order. We can't link
+  // turn → artifact perfectly without extra bookkeeping, so we
+  // approximate: the last K artifacts are from the last K
+  // confirmations. Check if any of those line up with recent turns
+  // by counting artifacts whose claim text appears in any recent
+  // turn's tool result. Cheap and good enough for the cull guard.
+  const lastFew = branch.verifiedArtifacts.slice(-window);
+  return lastFew.some((a) => a.claimStatus === "confirmed");
+}
 
 /**
  * One failed verification recorded into the global failure log
@@ -103,6 +144,36 @@ export interface FailureEntry {
  * Renamed from the prior BranchState to make it explicit that
  * each branch is a peer, not a singleton — many run in parallel.
  */
+/**
+ * Per-branch review state. The model calls `review` before `done`
+ * to cross-verify a candidate result with an independent encoding;
+ * the review's verdict is recorded here. `done()` checks this state
+ * and warns / refuses if the result hasn't been independently
+ * cross-verified — this is the harness-level guard against the
+ * model's-own-encoding-was-wrong false positives we observed at
+ * size 24 / 26 in the n=500 Sidon run.
+ */
+export interface ReviewState {
+  /** True if review ran and the independent check agreed with the
+   *  prior confirmation. False if it disagreed (contradiction). */
+  passed: boolean;
+  /** Claim the review applies to (truncated). */
+  claim: string;
+  /** What the model said about how the cross-check was independent. */
+  rationale: string;
+  /** Verdict the independent check returned. */
+  verdict?: "sat" | "unsat" | "unknown";
+  /** Verdict the model said would confirm the claim, for the
+   *  cross-check encoding (different polarity from the original is
+   *  EXPECTED — that's the whole point of independence). */
+  expectedVerdict?: "sat" | "unsat";
+  /** True if the model explicitly opted out of cross-checking with a
+   *  rationale (e.g., "the problem is decided by Lean compilation, no
+   *  SMT-LIB encoding ambiguity to cross-check"). Logged but
+   *  flagged in the final answer. */
+  optedOut?: boolean;
+}
+
 export interface BranchState {
   id: string;
   /** Status drives loop scheduling: only "active" branches run. */
@@ -120,6 +191,10 @@ export interface BranchState {
   verifiedArtifacts: VerifiedArtifact[];
   /** Resets to 0 on success, increments on failure; cull at CULL_THRESHOLD. */
   consecutiveFailures: number;
+  /** Most recent passing review, set by the `review` tool. Cleared
+   *  if a subsequent verify produces a NEW confirmed artifact (since
+   *  the new artifact hasn't been cross-checked yet). */
+  lastReview: ReviewState | null;
   messages: ChatMessage[];
 }
 
@@ -169,7 +244,11 @@ Each turn:
 2. **Issue ONE tool call** inside a fenced block (see below). The tool either verifies the hypothesis or returns evidence against it.
 3. **React.** If the engine confirms, build on it. If it rejects, the failure goes into the global log; reach for a different angle on your next turn.
 
-The first to call \`done\` with a verified answer wins for the whole run; other branches will be terminated. If your branch is clearly stuck, \`give_up\` so the harness can focus compute on surviving branches.
+The first to call \`done\` with a *cross-checked* result wins for the whole run; other branches are terminated. If your branch is clearly stuck, \`give_up\` so the harness can focus compute on surviving branches.
+
+**Critical: ship-don't-grind.** Once you have a verified result that's competitive with what the problem asked for (matches a published bound, exceeds an explicit floor in the prompt, or is the cleanest verified answer in the run), STOP improving and finalize. The pattern: \`verify_smt\` confirms → \`review\` cross-checks with an independent encoding → \`done\` with the verified answer. Greedy "try one more" runs after a strong result are how branches get culled and how good results get lost. The harness blocks \`done\` until \`review\` runs, so finalising always takes 2 turns minimum — budget for that.
+
+**Critical: cross-check before ship.** A "confirmed" \`verify_smt\` artifact only proves your encoding is internally consistent; it doesn't guarantee the encoding correctly captures the property you claim. The harness has caught false positives where \`forall\` quantifiers with too-narrow ordering chains let Z3 vacuously satisfy a "Sidon" assertion that wasn't actually Sidon. Always \`review\` with an INDEPENDENT encoding (different style, different polarity, ideally a different tool) before \`done\`. If both encodings agree, the result is real.
 
 Tool calls go inside a fence:
 
@@ -215,7 +294,16 @@ Free-form prose around the fence is allowed and encouraged for your reasoning; o
 
 **discharge** — \`{"name": "..."}\`. Close a previously-opened scope, retracting its assumption. Whatever you proved while it was open now stands as a conditional ("under hypothesis X, conclusion Y holds").
 
-**done** — \`{"answer": "..."}\`. Submit the human-readable final answer once you've derived it.
+**review** — \`{"claim": "...", "rationale": "...", "independent_smtlib"?: "...", "expectedVerdict"?: "sat"|"unsat", "independent_lean"?: "...", "optOut"?: boolean}\`. **Cross-check a confirmed result with an INDEPENDENT verification before declaring \`done\`.** This is the harness's guard against your-own-encoding-was-wrong false positives. Two distinct encodings of the same property (different style, different tool, different polarity) should agree; if they disagree, one is buggy. Examples of independent encodings:
+  - Original encoding asserted distinctness via \`(distinct (+ a_i a_j) ...)\` enumerating all pairs. Independent: existence-of-collision via \`(exists ((a Int) (b Int) (c Int) (d Int)) (and (inS a) ... (= (+ a b) (+ c d))))\` — UNSAT means no collision.
+  - Original encoding used \`(forall ...)\` over a property. Independent: explicit enumeration with \`(distinct ...)\` or \`(or (= ...) (= ...) ...)\`.
+  - Original encoding was Z3 SMT-LIB. Independent: a Lean snippet that re-states the claim and proves it via Mathlib lemmas.
+
+Pass \`rationale\` describing how the cross-check is INDEPENDENT (different style/tool, not just a re-run of the same encoding). Pass \`expectedVerdict\` if the cross-check is SMT (the verdict that confirms the claim under your independent encoding — usually opposite polarity to the original because the encoding is opposite). The harness runs the check, compares verdicts, and reports REVIEW PASSED or REVIEW FAILED.
+
+If the original verification is so direct that no cross-check is meaningful (e.g., Lean compiled the proof end-to-end against Mathlib — no encoding ambiguity), pass \`optOut: true\` with a rationale. The harness will allow \`done\` but flag the absence of cross-verification in the final answer so the user knows soundness rests on a single encoding.
+
+**done** — \`{"answer": "..."}\`. Submit the human-readable final answer. **Required**: if your branch has confirmed artifacts, you must call \`review\` first (or call review with optOut=true). The harness blocks \`done\` otherwise — too many runs have shipped a "confirmed" result that turned out to use a buggy encoding. Once review passes, call \`done\` immediately. **Don't grind for more after a competitive verified result** — greedy "try more" often loses the result you already have. If your verified result is at or near the literature frontier for the problem, ship it.
 
 **give_up** — \`{"reason": "..."}\`. Stop with a stated reason.
 
@@ -745,8 +833,12 @@ async function runTool(
         model: r.verdict === "sat" ? r.model : undefined,
         claimStatus,
       });
-      // Attribute artifacts to the active branch so we can report
-      // per-branch productivity in the final answer.
+      // A new confirmation invalidates any prior review (old review
+      // vouches for the OLD result; the model must re-review before
+      // shipping the newer one).
+      if (claimStatus === "confirmed" && session.lastReview) {
+        session.lastReview = null;
+      }
       const hint = checkStuckHint(session);
       const expectedNote =
         expectedVerdict === null
@@ -844,6 +936,7 @@ async function runTool(
           code: `import Mathlib\n\n${proofText}\n`,
           claimStatus: "confirmed",
         });
+        if (session.lastReview) session.lastReview = null;
       } else if (stepResult.status === "open") {
         lines.push(
           `STEP ACCEPTED — ${stepResult.tacticCount} tactic(s) applied.`,
@@ -1035,6 +1128,7 @@ async function runTool(
           code: snippet,
           claimStatus: "confirmed",
         });
+        if (session.lastReview) session.lastReview = null;
       }
       const hint = checkStuckHint(session);
       // On NOT VERIFIED or compile-error, auto-surface relevant
@@ -1118,6 +1212,144 @@ async function runTool(
       };
     }
 
+    case "review": {
+      const claim = typeof args.claim === "string" ? args.claim.trim() : "";
+      const rationale =
+        typeof args.rationale === "string" ? args.rationale.trim() : "";
+      const optOutFlag = args.optOut === true;
+      if (!claim) {
+        return {
+          result:
+            "[error] review requires {claim: string, rationale: string, ...}. Provide the claim under review (e.g., \"S = {...} is a Sidon set in [1, 500]\").",
+        };
+      }
+      if (!rationale) {
+        return {
+          result:
+            "[error] review requires {claim, rationale, ...}. `rationale` describes how your cross-check is INDEPENDENT of the encoding that produced the original confirmation — different style (forall→distinct, distinctness→existence-of-collision), different tool (Lean instead of SMT), or hand-derived counter-search.",
+        };
+      }
+      // The review must establish that any prior confirmation we
+      // intend to ship was cross-verified. If no prior confirmed
+      // artifact exists, there's nothing to ship.
+      const priorConfirmed = session.verifiedArtifacts.filter(
+        (a) => a.claimStatus === "confirmed",
+      );
+      if (priorConfirmed.length === 0) {
+        return {
+          result:
+            "[review error] No confirmed artifact in this branch yet. Run a verify_* call to establish the claim BEFORE running review. The review's job is to cross-check an existing confirmation, not to be the first verification.",
+        };
+      }
+      // Two paths: (a) the model supplies an independent verification
+      // (preferred) or (b) opts out with a rationale (allowed but
+      // logged as a soundness risk).
+      if (optOutFlag) {
+        session.lastReview = {
+          passed: true,
+          claim,
+          rationale,
+          optedOut: true,
+        };
+        return {
+          result: `Review marked OPTED-OUT — proceeding without independent cross-check. The harness will flag this in the final answer so the user knows soundness rests entirely on the original encoding. Rationale recorded: "${rationale}". You may now call \`done\`.`,
+          category: "neutral",
+        };
+      }
+      const smtlib =
+        typeof args.independent_smtlib === "string"
+          ? args.independent_smtlib.trim()
+          : "";
+      const lean =
+        typeof args.independent_lean === "string"
+          ? args.independent_lean.trim()
+          : "";
+      const expectedVerdictRaw =
+        typeof args.expectedVerdict === "string"
+          ? args.expectedVerdict.trim().toLowerCase()
+          : "";
+      const expectedVerdict: "sat" | "unsat" | null =
+        expectedVerdictRaw === "sat" || expectedVerdictRaw === "unsat"
+          ? expectedVerdictRaw
+          : null;
+      if (!smtlib && !lean) {
+        return {
+          result:
+            "[review error] Provide either {independent_smtlib, expectedVerdict} or {independent_lean} to run the cross-check, OR set optOut=true with a rationale explaining why no cross-check is needed (e.g., \"Lean compiled the proof with full Mathlib; no encoding ambiguity.\"). The cross-check should use a DIFFERENT encoding style than the prior confirmation — that's the point of independence.",
+        };
+      }
+      if (smtlib) {
+        if (expectedVerdict === null) {
+          return {
+            result:
+              "[review error] independent_smtlib requires expectedVerdict (\"sat\" or \"unsat\") so the harness can interpret Z3's answer.",
+          };
+        }
+        const r = runSmt(smtlib);
+        if (r.status === "error") {
+          return {
+            result: `[review error] cross-check Z3 invocation failed: ${r.error}`,
+            category: "failure",
+          };
+        }
+        const agrees = r.verdict === expectedVerdict;
+        session.lastReview = {
+          passed: agrees,
+          claim,
+          rationale,
+          verdict: r.verdict,
+          expectedVerdict,
+        };
+        // Record the cross-check itself as an artifact so it shows
+        // up in the trace alongside the original confirmation.
+        session.verifiedArtifacts.push({
+          kind: "smt",
+          claim: `[review of] ${claim}`,
+          code: smtlib,
+          verdict: r.verdict,
+          model: r.verdict === "sat" ? r.model : undefined,
+          claimStatus: agrees ? "confirmed" : "refuted",
+        });
+        if (agrees) {
+          return {
+            result: `REVIEW PASSED — independent encoding returned ${r.verdict.toUpperCase()} which matches expectedVerdict=${expectedVerdict.toUpperCase()}. The original confirmation cross-checks. Safe to call \`done\`.`,
+            category: "success",
+          };
+        }
+        return {
+          result: `REVIEW FAILED — independent encoding returned ${r.verdict.toUpperCase()} but you declared expectedVerdict=${expectedVerdict.toUpperCase()}. Your two encodings DISAGREE. One has a logical bug. Investigate before declaring \`done\`. Common cause: a forall-quantified Sidon assertion whose ordering chain misses pair-vs-pair collisions; a distinctness constraint that omits some pairs. Re-derive both encodings on paper and find the missing case.`,
+          category: "failure",
+        };
+      }
+      // Lean independent check.
+      const snippet = leanSnippetHasImport(lean)
+        ? lean
+        : `import Mathlib\n\n${lean}`;
+      const r = await runLean(snippet);
+      const agrees = r.status === "ok";
+      session.lastReview = {
+        passed: agrees,
+        claim,
+        rationale,
+      };
+      session.verifiedArtifacts.push({
+        kind: "lean",
+        claim: `[review of] ${claim}`,
+        code: snippet,
+        claimStatus: agrees ? "confirmed" : "refuted",
+      });
+      return agrees
+        ? {
+            result:
+              "REVIEW PASSED — Lean accepted the cross-check proof. The original confirmation cross-checks. Safe to call `done`.",
+            category: "success",
+          }
+        : {
+            result: `REVIEW FAILED — Lean rejected the cross-check. ${formatLeanResult(claim, r)} Investigate before \`done\`.`,
+            category: "failure",
+          };
+    }
+
     case "done": {
       if (typeof args.answer !== "string" || args.answer.trim().length === 0) {
         return {
@@ -1125,9 +1357,33 @@ async function runTool(
             "[error] done requires {answer: string} — your final human-readable answer.",
         };
       }
+      // Soundness gate: refuse `done` if the branch has confirmed
+      // artifacts but no review has been run. The model must call
+      // `review` first to cross-verify with an independent encoding,
+      // OR explicitly opt out with a rationale. This is the
+      // harness-level guard against the "model wrote a buggy
+      // encoding, Z3 said sat vacuously, claimStatus=confirmed
+      // shipped a wrong answer" failure mode we observed on the
+      // n=500 Sidon run.
+      const hasConfirmed = session.verifiedArtifacts.some(
+        (a) => a.claimStatus === "confirmed",
+      );
+      if (hasConfirmed && !session.lastReview) {
+        return {
+          result:
+            "[done blocked] Your branch has confirmed artifacts but no `review` has been run. Before declaring `done`, call `review` with an INDEPENDENT cross-check (different encoding/tool than the original confirmation) to catch encoding bugs. If you genuinely don't need a cross-check (e.g., Lean compiled the proof end-to-end), call review with `optOut: true` and a rationale.",
+        };
+      }
       session.finalAnswer = args.answer;
       session.status = "done";
-      return { result: "OK — finalizing.", done: true };
+      const reviewNote = session.lastReview
+        ? session.lastReview.optedOut
+          ? " (review: opted out)"
+          : session.lastReview.passed
+            ? " (review: passed)"
+            : " (review: FAILED — answer is suspect)"
+        : "";
+      return { result: `OK — finalizing${reviewNote}.`, done: true };
     }
 
     case "give_up": {
@@ -1144,7 +1400,7 @@ async function runTool(
 
     default:
       return {
-        result: `[error] unknown tool "${name}". Valid: add_rule, retract_rule, commit, verify, verify_smt, verify_lean, lean_search, proof_start, proof_step, proof_state, proof_undo, proof_close, proof_abandon, assume, discharge, pivot, done, give_up.`,
+        result: `[error] unknown tool "${name}". Valid: add_rule, retract_rule, commit, verify, verify_smt, verify_lean, lean_search, proof_start, proof_step, proof_state, proof_undo, proof_close, proof_abandon, assume, discharge, review, done, give_up.`,
       };
   }
 }
@@ -1251,6 +1507,7 @@ async function createBranch(
     leanProof: null,
     verifiedArtifacts: [],
     consecutiveFailures: 0,
+    lastReview: null,
     messages: [{ role: "user", content: buildInitialUserMessage(problem) }],
   };
 }
@@ -1479,8 +1736,40 @@ export async function runAgent(
             reason: outcome.failureReason,
           });
           if (b.consecutiveFailures >= CULL_THRESHOLD) {
-            b.status = "culled";
-            b.inactiveReason = `culled after ${CULL_THRESHOLD} consecutive failures`;
+            // Fix B: don't cull a branch that has produced a confirmed
+            // artifact in the recent window. Incremental-growth
+            // strategies naturally pattern as "verify size N → fail
+            // trying size N+1 a few times" — culling them throws away
+            // the most valuable branch. The recent-window check
+            // protects them while still culling thrashing branches
+            // with no productive recent activity.
+            const recentTurnCutoff = b.turns.length - CULL_RECENT_WINDOW;
+            const hasRecentConfirmed = b.verifiedArtifacts.length > 0
+              && b.turns.slice(-CULL_RECENT_WINDOW).some(() => true)
+              && hasConfirmedInRecentTurns(b, CULL_RECENT_WINDOW);
+            if (hasRecentConfirmed) {
+              // Fix C: instead of culling, inject an emergency
+              // review-and-finalize prompt. The branch is on thin
+              // ice; if it has a competitive verified result, it
+              // should review-and-done now instead of grinding.
+              if (
+                !b.messages.some(
+                  (m) => m.content.includes(EMERGENCY_REVIEW_MARKER),
+                )
+              ) {
+                b.messages.push({
+                  role: "user",
+                  content: EMERGENCY_REVIEW_PROMPT,
+                });
+              }
+              // Reset the counter so this prompt isn't re-injected
+              // every turn — give the branch one cycle to react.
+              b.consecutiveFailures = 0;
+            } else {
+              b.status = "culled";
+              b.inactiveReason = `culled after ${CULL_THRESHOLD} consecutive failures (no recent confirmed work)`;
+            }
+            void recentTurnCutoff;
           }
         } else if (outcome.category === "success") {
           b.consecutiveFailures = 0;

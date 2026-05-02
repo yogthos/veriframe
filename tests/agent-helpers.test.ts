@@ -28,6 +28,7 @@ function fakeBranch(over: Partial<BranchState> & { id: string }): BranchState {
     leanProof: over.leanProof ?? null,
     verifiedArtifacts: over.verifiedArtifacts ?? [],
     consecutiveFailures: over.consecutiveFailures ?? 0,
+    lastReview: over.lastReview ?? null,
     messages: over.messages ?? [],
   };
 }
