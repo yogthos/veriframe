@@ -4,7 +4,7 @@
  */
 
 import { describe, it, expect } from "vitest";
-import { runSmt, parseModel } from "../src/harness/smt.js";
+import { runSmt, parseModel, checkWitnessAgainstFormula } from "../src/harness/smt.js";
 
 describe("z3 SMT backend", () => {
   it("returns sat for a satisfiable formula", () => {
@@ -143,5 +143,59 @@ describe("z3 SMT backend", () => {
       (check-sat)
     `);
     expect(r.status).toBe("error");
+  });
+});
+
+describe("checkWitnessAgainstFormula (Layer 2 witness sanity)", () => {
+  it("flags a (distinct ...) violated by a duplicate witness value", () => {
+    const smt = `(declare-const a1 Int) (declare-const a2 Int) (declare-const a3 Int)
+      (assert (distinct a1 a2 a3)) (check-sat)`;
+    const witness = { a1: "0", a2: "0", a3: "5" };
+    const issues = checkWitnessAgainstFormula(smt, witness);
+    expect(issues.length).toBeGreaterThan(0);
+    expect(issues.join(" ")).toMatch(/distinct.*not distinct/i);
+  });
+
+  it("accepts a (distinct ...) when the witness values truly differ", () => {
+    const smt = `(declare-const a Int) (declare-const b Int) (assert (distinct a b))`;
+    const witness = { a: "1", b: "2" };
+    expect(checkWitnessAgainstFormula(smt, witness)).toEqual([]);
+  });
+
+  it("flags a witness value below an asserted lower bound", () => {
+    const smt = `(declare-const x Int) (assert (>= x 1)) (check-sat)`;
+    const witness = { x: "0" };
+    const issues = checkWitnessAgainstFormula(smt, witness);
+    expect(issues.join(" ")).toMatch(/below the bound/);
+  });
+
+  it("flags a witness value above an asserted upper bound", () => {
+    const smt = `(declare-const x Int) (assert (<= x 500)) (check-sat)`;
+    const witness = { x: "600" };
+    const issues = checkWitnessAgainstFormula(smt, witness);
+    expect(issues.join(" ")).toMatch(/above the bound/);
+  });
+
+  it("flags a witness violating a direct equality", () => {
+    const smt = `(declare-const a Int) (assert (= a 7))`;
+    const witness = { a: "8" };
+    const issues = checkWitnessAgainstFormula(smt, witness);
+    expect(issues.length).toBeGreaterThan(0);
+  });
+
+  it("ignores non-bare-identifier args inside (distinct ...)", () => {
+    // (distinct (+ a b) (+ c d)) — the distinct args are expressions,
+    // not bare names. We can't validate this from the witness alone,
+    // so we don't try.
+    const smt = `(assert (distinct (+ a b) (+ c d)))`;
+    const witness = { a: "0", b: "0", c: "0", d: "0" };
+    expect(checkWitnessAgainstFormula(smt, witness)).toEqual([]);
+  });
+
+  it("handles negative integers in the witness via the (- N) syntax", () => {
+    const smt = `(declare-const x Int) (assert (>= x 1))`;
+    const witness = { x: "(- 3)" };
+    const issues = checkWitnessAgainstFormula(smt, witness);
+    expect(issues.join(" ")).toMatch(/below the bound/);
   });
 });

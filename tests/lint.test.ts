@@ -68,6 +68,61 @@ describe("lintSmt", () => {
     expect(r.ok).toBe(false);
     expect(r.warnings.join(" ")).toMatch(/All SMT-LIB content was inside comments/);
   });
+
+  it("rejects literal `...` ellipsis (Round 2 false-positive shape)", () => {
+    const r = lintSmt(`
+      (declare-const a1 Int) (declare-const a2 Int) ... (declare-const a23 Int)
+      (assert (distinct a1 a2 ... a23))
+      (check-sat)
+    `);
+    expect(r.ok).toBe(false);
+    expect(r.warnings.join(" ")).toMatch(/ellipsis|abbreviation/i);
+  });
+
+  it("does NOT flag `...` inside a string literal", () => {
+    // SMT-LIB allows `...` inside `(set-info :name "...")` etc.
+    const r = lintSmt(`
+      (set-info :status "test...")
+      (declare-const x Int)
+      (assert (= x 1))
+    `);
+    expect(r.ok).toBe(true);
+  });
+
+  it("flags `(distinct (+ ...))` without sibling distinctness on the constants", () => {
+    // Round 2 size-23 false positive: distinct sums asserted but
+    // the underlying a1..an were free to all collapse to zero.
+    const r = lintSmt(`
+      (declare-const a1 Int) (declare-const a2 Int) (declare-const a3 Int)
+      (assert (distinct (+ a1 a2) (+ a1 a3) (+ a2 a3)))
+      (check-sat)
+    `);
+    expect(r.ok).toBe(false);
+    expect(r.warnings.join(" ")).toMatch(/degenerate|distinct.*constants/i);
+  });
+
+  it("accepts `(distinct (+ ...))` when sibling distinctness IS asserted", () => {
+    const r = lintSmt(`
+      (declare-const a1 Int) (declare-const a2 Int) (declare-const a3 Int)
+      (assert (distinct a1 a2 a3))
+      (assert (distinct (+ a1 a2) (+ a1 a3) (+ a2 a3)))
+      (check-sat)
+    `);
+    expect(r.ok).toBe(true);
+  });
+
+  it("flags `forall` over Int with a small finite-range bound (Round-1 size-26 shape)", () => {
+    const r = lintSmt(`
+      (declare-fun a (Int) Int)
+      (assert (forall ((i Int) (j Int) (k Int) (l Int))
+        (=> (and (<= 1 i) (<= i j) (<= j k) (<= k l) (<= l 26)
+                 (= (+ (a i) (a j)) (+ (a k) (a l))))
+            (and (= i k) (= j l)))))
+      (check-sat)
+    `);
+    expect(r.ok).toBe(false);
+    expect(r.warnings.join(" ")).toMatch(/forall|enumerate|finite/i);
+  });
 });
 
 describe("lintLean", () => {
