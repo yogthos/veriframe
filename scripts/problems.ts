@@ -492,6 +492,88 @@ Use verify_lean. The standard Mathlib proof unfolds Even as ∃ k, _ = k + k (or
     maxSteps: 6,
   },
 
+  "schur-coloring-frontier": {
+    id: "schur-coloring-frontier",
+    type: "OPEN-FRONTIER PROBLEM — Schur number S(5) and beyond",
+    difficulty: "very-hard",
+    prompt: `## The problem
+
+A *Schur k-coloring* of $[1, n]$ is a function $c : \\{1, \\ldots, n\\} \\to \\{1, \\ldots, k\\}$ such that there is no monochromatic Schur triple — no $x, y, z \\in [1, n]$ with $x + y = z$ and $c(x) = c(y) = c(z)$.
+
+The Schur number $S(k)$ is the largest $n$ for which a Schur $k$-coloring of $[1, n]$ exists. Known values:
+
+- $S(2) = 4$ (Schur 1916)
+- $S(3) = 13$ (Schur 1916)
+- $S(4) = 44$ (Baumert 1965, computer-assisted)
+- $S(5) = 160$ (Heule 2017, **massive SAT instance, 4 trillion clauses**)
+- $S(6)$ is **OPEN**: best known $S(6) \\geq 537$.
+
+## Your goals (in order of difficulty)
+
+### Goal A (warm-up): exhibit a 4-coloring of $[1, 44]$
+
+Find $c : [1, 44] \\to \\{1, 2, 3, 4\\}$ with no monochromatic Schur triple. Verify with \`verify_template[schur_coloring]\`. This is a known target — many such colorings exist in the literature; the model is expected to know one or derive one. Settles $S(4) \\geq 44$.
+
+### Goal B (the main attempt): exhibit a 5-coloring of $[1, 160]$
+
+Find $c : [1, 160] \\to \\{1, 2, 3, 4, 5\\}$ with no monochromatic Schur triple. This was the Heule 2017 result; he produced an explicit coloring via SAT search. The model has read his paper and may know the structure (typical Schur colorings use **multiplicative** structure on a residue class). Settles $S(5) \\geq 160$ — well-known but a real demonstration of the harness on a near-frontier problem.
+
+### Goal C (the genuinely open one): exhibit a 6-coloring of $[1, 538]$
+
+This would push $S(6) \\geq 538$, beyond the published lower bound of 537. The exact value of $S(6)$ is open; if such a coloring exists, finding it would be a real contribution. Heule and others have searched extensively and not yet found 538 (or a refutation). The model is unlikely to find this — but exhibiting any large 6-coloring is informative.
+
+## Tooling
+
+Use \`verify_template\` with template \`"schur_coloring"\` and slots:
+
+\`\`\`
+{"name": "verify_template", "args": {
+  "claim": "5-coloring of [1, 160] with no monochromatic Schur triple",
+  "template": "schur_coloring",
+  "slots": {
+    "n": 160,
+    "k": 5,
+    "coloring": [1, 2, 3, 4, 5, 1, 2, 3, 4, 5, ...]
+  }
+}}
+\`\`\`
+
+The template runs both a Z3 existential check (UNSAT means no bad triple exists) and a JS-enumerated cross-check (all $\\binom{n+1}{2}$ pairs (x, y) with $x + y \\le n$). Both must agree.
+
+## Process
+
+1. **Range first.** Before submitting any candidate coloring, name 3-5 distinct construction families. Examples:
+   - **Multiplicative on residues mod p**: assign color based on $\\lfloor i / m \\rfloor$ mod something
+   - **Quadratic residues**: color by quadratic-residue class
+   - **Recursive Sidon-like**: build the coloring by lifting a smaller Schur-good coloring
+   - **SAT-derived**: cite Heule's explicit coloring (the model has seen it)
+   - **Multiplicative character of cyclic group**: c(i) = (i mod q) for some prime q with the property
+   For each, predict whether it scales to the target $n$.
+
+2. **Goal A first.** Match the Baumert 4-coloring of $[1, 44]$. Should take 2-3 attempts.
+
+3. **Goal B.** This is where it gets hard. The model knows Heule's paper exists; the explicit coloring is in the supplementary materials. If the model can reproduce or approximate it, the template will verify.
+
+4. **Goal C.** A genuine attempt at the open frontier. Even producing a verified 6-coloring of [1, 537] (matching the lower bound) is meaningful.
+
+5. **Report.** Final \`done\` answer must include: the colorings achieved, comparison to known bounds, and a clear statement of which goals were reached.
+
+## What success looks like
+
+- Goal A reached → harness demonstration on a known-hard combinatorial verification.
+- Goal B reached → matches a 2017 record, real demonstration of LLM + SAT-checker on a near-frontier problem.
+- Goal C — extremely unlikely but the attempt would be informative.
+
+## Caveats
+
+The Z3 verification scales as the coloring grows. For n=44 it's instant. For n=160 it could take 30s+ per call. For n=537+ it might time out. If templates time out, that's a finding too.
+
+**Budget: 60 turns.** Spend them on creative construction selection. Don't expect to brute-force search via Z3 — Z3 is a checker, not a searcher for this class.`,
+    expectedAnswer:
+      "Open at the S(6) frontier. S(2)=4, S(3)=13, S(4)=44, S(5)=160 known. Grade by largest verified coloring: |c|≥44 (Goal A) is working; |c|≥160 (Goal B) matches Heule 2017; |c|≥538 with k=6 (Goal C) would push the open frontier. The exact S(6) is unknown.",
+    maxSteps: 60,
+  },
+
   "frankl-union-closed": {
     id: "frankl-union-closed",
     type: "OPEN CONJECTURE — Frankl's Union-Closed Sets (1979)",

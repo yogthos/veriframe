@@ -365,10 +365,133 @@ export const capSetF3nTemplate: SmtTemplate = {
   },
 };
 
+/**
+ * Schur-coloring template. A k-coloring c : [1, n] → [1, k] is
+ * "Schur-good" if there are no three numbers x, y, z in [1, n]
+ * with x + y = z and c(x) = c(y) = c(z) (a monochromatic Schur
+ * triple). The Schur number S(k) is the largest n admitting such
+ * a coloring; classically S(2)=4, S(3)=13, S(4)=44, S(5)=160
+ * (Heule 2017 via SAT), S(6) is OPEN.
+ *
+ * The model passes a candidate coloring as an array of length n,
+ * with entries in [1, k]. The harness checks via two encodings:
+ *
+ *   PRIMARY (existence-of-bad-triple): assert ∃ x, y in [1, n]
+ *     with x + y ≤ n and c(x) = c(y) = c(x + y). UNSAT means no
+ *     bad triple exists → coloring is Schur-good.
+ *
+ *   CROSS-CHECK (explicit JS enumeration): for every (x, y) with
+ *     x ≤ y and x + y ≤ n, check the triple isn't monochromatic.
+ *     Any collision at assembly time → emit (assert false).
+ *
+ * Slots:
+ *   - n: number — the upper bound of the coloring.
+ *   - k: number — the number of colors.
+ *   - coloring: number[] — length n, each entry in [1, k].
+ *     coloring[i-1] is the color of integer i.
+ */
+export const schurColoringTemplate: SmtTemplate = {
+  name: "schur_coloring",
+  description:
+    "Verify that a candidate k-coloring of [1, n] has no monochromatic Schur triple (x + y = z, all same color). Slots: {n, k, coloring}.",
+  slots: {
+    n: "Upper bound (the integers being coloured are 1..n).",
+    k: "Number of colors (must be ≥ 1).",
+    coloring:
+      "Array of length n with entries in [1, k]; coloring[i-1] is the color of integer i.",
+  },
+  primaryExpectedVerdict: "unsat",
+  crossCheckExpectedVerdict: "sat",
+
+  assemble(slots): string {
+    const n = slots.n;
+    const k = slots.k;
+    const coloring = slots.coloring;
+    if (typeof n !== "number" || !Number.isInteger(n) || n < 1) {
+      throw new Error("`n` must be a positive integer");
+    }
+    if (typeof k !== "number" || !Number.isInteger(k) || k < 1) {
+      throw new Error("`k` must be a positive integer");
+    }
+    if (!Array.isArray(coloring) || coloring.length !== n) {
+      throw new Error(
+        `\`coloring\` must be an array of length ${n}; got ${Array.isArray(coloring) ? coloring.length : typeof coloring}`,
+      );
+    }
+    for (let i = 0; i < n; i++) {
+      const c = coloring[i];
+      if (typeof c !== "number" || !Number.isInteger(c) || c < 1 || c > k) {
+        throw new Error(
+          `coloring[${i}] = ${JSON.stringify(c)} is not an integer in [1, ${k}]`,
+        );
+      }
+    }
+    const colors = coloring as number[];
+    // Define c(i) for i in [1, n] via a chain of ites — compact for
+    // moderate n. For n=160 this is fine for Z3.
+    let cBody = `${colors[n - 1]}`;
+    for (let i = n - 1; i >= 1; i--) {
+      cBody = `(ite (= i ${i}) ${colors[i - 1]} ${cBody})`;
+    }
+    const lines: string[] = [
+      `(define-fun c ((i Int)) Int ${cBody})`,
+      "(declare-const x Int)",
+      "(declare-const y Int)",
+      `(assert (and (>= x 1) (<= x ${n})))`,
+      `(assert (and (>= y 1) (<= y ${n})))`,
+      `(assert (<= (+ x y) ${n}))`,
+      "(assert (= (c x) (c y)))",
+      "(assert (= (c x) (c (+ x y))))",
+      "(check-sat)",
+    ];
+    return lines.join("\n");
+  },
+
+  assembleCrossCheck(slots): string {
+    const n = slots.n;
+    const coloring = slots.coloring;
+    // Re-validate (called separately from assemble).
+    if (typeof n !== "number" || !Number.isInteger(n) || n < 1) {
+      throw new Error("`n` must be a positive integer");
+    }
+    if (!Array.isArray(coloring) || coloring.length !== n) {
+      throw new Error("`coloring` length mismatch");
+    }
+    const colors = coloring as number[];
+    const collisions: string[] = [];
+    for (let x = 1; x <= n; x++) {
+      for (let y = x; y <= n; y++) {
+        const z = x + y;
+        if (z > n) break;
+        const cx = colors[x - 1];
+        const cy = colors[y - 1];
+        const cz = colors[z - 1];
+        if (cx === cy && cy === cz) {
+          collisions.push(
+            `; collision: x=${x}, y=${y}, x+y=${z} all colored ${cx}`,
+          );
+        }
+      }
+    }
+    if (collisions.length > 0) {
+      return [...collisions.slice(0, 10), "(assert false)", "(check-sat)"].join(
+        "\n",
+      );
+    }
+    return [
+      "; cross-check enumerated all triples; none monochromatic",
+      "(declare-const ok Bool)",
+      "(assert ok)",
+      "(check-sat)",
+    ].join("\n");
+  },
+};
+
 export const TEMPLATES: Record<string, SmtTemplate> = {
   [sidonSetTemplate.name]: sidonSetTemplate,
   [noThreeApTemplate.name]: noThreeApTemplate,
   [capSetF3nTemplate.name]: capSetF3nTemplate,
+  [schurColoringTemplate.name]: schurColoringTemplate,
 };
 
 export function listTemplates(): string {

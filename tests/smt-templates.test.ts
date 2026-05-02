@@ -142,10 +142,58 @@ describe("cap_set_f3n template", () => {
   });
 });
 
+describe("schur_coloring template", () => {
+  // S(2) = 4: a 2-coloring of [1, 4] with no monochromatic Schur
+  // triple exists. One known coloring: c = [1, 2, 2, 1].
+  // Triples (x, y, x+y) with x ≤ y, x + y ≤ 4:
+  //   (1,1,2): c=[1,1,2] — not mono ✓
+  //   (1,2,3): c=[1,2,2] — not mono ✓
+  //   (1,3,4): c=[1,2,1] — not mono ✓
+  //   (2,2,4): c=[2,2,1] — not mono ✓
+  it("primary UNSAT + cross-check SAT for [1,2,2,1] on n=4 (a Schur-good 2-coloring)", () => {
+    const slots = { n: 4, k: 2, coloring: [1, 2, 2, 1] };
+    const primary = TEMPLATES.schur_coloring.assemble(slots);
+    const cross = TEMPLATES.schur_coloring.assembleCrossCheck(slots);
+    const pr = runSmt(primary);
+    const cr = runSmt(cross);
+    expect(pr.status).toBe("ok");
+    expect(cr.status).toBe("ok");
+    if (pr.status !== "ok" || cr.status !== "ok") return;
+    expect(pr.verdict).toBe("unsat"); // no bad triple exists
+    expect(cr.verdict).toBe("sat"); // cross-check found no collision
+  });
+
+  it("primary SAT + cross-check UNSAT for an all-color-1 coloring (1+1=2 monochromatic)", () => {
+    const slots = { n: 4, k: 2, coloring: [1, 1, 1, 1] };
+    const primary = TEMPLATES.schur_coloring.assemble(slots);
+    const cross = TEMPLATES.schur_coloring.assembleCrossCheck(slots);
+    const pr = runSmt(primary);
+    const cr = runSmt(cross);
+    expect(pr.status).toBe("ok");
+    expect(cr.status).toBe("ok");
+    if (pr.status !== "ok" || cr.status !== "ok") return;
+    expect(pr.verdict).toBe("sat"); // bad triple exists
+    expect(cr.verdict).toBe("unsat"); // cross-check found collisions
+  });
+
+  it("rejects malformed coloring (wrong length)", () => {
+    expect(() =>
+      TEMPLATES.schur_coloring.assemble({ n: 4, k: 2, coloring: [1, 2, 2] }),
+    ).toThrow();
+  });
+
+  it("rejects out-of-range color", () => {
+    expect(() =>
+      TEMPLATES.schur_coloring.assemble({ n: 4, k: 2, coloring: [1, 2, 3, 1] }),
+    ).toThrow();
+  });
+});
+
 describe("template registry", () => {
-  it("registers all three templates by name", () => {
+  it("registers all four templates by name", () => {
     expect(TEMPLATES.sidon_set).toBeDefined();
     expect(TEMPLATES.no_3ap_subset).toBeDefined();
     expect(TEMPLATES.cap_set_f3n).toBeDefined();
+    expect(TEMPLATES.schur_coloring).toBeDefined();
   });
 });
