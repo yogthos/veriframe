@@ -651,6 +651,163 @@ The Erdős–Straus equation $4xyz - n(yz + xz + xy) = 0$ defines an algebraic s
     maxSteps: 100,
   },
 
+  "erdos-straus-residual-primes-proof": {
+    id: "erdos-straus-residual-primes-proof",
+    type: "OPEN PROBLEM — General proof of Erdős–Straus for all primes p ≡ 1 mod 4",
+    difficulty: "very-hard",
+    prompt: `## Your task
+
+**Find a general proof of the Erdős–Straus conjecture for the residual class: every prime $p \\equiv 1 \\pmod 4$.**
+
+That is, prove (or make substantive verified progress toward proving):
+
+> **(Open conjecture)** For every prime $p \\equiv 1 \\pmod 4$, there exist positive integers $x, y, z$ with $\\tfrac{4}{p} = \\tfrac{1}{x} + \\tfrac{1}{y} + \\tfrac{1}{z}$.
+
+Not a verification for finitely many primes. Not a probabilistic / density statement. **A proof that quantifies uniformly over the infinite set of primes $\\equiv 1 \\pmod 4$.**
+
+This has been open for 78 years. We are not expecting you to definitively close it in 100 turns. We **are** asking you to:
+
+1. **Think hard** about what a proof would *structurally have to look like*, given everything that's already been ruled out.
+2. **Survey** approaches from many disciplines — algebraic number theory, algebraic geometry, additive combinatorics, analytic number theory, the polynomial method, model theory, p-adic methods, modular forms, etc. — and identify which framework is most likely to yield a uniform-over-primes existence statement.
+3. **Try to formalize partial progress** in Lean / Z3 / Prolog. Any verified artifact that constitutes a *new* structural reduction or a *new* sufficient condition for the residual primes is a real result.
+
+## Lean starting material — already proved (re-verify so they're in scope)
+
+The harness has already produced these Lean-verified theorems. Re-verify each via \`lean_define\` so they're available for any combined argument:
+
+\`\`\`lean
+import Mathlib
+
+structure Solution (n : ℕ) : Type where
+  (x y z : ℕ)
+  (hx : x ≠ 0) (hy : y ≠ 0) (hz : z ≠ 0)
+  (h : 4 * x * y * z = n * (x * y + x * z + y * z))
+
+-- Even case: n = 2k → (k, 2k, 2k)
+theorem even_case (k : ℕ) (hk : k ≠ 0) : Solution (2 * k) :=
+  { x := k, y := 2 * k, z := 2 * k,
+    hx := hk, hy := mul_ne_zero (by norm_num) hk, hz := mul_ne_zero (by norm_num) hk,
+    h := by ring }
+
+-- n ≡ 3 mod 4 (Mordell 1967 identity)
+theorem mordell_3mod4 (k : ℕ) : Solution (4 * k + 3) :=
+  { x := k + 1,
+    y := (4 * k + 3) * (k + 1) + 1,
+    z := (4 * k + 3) * (k + 1) * ((4 * k + 3) * (k + 1) + 1),
+    hx := by omega, hy := by omega,
+    hz := mul_ne_zero (mul_ne_zero (by omega) (by omega)) (by omega),
+    h := by ring }
+
+-- Scaling lemma: solve for n ⇒ solve for mn
+theorem solution_scale (n m : ℕ) (hm : m ≠ 0) (s : Solution n) : Solution (m * n) :=
+  { x := m * s.x, y := m * s.y, z := m * s.z,
+    hx := mul_ne_zero hm s.hx, hy := mul_ne_zero hm s.hy, hz := mul_ne_zero hm s.hz,
+    h := by have := s.h; ring_nf; linarith }
+
+-- Hasse reduction: any n with prime factor q ≡ 3 mod 4 is solved by scaling Mordell
+theorem hasse_reduction (q m : ℕ) (k : ℕ) (hq : q = 4 * k + 3) (hm : m ≠ 0)
+    : Solution (m * q) :=
+  solution_scale q m hm (hq ▸ mordell_3mod4 k)
+\`\`\`
+
+Plus prior runs verified sub-residue identities for $n \\equiv 5 \\pmod 8$ and $n \\equiv 5 \\pmod{12}$ (additional partial covers, not load-bearing for the residual).
+
+**Key structural fact**: by the scaling lemma + Hasse reduction, the conjecture for all $n \\equiv 1 \\pmod 4$ reduces to the conjecture for primes $p \\equiv 1 \\pmod 4$. **That reduction is your starting point.**
+
+## What's been tried — KNOWN DEAD ENDS, do not reproduce
+
+This residual is the hard core. Every "obvious" technique has been tried. Spend zero turns on:
+
+1. **Polynomial identity in $p$** of any degree — *Mordell 1967*: blocked because $1$ is a quadratic residue mod every prime. No linear, quadratic, or higher polynomial parameterization in $p$ can solve uniformly for $p \\equiv 1 \\pmod 4$. **This rules out the most natural "guess a closed form" attack.**
+
+2. **Sub-residue covering systems** — Webb, Vaughan, Li, Yang, Ahmadi-Bleicher, Elsholtz pushed this to its limit. Every sub-residue mod $M$ (for any $M$) that's covered by an explicit Mordell-style identity has been catalogued. The remaining residual is not a sub-residue; it can't be punctured away.
+
+3. **Greedy / extended-greedy** — produces 4-term decompositions, not 3-term, for $p \\equiv 1 \\pmod 4$.
+
+4. **Brauer–Manin obstruction** — *Bright & Loughran 2020*: no obstruction. Local solvability is fine; if a global obstruction exists, it lives *deeper* than Brauer-Manin.
+
+5. **Brute-force search** — Salez 2014 verified the conjecture for all primes up to $10^{17}$. A purely computational attack with no structural insight gains nothing.
+
+6. **Heath-Brown 1996 density** — failures have density $O((\\log N)^{-3})$, but no specific prime is excluded. Density-1 results (incl. *arXiv 2602.20036v2*) don't close any individual prime.
+
+7. **Recent unverified preprint** (*arXiv 2511.07465*, Nov 2025) claims a constructive proof via the ED2 identity $(4b-1)(4c-1) = 4P\\delta + 1$. **Unverified by peer review.** The harness's prior run verified this identity holds for the listed primes $p \\in \\{5, ..., 157\\}$ — but did NOT verify the preprint's general construction works for all primes $\\equiv 1 \\pmod 4$. That gap is the core open question.
+
+## Think first: what would a general proof actually require?
+
+Before picking a technique, work out the proof skeleton. A general proof of the residual must:
+
+- **Quantify uniformly** over an infinite set of primes (cannot be a finite case analysis).
+- **Use prime structure beyond polynomial identity in $p$** (Mordell's obstruction blocks the polynomial route).
+- **Either** (a) provide an existential argument (witness exists for each $p$) **without** an explicit closed form in $p$, **or** (b) provide a closed form parameterized by *more than just $p$* (e.g., by $p$ and a quadratic-residue or Frobenius structure mod $p$).
+
+Concretely, the proof shape probably looks like one of:
+
+**Shape (i) — Existence via algebraic-geometry counting.** The Erdős–Straus equation $4xyz = p(xy + xz + yz)$ defines a surface $S_p$ in $\\mathbb{P}^3$. Show $S_p(\\mathbb{Q})$ contains a positive-orthant rational point for every prime $p \\equiv 1 \\pmod 4$. Tools: rational-point density, Hasse principle conditional, elliptic-fiber existence, Manin's conjecture flavor.
+
+**Shape (ii) — Existence via additive combinatorics / polynomial method.** Recast the existence of $(x, y, z)$ as a non-vanishing question for a polynomial $\\Phi_p$ over $\\mathbb{Z}/p\\mathbb{Z}$ or $\\mathbb{Z}/p^k\\mathbb{Z}$. Apply Combinatorial Nullstellensatz, Croot-Lev-Pach style polynomial method, or character sum estimates. Mathlib has \`MvPolynomial.combinatorial_nullstellensatz_exists_eval_nonzero\`.
+
+**Shape (iii) — Existence via Frobenius / quadratic-residue structure.** For each $p \\equiv 1 \\pmod 4$, find a *secondary* parameter $r$ depending on the QR structure of $p$ (e.g., a small prime $q$ such that $p$ is a non-residue mod $q$) and exhibit a solution parameterized by $(p, r)$. The 2011 Ionascu-Wilson sketch goes here. Quadratic reciprocity guarantees such $r$ exists; the question is whether a solution can be uniformly extracted.
+
+**Shape (iv) — Existence via analytic number theory.** Use sieve methods, character sum estimates, or circle method to show that the count of solutions $N_p$ is positive for every $p$ — not just on average. Heath-Brown's density argument suggests $N_p$ is large *on average*; the open question is the worst case.
+
+**Shape (v) — Reduction to a different open problem already known to be tractable.** Reduce the residual to (e.g.) a statement about modular forms, an L-function non-vanishing, or a specific Diophantine question for which Mathlib has more developed infrastructure.
+
+**Pick a shape, justify why it's the most plausible attack given the obstructions, and execute as far as you can.**
+
+## Cross-disciplinary techniques you might pull from
+
+The harness rewards verifiable cross-disciplinary technique imports. Consider:
+
+- **Algebraic geometry**: rational points on surfaces, Hasse principle, Manin's conjecture, elliptic-curve fibers, blow-ups, Kummer surfaces. Mathlib: \`AlgebraicGeometry\`, \`EllipticCurve\`.
+- **Additive combinatorics**: Combinatorial Nullstellensatz, polynomial method (Croot-Lev-Pach), character sum estimates, Plünnecke-Ruzsa, sumset growth. Mathlib: \`MvPolynomial\`, \`Finset.sum\`.
+- **Analytic number theory**: circle method, large sieve, Selberg sieve, character sums, exponential sums, distribution of primes in arithmetic progressions. Mathlib: \`Nat.Prime\`, \`DirichletCharacter\` (limited).
+- **p-adic methods**: Hensel's lemma, $p$-adic interpolation, Iwasawa theory. Mathlib: \`Padic\`.
+- **Modular forms / L-functions**: half-integer weight forms, Shimura correspondence, GRH-conditional bounds. Mathlib: \`ModularForm\` (limited).
+- **Model theory**: definability over $\\mathbb{Z}$, decidability arguments, transfer principles (Ax-Kochen-Ershov for $p$-adic).
+- **Reverse mathematics**: identify the proof-theoretic strength a uniform-over-primes existence proof would require.
+
+The hardest constraint: **whatever technique you pick, you should be able to verify (parts of) the argument using the harness's tools** — Lean for formalization, Z3 for finite instance checks and SMT verification, Prolog for combinatorial / structural reasoning. Pick a route where verification is *possible*, not one that requires unbounded analytic apparatus.
+
+## Process
+
+1. **First turn or two**: re-verify the 7 starting Lean theorems via \`lean_define\` so they're in scope.
+
+2. **Think structurally** about the proof skeleton. Which of shapes (i)–(v) — or which combination — is most plausible? Justify in your verified note. The harness rewards *honest reasoning about what's hard*, not bluster.
+
+3. **Pick ONE attack** and pursue it. Don't bounce between shapes.
+
+4. **Decompose** into formally verifiable sub-claims. Each sub-claim should be either (a) Lean-provable, (b) Z3-verifiable for instances + Lean-provable in general, or (c) Prolog-derivable from combinatorial premises. State the sub-claims explicitly before attacking them.
+
+5. **Verify aggressively**. Use \`audit\` and \`review\` to check your encoding before claiming progress. The audit gate enforces honest scope: don't ship a misframed claim.
+
+6. **If you hit a wall**, document it as a verified negative result. "Approach X fails because of obstruction Y" is a real contribution if Y is novel or not in the literature catalog above. Negative results require the same level of rigor as positive ones.
+
+## Realistic outcome targets
+
+Ranked by likelihood × impact:
+
+- **Likely + meaningful**: a Lean-formalized *new structural reduction* — e.g., reducing the residual to a simpler / more tractable open problem. Even a partial reduction is shippable.
+- **Plausible + meaningful**: a Lean-formalized *new sufficient condition* — e.g., "if Erdős-Straus holds for primes $p \\equiv 1 \\pmod 4$ with such-and-such QR structure, it holds for all." Identifying *which* sub-class is the actual hard core is progress.
+- **Plausible + significant**: empirical disconfirmation of a published claim (e.g., counterexample to a sub-claim of arXiv 2511.07465 or 2602.20036v2), with rigorous SMT verification.
+- **Unlikely + significant**: a verified general proof. Don't promise this; aim for the structural reductions and let any general proof emerge from there.
+
+## Critical reminders
+
+- **The audit gate is active**. Your final \`done()\` answer must pass thesis-vs-problem reflection. If you ship "I verified X for 17 primes" framed as "I proved the conjecture", the audit will reject it. Frame honestly.
+- **The done-gate token check is active**. Final answer must reference the actual verified artifacts.
+- **Don't reproduce known dead ends**. The list above is exhaustive for the obvious attacks. Use it.
+- **Don't conflate empirical instance verification with general proof**. Verifying for primes up to 157 is *not* a proof. Both kinds of artifact are valuable, but their scope is very different — the audit will catch this.
+- **Don't underestimate the difficulty**. 78 years, every Field Medal-adjacent technique applied. If your approach feels easy, you're missing an obstruction. Stop and re-check.
+- **Do think hard**. The harness has the budget for genuine reasoning. Use turns on structural thinking, not just tool-spamming.
+
+## Budget: 100 turns
+
+You have 100 turns to make your best honest attempt at this 78-year-old open problem. Aim for verified structural progress. Ship honestly.`,
+    expectedAnswer:
+      "OPEN. The expected outcome is verified structural progress — a new reduction, a new sufficient condition, or a verified disconfirmation of a recent preprint claim — not a full general proof. Success is measured by: (a) honest framing under the audit gate; (b) any Lean/Z3-verified artifact that goes beyond the literature catalog; (c) explicit identification of which sub-class of primes ≡ 1 mod 4 is the actual residual hard core after applying every available reduction.",
+    maxSteps: 100,
+  },
+
   "erdos-straus-mod1-informed": {
     id: "erdos-straus-mod1-informed",
     type: "OPEN PROBLEM — Erdős–Straus for n ≡ 1 mod 4 (literature-informed)",
