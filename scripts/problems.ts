@@ -492,6 +492,136 @@ Use verify_lean. The standard Mathlib proof unfolds Even as ∃ k, _ = k + k (or
     maxSteps: 6,
   },
 
+  "erdos-straus-mod1-informed": {
+    id: "erdos-straus-mod1-informed",
+    type: "OPEN PROBLEM — Erdős–Straus for n ≡ 1 mod 4 (literature-informed)",
+    difficulty: "very-hard",
+    prompt: `## Status of $n \\equiv 1 \\pmod 4$
+
+A previous run formally proved Erdős–Straus for $n \\equiv 0, 2, 3 \\pmod 4$ in Lean 4 + Mathlib (commit a4c19fd). The remaining $n \\equiv 1 \\pmod 4$ class is the historically hardest and remains open in general.
+
+A subsequent run attempted "creative" approaches and produced a Z3-verified result that no linear-in-$n$ integer parameterization solves the equation identically for $n \\equiv 1 \\pmod{24}$. Literature search confirmed this is a special case of **Mordell (1967)**, who proved the more general theorem that no polynomial identity (of any degree) can cover $n \\equiv r \\pmod p$ when $r$ is a quadratic residue mod $p$. Since $1 = 1^2$ is always a QR, polynomial identities CAN'T crack this class.
+
+This run picks up where that one left off, with **explicit literature awareness** so we don't reproduce known results or attempt known-failed approaches.
+
+## Verified prior work (re-verify as your first move)
+
+The shared structure:
+
+\`\`\`lean
+import Mathlib
+
+structure Solution (n : ℕ) : Type where
+  (x y z : ℕ)
+  (hx : x ≠ 0) (hy : y ≠ 0) (hz : z ≠ 0)
+  (h : 4 * x * y * z = n * (x * y + x * z + y * z))
+\`\`\`
+
+Already proved:
+
+- **$n \\equiv 0 \\pmod 2$** (even case): $(x, y, z) = (k, 2k, 2k)$ for $n = 2k$
+- **$n \\equiv 0 \\pmod 4$**: $(3m, 3m, 3m)$ for $n = 4m$
+- **$n \\equiv 3 \\pmod 4$**: $(k+1, n(k+1)+1, n(k+1) \\cdot (n(k+1)+1))$ for $n = 4k+3$ (Mordell/Webb)
+- **$n \\equiv 5 \\pmod 8$**: $(2(k+1), n(k+1), 2n(k+1))$ for $n = 8k+5$
+- **$n \\equiv 5 \\pmod{12}$**: $(3t+2, (t+1)n, (3t+2)(t+1)n)$ for $n = 12t+5$
+
+Re-verify these via \`lean_define\` first so they're in scope, then attack the residual.
+
+## What's already been tried — DO NOT REPRODUCE
+
+The Erdős–Straus literature is massive. Below is what you should NOT spend turns reinventing:
+
+### Confirmed dead ends
+
+1. **Brute-force computation.** Verified up to $n \\leq 10^{17}$ (Obláth 1948 → Salez 2014). Won't prove the conjecture.
+
+2. **Polynomial identities for $n \\equiv 1 \\pmod p$, any degree.** **Mordell (1967)** proved this is impossible: identities require the residue $r$ to be a *non*-quadratic-residue mod $p$. Since $1$ is a QR for every $p$, no polynomial identity covers $n \\equiv 1 \\pmod p$ uniformly. **Don't attempt linear, quadratic, or higher polynomial parameterizations** — Mordell's quadratic-residue obstruction rules them all out.
+
+3. **Greedy algorithm.** Produces four-term expansions for $n \\equiv 1 \\pmod 4$, not three-term. Useless here.
+
+4. **Complete modular covering systems.** Mathematically impossible by Mordell's result combined with the requirement to cover $n \\equiv 1$ mod every prime.
+
+5. **Linear-in-$n$ parameterization for $n \\equiv 1 \\pmod{24}$.** Already verified (Z3 UNSAT, special case of Mordell). Don't redo.
+
+### Significant partial results (already published)
+
+6. **Webb, Vaughan, Li, Yang, Ahmadi-Bleicher, Elsholtz.** Extended modular identities pushed the natural density of potential counterexamples toward zero.
+
+7. **Heath-Brown (1996).** Density of failures is $O((\\log N)^{-3})$.
+
+8. **Elsholtz & Tao (2013).** Average solution count bounded polylogarithmically.
+
+9. **Bright & Loughran (2020).** *No Manin obstruction* exists — local solvability is fine; the obstruction (if any) is *deeper* than Brauer-Manin. **This is interesting:** rules out one whole class of obstructions.
+
+10. **Ionascu & Wilson (2011).** Quadratic residue strategy: find prime $q$ where $p$ is non-residue mod $q$, then solve for $n \\equiv p \\pmod q$. Theoretical, implementation incomplete.
+
+11. **Recent preprints (2025-2026).** ArXiv 2511.07465 (Nov 2025) claims constructive proof for ALL primes $P \\equiv 1 \\pmod 4$ via methods ED1 (factorization $(γA-c)(γB-c) = c^2$) and ED2 (linear system $(4b-1)(4c-1) = 4Pδ+1$). UNVERIFIED by peer review; treat with appropriate skepticism. ArXiv 2602.20036v2 proves density-1 result via the trick "$n$ has a prime factor $\\equiv 3 \\pmod 4$" (the Hasse-style sub-residue lift).
+
+### What's known to NOT crack it
+
+- Any covering-system approach (Mordell)
+- Any pure greedy / extended-greedy approach
+- Any approach via polynomial identities of bounded degree (Mordell, generalized)
+- Brute force at human-feasible scale (already to $10^{17}$)
+- Brauer-Manin obstruction analysis (Bright-Loughran: no obstruction)
+
+## What might genuinely be under-explored
+
+These are the angles where actual mathematical progress could plausibly come (in approximate order of how Lean-formalisable they are):
+
+### A. Re-verify the recent preprint claims (ED1/ED2 from arXiv 2511.07465)
+
+The ED2 method claims: for every prime $P \\equiv 1 \\pmod 4$, $(4b-1)(4c-1) = 4Pδ+1$ has integer solutions $(δ, b, c)$ giving an Erdős–Straus decomposition. **This is unverified by peer review.** A formal Lean/Z3 verification of the ED2 identity for specific primes (5, 13, 17, 29, 37, 41, ...) would be a real contribution — either confirming or finding a counterexample.
+
+### B. Algebraic geometry on the variety
+
+The equation defines an affine surface $V_n \\subset \\mathbb{A}^3_{\\mathbb{Q}}$. Bright-Loughran 2020 ruled out Manin obstructions. Open question: does $V_n$ have *integer* points beyond the known constructions for $n \\equiv 1 \\pmod 4$? Use Mathlib's algebraic-geometry primitives (\`AlgebraicGeometry.Scheme\`, \`Polynomial.IsAlgClosed\`, etc.) to formalize the variety and analyze its rational/integer point structure.
+
+### C. Mathlib's \`MvPolynomial.combinatorial_nullstellensatz_exists_eval_nonzero\`
+
+A previous run found this lemma in Mathlib. Combinatorial Nullstellensatz (Alon 1999) lets you prove existence of points where a polynomial doesn't vanish. The bridge: re-cast the Erdős–Straus existence as a non-vanishing question over a finite grid in $\\mathbb{Z}/n\\mathbb{Z}$, apply Nullstellensatz. This is technically hard but novel; nobody's bridged it for Erdős–Straus.
+
+### D. Hasse-style prime-factor reduction
+
+ArXiv 2602.20036 reduces composite $n \\equiv 1 \\pmod 4$ via prime-factor analysis: if $n$ has any prime factor $\\equiv 3 \\pmod 4$, the conjecture follows from the $n \\equiv 3 \\pmod 4$ case via division. The remaining cases are products of primes all $\\equiv 1 \\pmod 4$. **Formalize this reduction in Lean** — it would meaningfully cover most $n \\equiv 1 \\pmod 4$ and reduce the open case to "$n$ is a product of primes $\\equiv 1 \\pmod 4$."
+
+### E. Quadratic-residue lift à la Ionascu-Wilson (2011)
+
+For each prime $p \\equiv 1 \\pmod 4$, find a *different* prime $q$ such that $p$ is a non-quadratic-residue mod $q$. Then Mordell's identity for $n \\equiv p \\pmod q$ applies. This was theoretical in 2011; could be made constructive with computer search per $p$.
+
+### F. Verify or refute specific small primes
+
+For each prime $p \\equiv 1 \\pmod 4$ up to (say) $p = 1000$, find an explicit Erdős–Straus decomposition via SMT search. Confirm with verify_template-style cross-encoding. This gives an empirical baseline and may reveal patterns.
+
+## Process
+
+1. **Re-verify** the prior 5 residue-class theorems via \`lean_define\` (so the harness has them in your branch).
+2. **Pick ONE under-explored angle** (A through F above). Don't try multiple at once.
+3. **For each step**, ask: is this a known result I'd be reproducing? If so, skip. The literature catalog above is your guide.
+4. **Formalize what you can** in Lean. Use \`lean_search\` aggressively to find Mathlib's existing primitives.
+5. **Verify** with cross-encoding via \`verify_template\` / \`audit\` / \`review\`.
+6. **Ship honestly**: the done-gate requires your final answer to substantively match verified artifacts.
+
+## Realistic outcomes
+
+- **Most likely**: you formally verify ED2's identity for specific primes $P \\equiv 1 \\pmod 4$ (5, 13, 17, ...), giving empirical confirmation of the unverified 2025 preprint.
+- **Possible**: you formalize the Hasse-style prime-factor reduction (angle D), reducing $n \\equiv 1 \\pmod 4$ to "products of primes $\\equiv 1 \\pmod 4$" — a meaningful Lean contribution.
+- **Significant**: you implement one of Ionascu-Wilson's quadratic-residue lifts in verifiable form for a specific prime class.
+- **Vanishingly unlikely**: a new construction not in the literature.
+
+## Critical reminders
+
+- **Don't reproduce Mordell.** Polynomial identities for $n \\equiv 1 \\pmod p$ are dead. Linear, quadratic, any degree — all blocked by the QR obstruction.
+- **Don't reproduce sub-residue mod-840 decomposition.** Already done.
+- **Don't reproduce greedy.** Doesn't work for this class.
+- **Do consult the catalog above** before each new angle.
+
+## Budget: 100 turns`,
+    expectedAnswer:
+      "Open. The n ≡ 1 mod 4 case of Erdős–Straus remains the historically hardest residue class. Realistic measure of success: any new artifact that is NOT a special case of Mordell 1967, NOT a sub-residue rehash, and NOT a brute-force computation. Examples: formalizing the recent ED2 method for specific primes, formalizing Hasse-style prime-factor reduction (angle D), or applying Combinatorial Nullstellensatz (angle C).",
+    maxSteps: 100,
+  },
+
   "erdos-straus-mod1-formal-transfer": {
     id: "erdos-straus-mod1-formal-transfer",
     type: "OPEN PROBLEM — Erdős–Straus for n ≡ 1 mod 4 (cross-disciplinary FORMAL technique transfer)",
