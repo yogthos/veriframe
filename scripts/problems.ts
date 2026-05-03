@@ -492,6 +492,93 @@ Use verify_lean. The standard Mathlib proof unfolds Even as ∃ k, _ = k + k (or
     maxSteps: 6,
   },
 
+  "erdos-straus-mod1-formal-transfer": {
+    id: "erdos-straus-mod1-formal-transfer",
+    type: "OPEN PROBLEM — Erdős–Straus for n ≡ 1 mod 4 (cross-disciplinary FORMAL technique transfer)",
+    difficulty: "very-hard",
+    prompt: `## The remaining case (and what failed before)
+
+A previous run formally proved the Erdős–Straus conjecture for $n \\equiv 0, 2, 3 \\pmod 4$ (commit a4c19fd). A subsequent attempt at $n \\equiv 1 \\pmod 4$ explicitly asked for "creative cross-disciplinary thinking" and the model defaulted to standard sub-residue decomposition (Mordell/Webb-style identities for $n \\equiv 5 \\pmod 8$ and $n \\equiv 5 \\pmod{12}$). Classical results, no novel mathematics.
+
+That run was misframed. We were asking for unverifiable speculation; the model correctly produced verifiable conventional math instead.
+
+## The actual goal
+
+**Combine known formal techniques from different disciplines in a novel way.**
+
+Every step of your proof must remain rigorously formal — Lean-verifiable, axiomatically sound, no hand-waving. The creativity is in the **choice of which formal technique to import** from a discipline that hasn't been applied to this problem before.
+
+This is concrete, not speculative. Examples of what this kind of cross-disciplinary formal transfer looks like in real mathematical history:
+
+- **Croot–Lev–Pach (2016)**: imported the **polynomial method** from coding theory + combinatorial design theory to crack the cap set conjecture. Each step formal; the novelty was applying degree-bounded polynomial arguments to a problem nobody had tried them on.
+- **Marton/Tao/Green/Manners (2023)**: resolved the Polynomial Freiman-Ruzsa conjecture using **entropy methods from information theory** applied to additive combinatorics. Every step rigorous; the technique transfer was the breakthrough.
+- **Wiles (1995)**: imported **modular forms and Galois representations** into the FLT problem, building on Frey-Serre-Ribet. Each piece formal; the novelty was the combination.
+- **Helfgott (2013)**: resolved Goldbach's weak conjecture via **circle method + computational components**. Standard techniques, novel combination + scale.
+
+In every case, the "creativity" was identifying a formal technique from another field whose abstract structure happens to apply. The verification machinery was an enabler, not an obstacle.
+
+## What this means for our task
+
+Pick a formal technique from a discipline whose application to Erdős–Straus is **non-obvious**. Concrete candidates (each is a real, formal, published technique):
+
+### Algebraic geometry / commutative algebra
+- The Erdős–Straus equation defines a variety $V \\subset \\mathbb{A}^3$ over $\\mathbb{Q}$. Use **Hilbert's Nullstellensatz** or **Gröbner basis computation** to characterise its rational/integer point structure for $n \\equiv 1 \\pmod 4$.
+- Apply **scheme-theoretic descent** or **étale cohomology** to obstruct integer points (in the spirit of Manin obstructions for diophantine equations).
+
+### Combinatorial / additive combinatorics
+- **Combinatorial Nullstellensatz** (Alon 1999): if a multilinear polynomial vanishes on a grid, certain combinatorial structure follows. Applicable here?
+- **Polynomial method à la Croot–Lev–Pach**: degree-bounded polynomial reasoning on the unit-fraction structure.
+- **Plünnecke–Ruzsa inequalities** on the additive structure of the failure set.
+
+### Information theory / probability
+- **Entropy methods** (the PFR breakthrough): bound the entropy of decomposition distributions to force structural constraints.
+- **Lovász Local Lemma**: model failures as bad events on a graph; show they don't all coexist.
+
+### Number theory beyond elementary
+- **L-function / character sum estimates**: failures of Erdős–Straus correlate with sign patterns of Dirichlet characters; use multiplicative number theory's analytic toolkit.
+- **Modular form / theta function** identity: $4/n - (1/x + 1/y + 1/z)$ might admit a theta-series representation whose vanishing yields constructions.
+
+### Computer science / algorithm theory
+- **Sum-of-squares (SOS) hierarchy** from semidefinite programming: bound polynomial nonnegativity rigorously.
+- **Algorithmic information theory**: failures must have low Kolmogorov complexity (bounded by their description); turn this into a counting argument.
+- **Streaming-algorithm sketching arguments**: a formal way to summarise residue structure.
+
+### Mathematical logic
+- **Reverse mathematics**: identify the proof-theoretic strength of Erdős–Straus and reduce to a known classifiable principle.
+- **Model-theoretic transfer**: prove for a non-standard model and transfer back via compactness/Łoś.
+
+## Process
+
+1. **Pick a technique.** ONE specific formal method from a non-obvious discipline. State it precisely.
+2. **Articulate the transfer.** In your prose, spell out concretely how the technique's abstract structure maps onto the Erdős–Straus problem. The bridge is rigorous — every term in the technique should have a counterpart in the problem.
+3. **Identify the load-bearing lemma.** What's the smallest formal claim that, if proven via your imported technique, would close the conjecture (or a meaningful subset of $n \\equiv 1 \\pmod 4$)?
+4. **Formalize the setup in Lean.** Use \`lean_define\` to introduce the imported technique's primitives (as definitions or axioms, citing the source). Mathlib may have some of them; you'll need to add the rest.
+5. **Prove the load-bearing lemma.** Stepwise via \`proof_start\` + \`proof_step\`, with the imported technique's machinery in scope.
+6. **Verify, audit, ship.** The done-gate requires your final answer to substantively reference verified artifacts. Don't ship more than you proved.
+
+## Critical reframings
+
+**This is not speculation.** Every step is formal. The "novelty" is the technique-import choice, not in the proof structure. If your imported technique requires lemmas Mathlib doesn't have, **state them as axioms with explicit sources** (e.g., \`axiom CrootLevPach : ...\` with a comment citing the paper). The harness accepts axioms; it just records them in the artifact.
+
+**Don't retreat to standard techniques after the first failed attempt.** That's what happened last time. If your first technique transfer doesn't yield a proof, **try a second technique transfer from a different discipline**, not a fallback to mod-24 decomposition.
+
+**Mathlib has more than you think.** Search via \`lean_search\` for terms from your chosen discipline. The polynomial method, Nullstellensatz, entropy bounds, character sums, scheme theory — much is in Mathlib.
+
+## Realistic outcomes
+
+- **Most likely**: you formalize a cross-disciplinary technique, apply it to Erdős–Straus, and either prove a partial result that's genuinely new (because the technique-import is novel) OR honestly find that the technique doesn't apply and document why.
+- **Possible**: a sub-residue class of $n \\equiv 1 \\pmod 4$ falls to your novel formal-transfer approach.
+- **Vanishingly unlikely but real**: the full case yields. Would be a publishable result.
+- **Equally valid**: the imported technique doesn't work, but the formalization of "what would it take to apply technique X to Erdős–Straus" is itself a research artifact.
+
+## Budget: 100 turns
+
+Spend turns on the technique-import argument and the bridge-construction. If you find yourself reaching for sub-residue tricks again, stop and re-read the technique catalog above.`,
+    expectedAnswer:
+      "Open. The n ≡ 1 mod 4 case of Erdős–Straus remains the hardest residue class. Realistic measure of success: any verified artifact produced by importing a formal technique from a non-obvious discipline (algebraic geometry, polynomial method, entropy, SOS, Nullstellensatz, etc.) — partial coverage of the open class is meaningful; the technique transfer itself is the contribution.",
+    maxSteps: 100,
+  },
+
   "erdos-straus-mod1-creative": {
     id: "erdos-straus-mod1-creative",
     type: "OPEN PROBLEM — Erdős–Straus for n ≡ 1 mod 4 (cross-disciplinary attempt)",
