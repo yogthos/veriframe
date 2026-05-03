@@ -496,11 +496,61 @@ Use verify_lean. The standard Mathlib proof unfolds Even as ∃ k, _ = k + k (or
     id: "erdos-straus-mod1-formal-transfer",
     type: "OPEN PROBLEM — Erdős–Straus for n ≡ 1 mod 4 (cross-disciplinary FORMAL technique transfer)",
     difficulty: "very-hard",
-    prompt: `## The remaining case (and what failed before)
+    prompt: `## Starting point — RESUMING from prior verified results
 
-A previous run formally proved the Erdős–Straus conjecture for $n \\equiv 0, 2, 3 \\pmod 4$ (commit a4c19fd). A subsequent attempt at $n \\equiv 1 \\pmod 4$ explicitly asked for "creative cross-disciplinary thinking" and the model defaulted to standard sub-residue decomposition (Mordell/Webb-style identities for $n \\equiv 5 \\pmod 8$ and $n \\equiv 5 \\pmod{12}$). Classical results, no novel mathematics.
+Prior runs of this harness produced **Lean 4 + Mathlib proofs** for the Erdős–Straus conjecture in three of four residue classes mod 4. **You are resuming from these verified results** — re-verify them as your first \`lean_define\` calls so they are in scope, then build on them.
 
-That run was misframed. We were asking for unverifiable speculation; the model correctly produced verifiable conventional math instead.
+### Verified prior results (Lean 4 + Mathlib)
+
+The shared \`Solution n\` structure used throughout:
+
+\`\`\`lean
+import Mathlib
+
+structure Solution (n : ℕ) : Type where
+  (x y z : ℕ)
+  (hx : x ≠ 0) (hy : y ≠ 0) (hz : z ≠ 0)
+  (h : 4 * x * y * z = n * (x * y + x * z + y * z))
+\`\`\`
+
+**Residue class $n \\equiv 0 \\pmod 2$** (even): $(k, 2k, 2k)$ for $n = 2k$.
+
+\`\`\`lean
+theorem erdos_even (k : ℕ) (hk : k ≠ 0) : Solution (2 * k) :=
+  { x := k, y := 2 * k, z := 2 * k,
+    hx := hk, hy := mul_ne_zero two_ne_zero hk, hz := mul_ne_zero two_ne_zero hk,
+    h := by ring }
+\`\`\`
+
+**Residue class $n \\equiv 0 \\pmod 4$** refined: $(3m, 3m, 3m)$ for $n = 4m$.
+
+**Residue class $n \\equiv 3 \\pmod 4$**: $(k+1, n(k+1)+1, n(k+1)(n(k+1)+1))$ for $n = 4k+3$.
+
+\`\`\`lean
+theorem erdos_mod4_3 (k : ℕ) :
+    let n := 4 * k + 3
+    Solution n :=
+  let n := 4 * k + 3
+  { x := k + 1,
+    y := n * (k + 1) + 1,
+    z := (n * (k + 1)) * (n * (k + 1) + 1),
+    hx := by omega, hy := by omega,
+    hz := mul_ne_zero (by positivity) (by omega),
+    h := by ring }
+\`\`\`
+
+**Sub-residues of $n \\equiv 1 \\pmod 4$ already covered** (from a follow-up run):
+
+- $n \\equiv 5 \\pmod{12}$: $(3t+2,\\, (t+1)(12t+5),\\, (3t+2)(t+1)(12t+5))$ for $n = 12t+5$.
+- $n \\equiv 5 \\pmod 8$: $(2(k+1),\\, n(k+1),\\, 2n(k+1))$ for $n = 8k+5$.
+
+These are Mordell/Webb/Schinzel-style identities exploiting that $x = (n+3)/4$ collapses the unit-fraction sum. **Standard sub-residue decomposition has been EXHAUSTED** by these constructions plus published mod-840 results — the residual sub-residues within $n \\equiv 1 \\pmod 4$ (specifically $n \\equiv 1 \\pmod{24}$ in part) is exactly what the standard trick stops working on.
+
+### The genuinely open territory
+
+After the above, what remains open within $n \\equiv 1 \\pmod 4$ is approximately the sub-residues where $(n + 3)/4$-style $x$ doesn't yield integer $y, z$ — concretely, $n \\equiv 1 \\pmod{24}$ and a few related sparse classes. These are the historically-hardest ones; they're why the conjecture is open after 78 years.
+
+**Re-verify the prior results as your first move** (so the harness records them in your branch), then attack the residual.
 
 ## The actual goal
 
