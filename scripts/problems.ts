@@ -845,6 +845,184 @@ You have 100 turns to make your best honest attempt at this 78-year-old open pro
     maxSteps: 100,
   },
 
+  "erdos-straus-ed2-general-disproof": {
+    id: "erdos-straus-ed2-general-disproof",
+    type: "OPEN — Disprove arXiv 2511.07465's general δ-parameterized ED2 method (or sharply narrow it)",
+    difficulty: "very-hard",
+    prompt: `## Your task
+
+**Build on the prior verified result and attempt to disprove (or sharply narrow) the GENERAL δ-parameterized ED2 method of arXiv 2511.07465.**
+
+The prior run established a small but real result:
+
+> **(Prior verified result, Z3 UNSAT, audit-gate approved)**
+> The equation $4bc - b - c = 13$ has no positive integer
+> solutions. Equivalently, $(4b - 1)(4c - 1) = 53$ has no
+> positive integer solutions (since 53 is prime). Hence the
+> $\\delta = 1$ specialization of arXiv 2511.07465's ED2 method
+> fails for $p = 13$.
+
+That disproved the simplest case ($\\delta = 1$). The full
+preprint claim is **$\\delta$-parameterized**, and the model in
+the prior run did NOT address the general case. Your job is to
+push that result as far as it will honestly go.
+
+## What the preprint actually claims
+
+ArXiv 2511.07465 (Nov 2025), unverified by peer review, claims:
+
+> For every prime $P \\equiv 1 \\pmod 4$, there exist positive
+> integers $b, c, \\delta$ such that
+> $$(4b - 1)(4c - 1) = 4P\\delta + 1$$
+> AND $A := bc / \\delta$ is a positive integer, in which case
+> $\\frac{4}{P} = \\frac{1}{A} + \\frac{1}{bP} + \\frac{1}{cP}$
+> is a valid 3-term Egyptian decomposition.
+
+So a "valid ED2 representation" of prime $P$ is a triple
+$(\\delta, b, c) \\in \\mathbb{Z}^3_{>0}$ satisfying:
+
+1. **Diophantine constraint**: $(4b - 1)(4c - 1) = 4P\\delta + 1$.
+2. **Mod-4 constraint**: $4b - 1 \\equiv 3 \\pmod 4$ and
+   $4c - 1 \\equiv 3 \\pmod 4$ (automatic from positivity of $b, c$).
+3. **Integrality constraint**: $\\delta \\mid bc$ (so that $A = bc/\\delta$ is a positive integer).
+
+If condition 3 fails for the $(b, c)$ extracted from the
+factorization, that $\\delta$ doesn't yield an Erdős–Straus
+solution.
+
+## What's been checked so far (the foothold)
+
+The prior run verified the following for $p = 13$:
+
+| $\\delta$ | $4P\\delta + 1$ | Factorizations into $(4b-1)(4c-1)$ with $b, c \\geq 1$ | $\\delta \\mid bc$? | ED2 valid? |
+|---|---|---|---|---|
+| 1 | 53 | none (53 is prime; $1 \\cdot 53$ gives $b = 1/2$) | n/a | **NO** (verified UNSAT) |
+
+That's the entire data set. Everything beyond is open territory
+for this run.
+
+## Your concrete tasks
+
+The space of attacks is now narrow and tractable. Pick one (or
+combine):
+
+### Task A — Sharpen the prior disproof
+
+For $p = 13$, exhaustively check $\\delta \\in \\{2, 3, 4, \\ldots, K\\}$ for some bound $K$. For each $\\delta$:
+1. Enumerate factorizations $(4b - 1)(4c - 1) = 52\\delta + 1$ with $b, c \\geq 1$.
+2. For each factorization, check $\\delta \\mid bc$.
+
+If you find a $\\delta$ where ED2 succeeds, then $p = 13$ is **NOT** a counterexample to the general method, and the prior run's framing needs to be sharply narrowed (only the $\\delta = 1$ case is disproved — which the audit already noted).
+
+If you find no $\\delta$ in some explicit range, say what range, and what would be needed to extend the disproof (an asymptotic bound on the necessary $\\delta$ in terms of $P$).
+
+**This task can be done with Z3 in a single \`verify_smt\` per $\\delta$, or one parameterized query over $\\delta$ in a bounded range.**
+
+### Task B — Find a prime where ED2 fails for all bounded $\\delta$
+
+Pick a candidate prime $p \\in \\{17, 29, 37, 41, 53, 61, 73, 89, 97, 101, 109, 113, 137, 149, 157\\}$ (the residual list from prior runs) and exhaustively check ED2 across $\\delta \\in [1, K]$ for some bound $K$. If ED2 succeeds for some $\\delta$ in your range, that prime is NOT a counterexample. If it fails throughout $[1, K]$, ship the counterexample with explicit $K$ and the structural reason (e.g., "$4P\\delta + 1$ is prime for $\\delta \\in [1, K]$" or "the factorizations all violate condition 3").
+
+Caveat: the prior runs verified explicit Erdős–Straus solutions
+for these primes via OTHER methods, so a prime that fails ED2
+across all $\\delta$ doesn't disprove Erdős–Straus — it disproves
+that ED2 is a complete method.
+
+### Task C — Identify a structural obstruction to ED2
+
+Either:
+1. **Find a prime structure (e.g., a Frobenius / quadratic-residue pattern) that makes ED2 always fail** — would give an infinite family of counterexamples to the preprint.
+2. **OR formally prove that ED2 cannot be a complete method**, e.g., a counting argument showing the set of primes with valid ED2 representations has density $< 1$ in the residue class.
+3. **OR formally verify ED2 is complete for some sub-residue** (e.g., $p \\equiv 1 \\pmod{12}$) — would constitute a positive partial result for the preprint.
+
+### Task D — Lean-formalize the prior result
+
+The prior run's UNSAT verification was Z3-only. For this run,
+formalize in Lean: state the lemma "$(4b-1)(4c-1) = 53$ has no
+positive integer solutions" and prove it (53 is prime, only
+factorization is $1 \\cdot 53$, so $4b - 1 = 1 \\Rightarrow b = 1/2$).
+Then state and prove "the $\\delta = 1$ ED2 specialization fails
+for $p = 13$" as a Lean theorem. This would be a small but
+genuine Lean contribution — a verified obstruction to a
+specific construction.
+
+## Mandatory thesis-first protocol
+
+**You MUST call \`thesis\` before any verification toward the goal.** This is the same gate from the prior run, and it worked — the prior run's B5 used three thesis calls to refine its plan as it learned what was tractable. Do the same.
+
+Your thesis must include:
+- **goal**: which task above (A / B / C / D) you're attacking, and the universal statement implied.
+- **subClaims**: the proof skeleton, decomposed into individually verifiable steps. For Task A, each $\\delta$ check could be a sub-claim; for Task C, the structural obstruction needs to be stated as a sub-claim.
+- **technique**: the framework (Z3 enumeration over $\\delta$, structural analysis of $4P\\delta + 1$, Lean formalization, etc.).
+- **nonFiniteJustification**: why your approach yields a result whose scope matches the goal. For Task B, "$K = 100$ exhausts the relevant $\\delta$ range because [reason]". For Task A, "showing failure for $\\delta \\leq K$ means the prior counterexample extends to" [something]. State the limits of your conclusion explicitly so the audit doesn't catch you overclaiming.
+
+## What COUNTS as progress
+
+Building on the prior δ=1 disproof, the gate now treats these as real progress:
+
+1. **Extension of the disproof** — verified UNSAT for $p = 13$ across $\\delta \\in [1, K]$ for any explicit $K \\geq 2$, with a structural argument for why the bound $K$ is meaningful.
+2. **Sharpening of the disproof** — verified that the prior result's framing was too strong (e.g., $\\delta = 2$ gives a valid $(b, c, \\delta)$ for $p = 13$, even if integrality fails). This is a NEGATIVE result on the prior run's framing, but it's verified, audit-passable, and meaningful.
+3. **A new prime counterexample** — verified UNSAT for some $p \\neq 13$ across $\\delta \\in [1, K]$.
+4. **A structural obstruction** — a Lean-formalized lemma that captures why ED2 fails for an infinite family.
+5. **A positive result for the preprint** — verified ED2 is complete for some sub-residue of primes $\\equiv 1 \\pmod 4$.
+
+## What does NOT count
+
+- Re-verifying the $\\delta = 1$ disproof for $p = 13$ (the prior run already did that).
+- Verifying Erdős–Straus solutions for individual primes via OTHER methods (those are known and don't speak to ED2).
+- Claiming "ED2 is disproved" without bounding $\\delta$.
+- Single-$\\delta$ checks framed as general-method disproofs (the prior run already did that and the audit's Check D will catch it).
+
+## Lean starting material — already proved (re-verify as you need)
+
+The prior runs verified these. Re-define via \`lean_define\` if your work needs them in scope:
+
+\`\`\`lean
+def IsSolution (n : ℕ) : Prop :=
+  ∃ (x y z : ℕ) (hx : x ≠ 0) (hy : y ≠ 0) (hz : z ≠ 0),
+    4 * x * y * z = n * (x * y + x * z + y * z)
+
+-- Even, mod-4 = 3 (Mordell), scaling, Hasse-reduction lemmas
+-- (full statements in erdos-straus-residual-primes-proof prompt
+-- if you need them).
+\`\`\`
+
+## SMT / Z3 patterns useful for this problem
+
+For Task A — bounded enumeration over $\\delta$:
+\`\`\`
+(declare-const delta Int)
+(declare-const b Int)
+(declare-const c Int)
+(assert (>= delta 1)) (assert (<= delta 50))
+(assert (>= b 1)) (assert (>= c 1))
+(assert (= (* (- (* 4 b) 1) (- (* 4 c) 1)) (+ (* 4 13 delta) 1)))
+(assert (= (mod (* b c) delta) 0))   ; integrality of A = bc/delta
+(check-sat)
+\`\`\`
+SAT here means a valid ED2 triple exists for $p = 13$ within
+$\\delta \\leq 50$ — the prior result is overstated. UNSAT means
+the disproof extends to that range.
+
+For Task B — same template, swap 13 for another prime.
+
+For both: **declare \`delta\` as a free Int and let Z3 search**, but **always pin the prime $P$ explicitly** so the artifact is about a specific prime, not a wildcard.
+
+## Critical reminders
+
+- **The thesis gate is active.** No audit / done without a thesis. The prior run engaged with it productively.
+- **The audit's Check D is active.** Universal-thesis + instance-only artifact = audit FAIL unless you scope explicitly. Frame your thesis to MATCH what your verified artifact actually shows.
+- **The prior framing was slightly overclaimed.** Don't repeat that — be explicit about $\\delta$ scope, the bound $K$, and what range was actually checked.
+- **Z3 is fast on this** — bounded $\\delta$ enumerations of size 50 take milliseconds. You can afford broad sweeps.
+- **Lean formalization (Task D) is a clean small win** — if the structural attacks don't pan out, ship a Lean formalization of the prior Z3 result. Verified is verified, even when narrow.
+
+## Budget: 100 turns
+
+Sharper than last time. The space is now narrow and tractable. Pick a task, set a thesis, attack it, ship honestly.`,
+    expectedAnswer:
+      "OPEN. Expected outcome: a verified extension of the prior δ=1 disproof — either (a) Z3 UNSAT for p=13 across an explicit larger δ range, (b) a new prime counterexample, (c) a verified structural obstruction, (d) a verified narrowing showing the prior framing was overstated, or (e) a Lean formalization of the prior result. The audit's Check D will reject any framing that overstates δ-scope.",
+    maxSteps: 100,
+  },
+
   "erdos-straus-mod1-informed": {
     id: "erdos-straus-mod1-informed",
     type: "OPEN PROBLEM — Erdős–Straus for n ≡ 1 mod 4 (literature-informed)",
