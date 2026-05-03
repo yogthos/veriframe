@@ -220,6 +220,17 @@ export interface BranchState {
    *  if a subsequent verify produces a NEW confirmed artifact (since
    *  the new artifact hasn't been cross-checked yet). */
   lastReview: ReviewState | null;
+  /** Most recent passing pre-done audit. The audit tool now
+   *  requires a `proposedAnswer` parameter and the LLM auditor
+   *  reflects on whether that proposed answer actually addresses
+   *  the original problem (thesis check) in addition to the
+   *  artifact-soundness check. done() requires this state to be
+   *  set with proposedAnswer matching the done call's answer. */
+  lastAudit: {
+    passed: boolean;
+    proposedAnswer: string;
+    rationale: string;
+  } | null;
   /** True once the harness has injected the "you have a verified
    *  result, time to review and ship" milestone prompt. Fires the
    *  first time the branch has any confirmed artifact. Prevents
@@ -370,7 +381,7 @@ Example:
 
 When verify_template confirms, **the cross-check is built in** — \`done\` is unblocked without needing a separate \`review\` call. For non-templated problems, fall back to \`verify_smt\` and run \`review\` manually.
 
-**audit** — \`{"claim": "..."}\`. **Independent LLM auditor pass over your most recent confirmed artifact.** A separate model call reads the original problem, your claim, and the SMT-LIB / Lean code, then looks specifically for encoding bugs (vacuous SAT, missing distinctness, quantifier scope, polarity, witness sanity). Returns AUDIT PASSED or AUDIT FAILED. On FAILED, the audited artifact is automatically downgraded to refuted. On PASSED, the audit counts as a passing review — \`done\` is unblocked. Use when no template fits and writing an independent encoding for \`review\` is impractical. Slower than \`verify_template\` but generic.
+**audit** — \`{"claim": "...", "proposedAnswer": "..."}\`. **MANDATORY pre-done step.** The auditor (a separate LLM call) reads the original problem, your claim, the SMT-LIB / Lean code, AND your proposed final answer, then performs three checks: (a) **encoding soundness** — vacuous SAT, missing distinctness, quantifier scope, polarity, witness sanity; (b) **verdict-vs-answer alignment** — does your prose accurately describe what the engine actually verified? (catches the "Z3 said yes but I'm reading it as proving X when it actually shows Y" pattern); (c) **thesis-vs-problem reflection** — does the proposed answer address the original problem, or a different (possibly easier) related question? Returns AUDIT PASSED or AUDIT FAILED. On FAILED, the audited artifact is downgraded to refuted; address the auditor's specific concern and re-audit. On PASSED, the audit unlocks \`done\` provided the eventual done()'s answer matches the audited proposedAnswer. \`done\` REQUIRES \`audit\` to have passed with a matching proposedAnswer — this is the harness's last line of defense against shipping a misframed conclusion.
 
 **review** — \`{"claim": "...", "rationale": "...", "independent_smtlib"?: "...", "expectedVerdict"?: "sat"|"unsat", "independent_lean"?: "...", "optOut"?: boolean}\`. **Cross-check a confirmed result with an INDEPENDENT verification before declaring \`done\`.** This is the harness's guard against your-own-encoding-was-wrong false positives. Two distinct encodings of the same property (different style, different tool, different polarity) should agree; if they disagree, one is buggy. Examples of independent encodings:
   - Original encoding asserted distinctness via \`(distinct (+ a_i a_j) ...)\` enumerating all pairs. Independent: existence-of-collision via \`(exists ((a Int) (b Int) (c Int) (d Int)) (and (inS a) ... (= (+ a b) (+ c d))))\` — UNSAT means no collision.
@@ -1010,11 +1021,14 @@ async function runTool(
         model: r.verdict === "sat" ? r.model : undefined,
         claimStatus,
       });
-      // A new confirmation invalidates any prior review (old review
-      // vouches for the OLD result; the model must re-review before
-      // shipping the newer one).
+      // A new confirmation invalidates any prior review/audit (old
+      // ones vouch for the OLD result; the model must re-verify
+      // and re-audit before shipping the newer one).
       if (claimStatus === "confirmed" && session.lastReview) {
         session.lastReview = null;
+      }
+      if (claimStatus === "confirmed" && session.lastAudit) {
+        session.lastAudit = null;
       }
       const hint = checkStuckHint(session);
       const expectedNote =
@@ -1127,6 +1141,7 @@ async function runTool(
           claimStatus: "confirmed",
         });
         if (session.lastReview) session.lastReview = null;
+        if (session.lastAudit) session.lastAudit = null;
       } else if (stepResult.status === "open") {
         lines.push(
           `STEP ACCEPTED — ${stepResult.tacticCount} tactic(s) applied.`,
@@ -1372,6 +1387,7 @@ async function runTool(
           claimStatus: "confirmed",
         });
         if (session.lastReview) session.lastReview = null;
+        if (session.lastAudit) session.lastAudit = null;
       }
       const hint = checkStuckHint(session);
       // On NOT VERIFIED or compile-error, auto-surface relevant
@@ -1543,6 +1559,7 @@ async function runTool(
           claimStatus: "confirmed",
         });
         if (session.lastReview) session.lastReview = null;
+        if (session.lastAudit) session.lastAudit = null;
         // Template confirmation IS its own review — both encodings
         // already cross-checked. Record a passing review so `done`
         // is unblocked without an extra `review` call.
@@ -1576,19 +1593,38 @@ async function runTool(
     }
 
     case "audit": {
-      // Layer 5 — LLM auditor. A sub-LLM call asks an independent
-      // pass over the most recent confirmed artifact whether the
-      // SMT-LIB actually captures the claimed property. Catches
-      // logical bugs that no static check could detect (forall
-      // ordering chains, scope errors, missing constraints).
-      // Slower than verify_template but generic — works for any
-      // claim. Use when no template fits and writing an
-      // independent-encoding `review` is hard.
+      // Layer 5 — LLM auditor. A sub-LLM call performs THREE checks:
+      //   1. Soundness of the most recent confirmed artifact's
+      //      encoding (the original audit purpose: catch forall
+      //      ordering chains, missing distinctness, polarity bugs).
+      //   2. Whether the model's `proposedAnswer` accurately
+      //      reflects the artifact's actual verdict (catch the
+      //      "Z3 said yes but I'm reading it wrong" pattern).
+      //   3. Whether the proposed answer addresses the original
+      //      problem statement (thesis reflection — catches
+      //      "answer is correct about a side claim but doesn't
+      //      address the stated question").
+      //
+      // proposedAnswer is REQUIRED — audit is now a pre-done step
+      // that the model passes the answer it intends to ship through.
+      // done() requires lastAudit to be set with a matching
+      // proposedAnswer, so the model can't ship something the
+      // auditor never saw.
       const claim = typeof args.claim === "string" ? args.claim.trim() : "";
+      const proposedAnswer =
+        typeof args.proposedAnswer === "string"
+          ? args.proposedAnswer.trim()
+          : "";
       if (!claim) {
         return {
           result:
-            "[error] audit requires {claim: string}. State the claim being audited.",
+            "[error] audit requires {claim: string, proposedAnswer: string}. State the claim being audited.",
+        };
+      }
+      if (!proposedAnswer) {
+        return {
+          result:
+            "[error] audit requires {claim, proposedAnswer}. `proposedAnswer` is the prose answer you intend to ship via done() — the auditor will check it against the original problem statement and the verified artifact. done() requires that the audit it sees matches the answer you actually ship.",
         };
       }
       if (!llm) {
@@ -1610,15 +1646,17 @@ async function runTool(
             "[audit error] no confirmed artifact in this branch to audit. Run a verify_* call first.",
         };
       }
-      // Build the auditor prompt. Keep it tight: this is a
-      // soundness check, not a creativity exercise. The model is
-      // asked to look for specific failure patterns we've seen.
+      // Build the auditor prompt. The auditor checks three things:
+      // (1) artifact soundness, (2) verdict-vs-answer alignment,
+      // (3) thesis-vs-problem reflection.
       const auditorPrompt = [
-        "You are an independent verification auditor. Your only job is to find encoding bugs in formal-verification artifacts. Be skeptical — finding a flaw is more valuable than rubber-stamping.",
+        "You are an independent verification auditor. Your job is to find both encoding bugs in formal-verification artifacts AND framing/claim mismatches in the model's proposed answer. Be skeptical — finding a flaw is more valuable than rubber-stamping.",
         "",
-        `Original problem statement:\n${session.problem.slice(0, 4000)}`,
+        `Original problem statement:\n${session.problem.slice(0, 5000)}`,
         "",
-        `Model's claim being audited:\n${target.claim}`,
+        `Model's PROPOSED ANSWER (intended to be shipped via done()):\n${proposedAnswer.slice(0, 3000)}`,
+        "",
+        `Most recent confirmed artifact's claim:\n${target.claim}`,
         "",
         `${target.kind === "smt" ? "SMT-LIB" : "Lean"} the model wrote, plus engine verdict (${target.verdict ?? "n/a"}):`,
         "```",
@@ -1628,18 +1666,31 @@ async function runTool(
           ? `Witness model: ${JSON.stringify(target.model)}`
           : "",
         "",
-        "Audit checklist — look for these specific failure patterns:",
-        "  1. **Vacuous satisfiability**: did the formula constrain WHAT THE CLAIM IMPLIES, or did Z3/Lean satisfy a subset that doesn't capture the property?",
-        "  2. **Missing distinctness**: if the claim is about distinct values (Sidon, AP-free, coloring), are the underlying variables ASSERTED distinct, or could the witness collapse them to a single value?",
-        "  3. **Quantifier scope**: any forall/exists with bounded variables — does the body's restriction (e.g., ordering chain `i ≤ j ≤ k ≤ l`) miss cases the claim covers?",
-        "  4. **Polarity / direction**: is the asserted formula the property itself, or its negation? Does the engine's verdict match what the model said it should mean?",
-        "  5. **Witness sanity**: if SAT, does the model's witness satisfy every claim-relevant constraint? If the witness has a value that violates a stated bound or repeats where distinctness was implied, that's a bug.",
+        "Audit checklist — three categories:",
+        "",
+        "**A. Encoding soundness (artifact-level):**",
+        "  A1. **Vacuous satisfiability**: did the formula constrain WHAT THE CLAIM IMPLIES, or did Z3/Lean satisfy a subset that doesn't capture the property?",
+        "  A2. **Missing distinctness**: are the underlying variables ASSERTED distinct, or could the witness collapse them?",
+        "  A3. **Quantifier scope**: any forall/exists with bounded variables — does the body's restriction miss cases the claim covers?",
+        "  A4. **Polarity / direction**: is the asserted formula the property itself, or its negation?",
+        "  A5. **Witness sanity**: if SAT, does the witness satisfy every claim-relevant constraint?",
+        "",
+        "**B. Verdict-vs-answer alignment:**",
+        "  B1. Does the proposed answer accurately describe what the engine actually verified? (Catch: 'I read Z3's SAT as proving X but it actually shows Y'.)",
+        "  B2. If the answer cites a 'counterexample' or 'refutation' of an external work, was the right thing actually refuted? (Catch: 'I tested a guessed mapping and concluded the published mapping is wrong'.)",
+        "  B3. Does the answer's confidence match the artifact's strength? (No over-claiming partial results as full theorems.)",
+        "",
+        "**C. Thesis-vs-problem reflection:**",
+        "  C1. Re-read the original problem. What was actually asked?",
+        "  C2. Does the proposed answer address that question, or does it answer a different (possibly easier) related question?",
+        "  C3. Are there gaps between what the problem requested and what the answer delivers? Are those gaps acknowledged honestly?",
+        "  C4. Is the answer's framing accurate, or does it overclaim novelty / scope?",
         "",
         "Respond in this exact format:",
         "  Verdict: AUDIT PASSED  — OR — Verdict: AUDIT FAILED",
-        "  Reasoning: <2-4 sentences>",
+        "  Reasoning: <3-6 sentences covering the three categories>",
         "",
-        "If AUDIT FAILED, name the specific failure pattern from the checklist and a concrete witness or counterexample where possible.",
+        "If AUDIT FAILED, name the specific failure pattern (e.g., 'B2: refutes a guessed mapping, not the actual paper's method' or 'C2: answer addresses small primes only, problem asked for general proof') and recommend the concrete fix.",
       ].join("\n");
       let auditorReply: string;
       try {
@@ -1662,9 +1713,8 @@ async function runTool(
       const failed = /AUDIT\s+FAILED/i.test(reply);
       const passed = /AUDIT\s+PASSED/i.test(reply);
       if (failed && !passed) {
-        // Downgrade the audited artifact: flip claimStatus to
-        // refuted so it doesn't surface as confirmed in the final
-        // answer or unblock done().
+        // Downgrade the audited artifact AND record the failed
+        // audit (so done() can see the model attempted but failed).
         const idx = session.verifiedArtifacts.indexOf(target);
         if (idx >= 0) {
           session.verifiedArtifacts[idx] = {
@@ -1672,32 +1722,39 @@ async function runTool(
             claimStatus: "refuted",
           };
         }
-        // Clear any prior review for this claim — the audit
-        // contradicts it.
         session.lastReview = null;
+        session.lastAudit = {
+          passed: false,
+          proposedAnswer,
+          rationale: reply.slice(0, 500),
+        };
         return {
-          result: `AUDIT FAILED — auditor identified a bug in the verification:\n\n${reply.slice(0, 1500)}\n\nThe artifact has been downgraded from CONFIRMED to REFUTED. Investigate and re-verify before declaring \`done\`.`,
+          result: `AUDIT FAILED — auditor identified a bug or framing mismatch:\n\n${reply.slice(0, 1500)}\n\nThe artifact has been downgraded from CONFIRMED to REFUTED. Address the auditor's specific concern and re-audit before declaring \`done\`. Common fixes: rephrase the proposed answer to match what was actually verified, narrow the scope of the claim, or run a new verify_* targeting what the audit said was missing.`,
           category: "failure",
         };
       }
       if (passed && !failed) {
-        // Audit passes — record this as a passing review state
-        // (treat it like a manual review with the auditor as the
-        // independent check).
+        // Audit passes — set BOTH lastReview (so legacy review-gate
+        // is satisfied) AND lastAudit (so the new pre-done audit-
+        // gate is satisfied with the proposedAnswer recorded).
         session.lastReview = {
           passed: true,
           claim,
           rationale: `LLM audit on "${target.claim.slice(0, 60)}…": ${reply.slice(0, 200)}`,
         };
+        session.lastAudit = {
+          passed: true,
+          proposedAnswer,
+          rationale: reply.slice(0, 500),
+        };
         return {
-          result: `AUDIT PASSED — auditor reviewed the artifact and found no encoding bugs.\n\n${reply.slice(0, 1500)}\n\nReview state set; you may call \`done\`.`,
+          result: `AUDIT PASSED — auditor approved the artifact and the proposed answer.\n\n${reply.slice(0, 1500)}\n\nReview + audit state set; you may call \`done\` with the same answer.`,
           category: "success",
         };
       }
-      // Auditor reply was ambiguous (no PASSED/FAILED marker, or
-      // both). Surface raw to the model.
+      // Auditor reply was ambiguous.
       return {
-        result: `[audit ambiguous] Auditor returned a reply without a clear PASSED/FAILED marker. Read it and decide:\n\n${reply.slice(0, 2000)}`,
+        result: `[audit ambiguous] Auditor returned a reply without a clear PASSED/FAILED marker. Read it and decide. Re-call audit with a refined proposedAnswer if needed.\n\n${reply.slice(0, 2000)}`,
       };
     }
 
@@ -1886,6 +1943,47 @@ async function runTool(
           return { result: lines.join("\n") };
         }
       }
+      // Soundness gate 3 (the audit-and-thesis-reflection check):
+      // require an `audit` to have passed with the SAME proposed
+      // answer the model is now shipping. The audit's LLM checks
+      // (a) artifact-soundness, (b) verdict-vs-answer alignment,
+      // (c) thesis-vs-problem reflection — catching the failure
+      // mode where the model verified something correctly but
+      // misframes its conclusion (e.g., "counterexample to
+      // preprint" when actually a counterexample to a guessed
+      // mapping).
+      if (confirmedArtifacts.length > 0) {
+        const audit = session.lastAudit;
+        if (!audit) {
+          return {
+            result:
+              "[done blocked] Your branch has confirmed artifacts but no `audit` has been run on your proposed answer. Before shipping, call `audit` with `claim` describing your finding AND `proposedAnswer` containing the exact text you intend to ship via `done`. The auditor will check the artifact's encoding soundness, the verdict-vs-answer alignment, AND whether your answer addresses the original problem (thesis reflection). This is the harness's last line of defense against shipping a misframed conclusion about correctly-verified artifacts.",
+          };
+        }
+        if (!audit.passed) {
+          return {
+            result: `[done blocked] Your most recent audit FAILED. The auditor identified a problem with the artifact, the answer, or the answer-vs-problem alignment:\n\n${audit.rationale}\n\nAddress the auditor's concern and re-run \`audit\` with a corrected proposedAnswer before shipping.`,
+          };
+        }
+        // Check the audit was about THIS answer (not a stale audit
+        // of an earlier draft).
+        const auditAns = audit.proposedAnswer.toLowerCase().replace(/\s+/g, " ").trim();
+        const shipAns = answer.toLowerCase().replace(/\s+/g, " ").trim();
+        // Loose match: the shipped answer must overlap substantially
+        // with the audited proposedAnswer. We compare distinctive
+        // tokens (same machinery as the substantiation check).
+        const auditTokens = extractDoneGateTokens(audit.proposedAnswer);
+        const shipTokens = extractDoneGateTokens(answer);
+        const intersection = [...auditTokens].filter((t) => shipTokens.has(t));
+        const required = Math.max(1, Math.floor(auditTokens.size / 2));
+        if (auditTokens.size > 0 && intersection.length < required) {
+          return {
+            result: `[done blocked] Your audit's proposedAnswer doesn't substantively match the answer you're shipping. Audit covered ${auditTokens.size} distinctive tokens; only ${intersection.length} appear in the shipped answer (need ≥ ${required}). Re-run \`audit\` with proposedAnswer matching what you intend to ship, OR ship the answer the audit covered.\n\nAudited answer (excerpt): ${audit.proposedAnswer.slice(0, 300)}\nShipping answer (excerpt): ${answer.slice(0, 300)}`,
+          };
+        }
+        // Mark loose-match
+        void auditAns; void shipAns;
+      }
       session.finalAnswer = answer;
       session.status = "done";
       const reviewNote = session.lastReview
@@ -1895,7 +1993,8 @@ async function runTool(
             ? " (review: passed)"
             : " (review: FAILED — answer is suspect)"
         : "";
-      return { result: `OK — finalizing${reviewNote}.`, done: true };
+      const auditNote = session.lastAudit?.passed ? " (audit: passed)" : "";
+      return { result: `OK — finalizing${reviewNote}${auditNote}.`, done: true };
     }
 
     case "give_up": {
@@ -2199,6 +2298,7 @@ async function createBranch(
     consecutiveFailures: 0,
     leanEnv: null,
     lastReview: null,
+    lastAudit: null,
     milestonePromptInjected: false,
     messages: [{ role: "user", content: buildInitialUserMessage(problem) }],
   };
