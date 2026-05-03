@@ -669,7 +669,42 @@ This has been open for 78 years. We are not expecting you to definitively close 
 
 1. **Think hard** about what a proof would *structurally have to look like*, given everything that's already been ruled out.
 2. **Survey** approaches from many disciplines — algebraic number theory, algebraic geometry, additive combinatorics, analytic number theory, the polynomial method, model theory, p-adic methods, modular forms, etc. — and identify which framework is most likely to yield a uniform-over-primes existence statement.
-3. **Try to formalize partial progress** in Lean / Z3 / Prolog. Any verified artifact that constitutes a *new* structural reduction or a *new* sufficient condition for the residual primes is a real result.
+3. **Commit** to a structural plan via the \`thesis\` tool BEFORE running any verification work toward the goal. (See "Mandatory thesis-first protocol" below.)
+4. **Try to formalize partial progress** in Lean / Z3 / Prolog. Any verified artifact that constitutes a *new* structural reduction or a *new* sufficient condition for the residual primes is a real result.
+
+## Mandatory thesis-first protocol
+
+**You MUST call \`thesis\` before any verification targeting the goal.** Without a registered thesis, the \`audit\` tool will refuse to run, and \`done\` therefore cannot succeed. This is a hard structural gate, not a suggestion.
+
+A human mathematician doesn't write a proof before they know what they're trying to prove and what the proof skeleton looks like. The harness now enforces the same discipline. Your \`thesis\` call commits you (in writing) to:
+
+- **goal**: the universal statement you intend to prove (e.g., "for every prime $p \\equiv 1 \\pmod 4$, $\\exists x, y, z \\in \\mathbb{N}^+$ with $4/p = 1/x + 1/y + 1/z$").
+- **subClaims**: the proof skeleton, decomposed into formally verifiable steps. Each sub-claim should be small enough to attack with a Lean proof, an SMT verification of a structural lemma, or a Prolog derivation.
+- **technique**: the proof framework you've chosen (e.g., "Combinatorial Nullstellensatz over $\\mathbb{Z}/p\\mathbb{Z}$", "rational-point density on the surface $4xyz = p(xy+xz+yz)$", "Frobenius-structure case split via quadratic reciprocity").
+- **nonFiniteJustification**: your explicit explanation for *why this approach scales to the infinite class* — what makes the argument uniform over primes rather than just verifying instances.
+
+You can call \`thesis\` again to update the plan as you learn what's tractable; later calls overwrite, and the old audit/review state is cleared. **A change of approach is fine and expected; an absence of approach is not.**
+
+## Penalty for finite-instance work
+
+**The harness now actively penalizes the failure mode of "verify small instances and frame them as a general proof."** Specifically:
+
+- The audit's new **Check D (thesis-vs-artifact alignment)** compares your verified artifact against your registered thesis. If your thesis is universal ("for all primes $p \\equiv 1 \\pmod 4$") and your artifact is instance-only ("$p = 5$ has solution $(2, 5, 10)$"), **the audit will fail** unless your proposed answer explicitly scopes itself to the verified instances and disavows the universal claim.
+- **Verifying for finitely many primes is not progress toward the goal.** Even verifying for primes up to $10^{17}$ is not progress (Salez 2014 already did that). Only artifacts that move structurally toward the universal claim count.
+- If you find yourself instinctively reaching for "let me just check $p = 5$ in Z3," **stop and re-read your thesis.** Either (a) the small-instance check is a sub-claim in your thesis (e.g., a base case for an induction or a small-case verification of a lemma's hypothesis), in which case state that explicitly, or (b) it's not, and you're drifting back to the easy thing — refocus on the structural sub-claims.
+
+The harness's prior run on this exact problem (no thesis gate) ended at 65 turns with 26 verified artifacts, **all** small-prime instance verifications, and **zero \`audit\` calls** — because the model never produced a structural argument worth auditing. This gate exists to prevent that exact failure mode.
+
+What COUNTS as progress under the new gate:
+- A Lean-formalized reduction theorem ("if $X$ holds for primes $p \\equiv 1 \\pmod 4$, then Erdős–Straus does too").
+- An SMT-verified structural lemma over symbolic $p$ (e.g., a polynomial identity that holds for all $p$ in some sub-class, with $p$ a free symbolic constant — not pinned to a value).
+- A Prolog derivation showing that a registered sub-claim follows from accepted premises.
+- A verified counterexample to a sub-claim or to a published claim (with the counterexample explicitly tested against the published statement, not a guessed mapping).
+
+What does NOT count:
+- "$p = 5$ has solution $(2, 5, 10)$" (and similar instance verifications), unless framed as a base case in a thesis-registered induction.
+- "I checked the ED2 identity for primes 5, 13, 17, ..., 157" (also done in the prior run; redundant).
+- A Lean theorem that just re-states the prior verified theorems.
 
 ## Lean starting material — already proved (re-verify so they're in scope)
 
@@ -770,17 +805,19 @@ The hardest constraint: **whatever technique you pick, you should be able to ver
 
 ## Process
 
-1. **First turn or two**: re-verify the 7 starting Lean theorems via \`lean_define\` so they're in scope.
+1. **First turn**: re-verify the 7 starting Lean theorems via \`lean_define\` so they're in scope.
 
-2. **Think structurally** about the proof skeleton. Which of shapes (i)–(v) — or which combination — is most plausible? Justify in your verified note. The harness rewards *honest reasoning about what's hard*, not bluster.
+2. **Think structurally** about the proof skeleton. Which of shapes (i)–(v) — or which combination — is most plausible given the obstructions catalogued above? **Reason it out in prose first.** The harness rewards *honest reasoning about what's hard*, not bluster.
 
-3. **Pick ONE attack** and pursue it. Don't bounce between shapes.
+3. **Call \`thesis\`** to commit to your structural plan: \`{goal, subClaims, technique, nonFiniteJustification}\`. This is the gate — without it, audit (and therefore done) cannot fire. The thesis is your proof skeleton in writing; the audit will hold each verified artifact against it.
 
-4. **Decompose** into formally verifiable sub-claims. Each sub-claim should be either (a) Lean-provable, (b) Z3-verifiable for instances + Lean-provable in general, or (c) Prolog-derivable from combinatorial premises. State the sub-claims explicitly before attacking them.
+4. **Pick ONE attack** and pursue it. Don't bounce between shapes. (You can call \`thesis\` again later to refine, but don't oscillate.)
 
-5. **Verify aggressively**. Use \`audit\` and \`review\` to check your encoding before claiming progress. The audit gate enforces honest scope: don't ship a misframed claim.
+5. **Decompose into the registered sub-claims** and attack them: each verified artifact should advance a specific sub-claim. State which sub-claim each \`verify_*\` call targets in your prose.
 
-6. **If you hit a wall**, document it as a verified negative result. "Approach X fails because of obstruction Y" is a real contribution if Y is novel or not in the literature catalog above. Negative results require the same level of rigor as positive ones.
+6. **Verify aggressively**. Use \`audit\` and \`review\` to check your encoding and your scope before claiming progress. The audit gate enforces honest framing: don't ship a misframed claim, and don't ship a finite-instance check as a general proof.
+
+7. **If you hit a wall**, document it as a verified negative result. "Approach X fails because of obstruction Y" is a real contribution if Y is novel or not in the literature catalog above. Update your thesis to reflect the change in approach and continue. Negative results require the same level of rigor as positive ones.
 
 ## Realistic outcome targets
 

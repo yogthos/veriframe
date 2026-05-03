@@ -231,6 +231,25 @@ export interface BranchState {
     proposedAnswer: string;
     rationale: string;
   } | null;
+  /** The branch's CURRENT structural-proof thesis. Set by the
+   *  `thesis` tool — the model commits, BEFORE running verification
+   *  toward the goal, to (a) what it intends to prove, (b) the
+   *  proof skeleton as a list of sub-claims, (c) the technique
+   *  family, (d) an explicit justification for why this approach
+   *  scales to the universal claim rather than just verifying
+   *  finitely many instances. The audit gate refuses to run if no
+   *  thesis is registered, and the auditor cross-references the
+   *  thesis against the verified artifact (catches "claimed
+   *  general proof but verified only small primes"). Later
+   *  `thesis` calls overwrite — committing to a different route
+   *  is allowed and tracked in the trace. */
+  thesis: {
+    goal: string;
+    subClaims: string[];
+    technique: string;
+    nonFiniteJustification: string;
+    setAtTurn: number;
+  } | null;
   /** True once the harness has injected the "you have a verified
    *  result, time to review and ship" milestone prompt. Fires the
    *  first time the branch has any confirmed artifact. Prevents
@@ -381,7 +400,9 @@ Example:
 
 When verify_template confirms, **the cross-check is built in** — \`done\` is unblocked without needing a separate \`review\` call. For non-templated problems, fall back to \`verify_smt\` and run \`review\` manually.
 
-**audit** — \`{"claim": "...", "proposedAnswer": "..."}\`. **MANDATORY pre-done step.** The auditor (a separate LLM call) reads the original problem, your claim, the SMT-LIB / Lean code, AND your proposed final answer, then performs three checks: (a) **encoding soundness** — vacuous SAT, missing distinctness, quantifier scope, polarity, witness sanity; (b) **verdict-vs-answer alignment** — does your prose accurately describe what the engine actually verified? (catches the "Z3 said yes but I'm reading it as proving X when it actually shows Y" pattern); (c) **thesis-vs-problem reflection** — does the proposed answer address the original problem, or a different (possibly easier) related question? Returns AUDIT PASSED or AUDIT FAILED. On FAILED, the audited artifact is downgraded to refuted; address the auditor's specific concern and re-audit. On PASSED, the audit unlocks \`done\` provided the eventual done()'s answer matches the audited proposedAnswer. \`done\` REQUIRES \`audit\` to have passed with a matching proposedAnswer — this is the harness's last line of defense against shipping a misframed conclusion.
+**thesis** — \`{"goal": "...", "subClaims": ["...", "..."], "technique": "...", "nonFiniteJustification": "..."}\`. **Required before \`audit\` (and therefore before \`done\`).** Commit to the structural plan you'll execute. \`goal\` is the universal statement you intend to prove (e.g., "for every prime p ≡ 1 mod 4, ∃ x,y,z ∈ ℕ⁺ with 4/p = 1/x + 1/y + 1/z"). \`subClaims\` is the proof skeleton, decomposed into formally verifiable steps. \`technique\` names the proof framework (e.g., "Combinatorial Nullstellensatz over Z/pZ", "Frobenius-structure case split", "rational-point counting on the surface S_p"). \`nonFiniteJustification\` is your explicit explanation for WHY this approach scales to the infinite/universal class — what makes the argument uniform-over-primes (or uniform-over-the-class) rather than just verifying finitely many instances. **Why this gate exists:** without a thesis, models default to verifying small instances of the easy parts and frame them as "general progress." The audit gate cross-checks each verified artifact against the registered thesis: if your thesis is universal and your artifact is instance-only, the audit will fail. **Calling \`thesis\` again overwrites** — committing to a different route is allowed but clears prior audit/review state. State your thesis EARLY (before any verify_* targeting the goal) so you have a reference to plan against; refine it as you learn what's tractable.
+
+**audit** — \`{"claim": "...", "proposedAnswer": "..."}\`. **MANDATORY pre-done step.** The auditor (a separate LLM call) reads the original problem, **your registered thesis**, your claim, the SMT-LIB / Lean code, AND your proposed final answer, then performs four checks: (a) **encoding soundness** — vacuous SAT, missing distinctness, quantifier scope, polarity, witness sanity; (b) **verdict-vs-answer alignment** — does your prose accurately describe what the engine actually verified? (catches the "Z3 said yes but I'm reading it as proving X when it actually shows Y" pattern); (c) **thesis-vs-problem reflection** — does the proposed answer address the original problem, or a different (possibly easier) related question?; (d) **thesis-vs-artifact alignment (NEW)** — does the verified artifact advance a registered sub-claim? if the registered thesis is universal but the artifact verifies finitely many instances, the audit fails unless the answer explicitly scopes itself to those instances. Returns AUDIT PASSED or AUDIT FAILED. On FAILED, the audited artifact is downgraded to refuted; address the auditor's specific concern and re-audit. On PASSED, the audit unlocks \`done\` provided the eventual done()'s answer matches the audited proposedAnswer. \`done\` REQUIRES \`audit\` to have passed with a matching proposedAnswer — this is the harness's last line of defense against shipping a misframed conclusion. Requires \`thesis\` to be set first.
 
 **review** — \`{"claim": "...", "rationale": "...", "independent_smtlib"?: "...", "expectedVerdict"?: "sat"|"unsat", "independent_lean"?: "...", "optOut"?: boolean}\`. **Cross-check a confirmed result with an INDEPENDENT verification before declaring \`done\`.** This is the harness's guard against your-own-encoding-was-wrong false positives. Two distinct encodings of the same property (different style, different tool, different polarity) should agree; if they disagree, one is buggy. Examples of independent encodings:
   - Original encoding asserted distinctness via \`(distinct (+ a_i a_j) ...)\` enumerating all pairs. Independent: existence-of-collision via \`(exists ((a Int) (b Int) (c Int) (d Int)) (and (inS a) ... (= (+ a b) (+ c d))))\` — UNSAT means no collision.
@@ -1592,6 +1613,85 @@ async function runTool(
       };
     }
 
+    case "thesis": {
+      // Layer 4.5 — structural-thesis commitment. The model commits,
+      // BEFORE running verification toward the goal, to (a) what it
+      // intends to prove (universal goal statement), (b) the proof
+      // skeleton as a list of named sub-claims, (c) the technique
+      // family it'll use, (d) an explicit justification for why this
+      // approach scales to the universal claim rather than just
+      // verifying finitely many instances.
+      //
+      // The audit gate refuses to run without a thesis; the auditor
+      // cross-references the thesis against the verified artifact to
+      // catch "claimed general proof but verified only small primes"
+      // and similar finite-vs-universal mismatches. Calling thesis
+      // again later overwrites — committing to a different route is
+      // fine and shows up in the trace.
+      const goal = typeof args.goal === "string" ? args.goal.trim() : "";
+      const technique =
+        typeof args.technique === "string" ? args.technique.trim() : "";
+      const nonFiniteJustification =
+        typeof args.nonFiniteJustification === "string"
+          ? args.nonFiniteJustification.trim()
+          : "";
+      const subClaimsRaw = args.subClaims;
+      if (!goal) {
+        return {
+          result:
+            "[error] thesis requires {goal: string, subClaims: string[], technique: string, nonFiniteJustification: string}. `goal` is the universal statement you intend to prove (e.g., \"for every prime p ≡ 1 mod 4, ∃ x,y,z ∈ ℕ⁺ with 4/p = 1/x + 1/y + 1/z\").",
+        };
+      }
+      if (!technique) {
+        return {
+          result:
+            "[error] thesis requires {goal, subClaims, technique, nonFiniteJustification}. `technique` names the proof framework (e.g., \"Combinatorial Nullstellensatz over Z/pZ\", \"rational-point counting on the surface S_p\", \"Frobenius-structure case split\").",
+        };
+      }
+      if (!nonFiniteJustification) {
+        return {
+          result:
+            "[error] thesis requires {goal, subClaims, technique, nonFiniteJustification}. `nonFiniteJustification` is your explicit explanation for why this approach scales to the infinite class — the audit gate uses this to penalize finite-instance work that's framed as a general proof. State explicitly what makes the argument uniform-over-primes (or uniform-over-the-class).",
+        };
+      }
+      if (!Array.isArray(subClaimsRaw) || subClaimsRaw.length === 0) {
+        return {
+          result:
+            "[error] thesis requires {goal, subClaims, technique, nonFiniteJustification}. `subClaims` is a non-empty array of strings — the proof skeleton, decomposed into formally verifiable steps. Each sub-claim should be small enough to attack with a Lean proof / SMT verification / Prolog derivation.",
+        };
+      }
+      const subClaims: string[] = [];
+      for (const c of subClaimsRaw) {
+        if (typeof c !== "string" || c.trim().length === 0) {
+          return {
+            result:
+              "[error] thesis.subClaims must be a non-empty array of non-empty strings. Each entry is one structural step in your proof.",
+          };
+        }
+        subClaims.push(c.trim());
+      }
+      const previous = session.thesis;
+      session.thesis = {
+        goal,
+        subClaims,
+        technique,
+        nonFiniteJustification,
+        setAtTurn: session.turns.length + 1,
+      };
+      // A new thesis invalidates any prior audit/review — the
+      // model has changed routes and any verified artifact must be
+      // re-evaluated against the new goal.
+      session.lastAudit = null;
+      session.lastReview = null;
+      const note = previous
+        ? `Thesis OVERWRITTEN. Previous goal: "${previous.goal.slice(0, 120)}". Prior audit/review state cleared — re-run audit against the new thesis before \`done\`.`
+        : "Thesis registered. The audit gate will now check verified artifacts against this thesis (technique, sub-claims, and the non-finite justification).";
+      return {
+        result: `OK — thesis committed.\n  goal: ${goal.slice(0, 200)}\n  technique: ${technique.slice(0, 200)}\n  sub-claims: ${subClaims.length} step(s)\n${subClaims.map((c, i) => `    ${i + 1}. ${c.slice(0, 200)}`).join("\n")}\n  non-finite justification: ${nonFiniteJustification.slice(0, 300)}\n\n${note}\n\nNext: attack the sub-claims with Lean / SMT / Prolog. Each verified sub-claim is a real step toward the goal. Avoid finite-instance verifications that don't advance the registered sub-claims — the audit gate now penalizes that pattern explicitly.`,
+        category: "success",
+      };
+    }
+
     case "audit": {
       // Layer 5 — LLM auditor. A sub-LLM call performs THREE checks:
       //   1. Soundness of the most recent confirmed artifact's
@@ -1633,6 +1733,16 @@ async function runTool(
             "[audit error] no LLM client available in this context. The auditor needs to call the model.",
         };
       }
+      // Gate: audit requires a registered thesis. Without one, the
+      // auditor has no structural reference for whether the artifact
+      // advances the claim. Forces the model to commit to a proof
+      // skeleton BEFORE shipping.
+      if (!session.thesis) {
+        return {
+          result:
+            "[audit blocked] No thesis registered for this branch. Before audit, call `thesis` with {goal, subClaims, technique, nonFiniteJustification} — the audit gate uses your registered thesis as the structural reference for whether your verified artifacts advance the proof. This catches the failure mode where a model verifies finitely many small instances and tries to ship them as a 'general proof' — without a registered thesis the auditor can't tell those apart.",
+        };
+      }
       // Find the most recent confirmed artifact for this claim.
       // We match loosely (claim text contains the same first words)
       // since the claim phrasing in audit may differ slightly.
@@ -1649,10 +1759,21 @@ async function runTool(
       // Build the auditor prompt. The auditor checks three things:
       // (1) artifact soundness, (2) verdict-vs-answer alignment,
       // (3) thesis-vs-problem reflection.
+      const thesis = session.thesis!;
+      const thesisBlock = [
+        `Model's REGISTERED THESIS (committed before any verification toward the goal):`,
+        `  goal: ${thesis.goal}`,
+        `  technique: ${thesis.technique}`,
+        `  sub-claims (proof skeleton):`,
+        ...thesis.subClaims.map((c, i) => `    ${i + 1}. ${c}`),
+        `  non-finite justification: ${thesis.nonFiniteJustification}`,
+      ].join("\n");
       const auditorPrompt = [
         "You are an independent verification auditor. Your job is to find both encoding bugs in formal-verification artifacts AND framing/claim mismatches in the model's proposed answer. Be skeptical — finding a flaw is more valuable than rubber-stamping.",
         "",
         `Original problem statement:\n${session.problem.slice(0, 5000)}`,
+        "",
+        thesisBlock,
         "",
         `Model's PROPOSED ANSWER (intended to be shipped via done()):\n${proposedAnswer.slice(0, 3000)}`,
         "",
@@ -1686,11 +1807,17 @@ async function runTool(
         "  C3. Are there gaps between what the problem requested and what the answer delivers? Are those gaps acknowledged honestly?",
         "  C4. Is the answer's framing accurate, or does it overclaim novelty / scope?",
         "",
+        "**D. Thesis-vs-artifact alignment (NEW — uses the registered thesis above):**",
+        "  D1. Does the verified artifact actually advance one of the registered sub-claims? Name the sub-claim it advances. If it advances none, this is a D-fail.",
+        "  D2. Is the artifact's scope CONSISTENT with the thesis's stated scope? **Critical finite-vs-universal check:** if the thesis is universal (\"for all primes p ≡ 1 mod 4...\") and the artifact verifies only specific instances (\"p=5 has solution (2,5,10)\"), this is a D-fail UNLESS the proposed answer explicitly scopes its claim to the verified instances and disavows the universal claim.",
+        "  D3. Does the proposed answer match the thesis's scope? If the thesis is universal but the answer ships only instance verifications without saying so, D-fail. If the thesis was abandoned (artifact contradicts the registered technique without an explicit thesis update), D-fail.",
+        "  D4. Does the non-finite justification ACTUALLY hold for the verified artifact? If the model justified the route as \"polynomial method scales to all primes\" but the artifact is a Z3 SAT for one prime, the justification doesn't carry — D-fail.",
+        "",
         "Respond in this exact format:",
         "  Verdict: AUDIT PASSED  — OR — Verdict: AUDIT FAILED",
-        "  Reasoning: <3-6 sentences covering the three categories>",
+        "  Reasoning: <4-7 sentences covering the four categories>",
         "",
-        "If AUDIT FAILED, name the specific failure pattern (e.g., 'B2: refutes a guessed mapping, not the actual paper's method' or 'C2: answer addresses small primes only, problem asked for general proof') and recommend the concrete fix.",
+        "If AUDIT FAILED, name the specific failure pattern (e.g., 'B2: refutes a guessed mapping, not the actual paper's method' or 'C2: answer addresses small primes only, problem asked for general proof' or 'D2: thesis claims universal proof but artifact verifies p ∈ {5,13,17} only') and recommend the concrete fix.",
       ].join("\n");
       let auditorReply: string;
       try {
@@ -2011,7 +2138,7 @@ async function runTool(
 
     default:
       return {
-        result: `[error] unknown tool "${name}". Valid: add_rule, retract_rule, commit, verify, verify_smt, verify_template, verify_lean, lean_define, lean_search, proof_start, proof_step, proof_state, proof_undo, proof_close, proof_abandon, assume, discharge, review, audit, done, give_up.`,
+        result: `[error] unknown tool "${name}". Valid: add_rule, retract_rule, commit, verify, verify_smt, verify_template, verify_lean, lean_define, lean_search, proof_start, proof_step, proof_state, proof_undo, proof_close, proof_abandon, assume, discharge, review, thesis, audit, done, give_up.`,
       };
   }
 }
@@ -2207,10 +2334,35 @@ function buildBranchTurnContext(
     { role: "system", content: SYSTEM_PROMPT },
     ...branch.messages,
   ];
+  // If this branch has a registered thesis, surface it in every
+  // turn's context so the model keeps the structural plan in view.
+  // Without this the thesis is buried in the message history and
+  // the model drifts back to instance-only verification within a
+  // few turns.
+  const extras: string[] = [];
+  if (branch.thesis) {
+    const t = branch.thesis;
+    extras.push(
+      [
+        `Your registered thesis (set at turn ${t.setAtTurn}; the audit gate references this):`,
+        `  goal: ${t.goal}`,
+        `  technique: ${t.technique}`,
+        `  sub-claims:`,
+        ...t.subClaims.map((c, i) => `    ${i + 1}. ${c}`),
+        `  non-finite justification: ${t.nonFiniteJustification}`,
+        `  → each verify_* call should advance a sub-claim. If you've lost the thread, re-issue \`thesis\` with a refined plan.`,
+      ].join("\n"),
+    );
+  }
   // Filter out failures from THIS branch — the branch already saw
   // those in its own message history. Only show others' failures.
   const others = state.globalFailureLog.filter((f) => f.branchId !== branch.id);
-  if (others.length === 0) return base;
+  if (others.length === 0) {
+    if (extras.length > 0) {
+      return [...base, { role: "user", content: extras.join("\n\n") }];
+    }
+    return base;
+  }
   // Most-recent N — slice(-N) keeps the tail. Older failures get
   // dropped first when the log overflows since fresher failures are
   // more likely to inform the model's next move.
@@ -2234,7 +2386,8 @@ function buildBranchTurnContext(
   // runs we should compact older turns into a summary instead of
   // sending verbatim. Out of scope for the K=5 beam rewrite — file
   // when we hit a context-window cliff.
-  return [...base, { role: "user", content: lines.join("\n") }];
+  const tail = [...extras, lines.join("\n")].join("\n\n");
+  return [...base, { role: "user", content: tail }];
 }
 
 /**
@@ -2299,6 +2452,7 @@ async function createBranch(
     leanEnv: null,
     lastReview: null,
     lastAudit: null,
+    thesis: null,
     milestonePromptInjected: false,
     messages: [{ role: "user", content: buildInitialUserMessage(problem) }],
   };
