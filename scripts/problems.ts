@@ -492,6 +492,165 @@ Use verify_lean. The standard Mathlib proof unfolds Even as ∃ k, _ = k + k (or
     maxSteps: 6,
   },
 
+  "erdos-straus-residual-primes": {
+    id: "erdos-straus-residual-primes",
+    type: "OPEN PROBLEM — Erdős–Straus for primes p ≡ 1 mod 4 (the genuinely open residual)",
+    difficulty: "very-hard",
+    prompt: `## The residual after all prior runs
+
+After the harness's prior runs, the Erdős–Straus conjecture is **Lean-formally proved** for these classes:
+
+| Class | Construction |
+|---|---|
+| $n \\equiv 0 \\pmod 2$ (even) | $(k, 2k, 2k)$ for $n = 2k$ |
+| $n \\equiv 0 \\pmod 4$ refined | $(3m, 3m, 3m)$ for $n = 4m$ |
+| $n \\equiv 3 \\pmod 4$ (Mordell) | $(k+1,\\, n(k+1)+1,\\, n(k+1)(n(k+1)+1))$ for $n = 4k+3$ |
+| $n \\equiv 5 \\pmod 8$ (sub-residue) | $(2(k+1),\\, n(k+1),\\, 2n(k+1))$ for $n = 8k+5$ |
+| $n \\equiv 5 \\pmod{12}$ (sub-residue) | $(3t+2,\\, (t+1)n,\\, (3t+2)(t+1)n)$ for $n = 12t+5$ |
+| $n \\equiv 1 \\pmod 4$ with prime factor $q \\equiv 3 \\pmod 4$ (Hasse) | scale Mordell solution for $q$ by $m = n/q$ |
+
+Plus the supporting **scaling lemma**:
+$$
+\\text{If } (x, y, z) \\text{ solves } \\tfrac{4}{n} = \\tfrac{1}{x}+\\tfrac{1}{y}+\\tfrac{1}{z}, \\text{ then } (mx, my, mz) \\text{ solves } \\tfrac{4}{mn} = \\tfrac{1}{mx}+\\tfrac{1}{my}+\\tfrac{1}{mz}.
+$$
+
+## Reduction to primes
+
+By the scaling lemma, **the residual case reduces to PRIMES $p \\equiv 1 \\pmod 4$**:
+
+If $n \\equiv 1 \\pmod 4$ and every prime factor of $n$ is $\\equiv 1 \\pmod 4$ (the only remaining open class), write $n = p \\cdot m$ where $p$ is one such prime. Then a solution for $p$ scales to a solution for $n$. So Erdős–Straus for the residual class follows from:
+
+**Open conjecture (the actual residual):** *for every prime $p \\equiv 1 \\pmod 4$, there exist positive integers $x, y, z$ with $\\tfrac{4}{p} = \\tfrac{1}{x} + \\tfrac{1}{y} + \\tfrac{1}{z}$.*
+
+This is the **genuinely open** part of Erdős–Straus. The set of such primes is infinite (Dirichlet) and its density is $1/2$ among odd primes. Computer search has verified the conjecture for all such primes up to $p \\leq 10^{17}$ (Salez 2014).
+
+## Lean starting material (re-verify these as your first calls)
+
+Re-verify each via \`lean_define\` so they're all in scope:
+
+\`\`\`lean
+import Mathlib
+
+structure Solution (n : ℕ) : Type where
+  (x y z : ℕ)
+  (hx : x ≠ 0) (hy : y ≠ 0) (hz : z ≠ 0)
+  (h : 4 * x * y * z = n * (x * y + x * z + y * z))
+
+-- Even case
+theorem even_case (k : ℕ) (hk : k ≠ 0) : Solution (2 * k) :=
+  { x := k, y := 2 * k, z := 2 * k,
+    hx := hk, hy := mul_ne_zero (by norm_num) hk, hz := mul_ne_zero (by norm_num) hk,
+    h := by ring }
+
+-- n ≡ 3 mod 4 (Mordell)
+theorem mordell_3mod4 (k : ℕ) :
+    Solution (4 * k + 3) :=
+  { x := k + 1,
+    y := (4 * k + 3) * (k + 1) + 1,
+    z := (4 * k + 3) * (k + 1) * ((4 * k + 3) * (k + 1) + 1),
+    hx := by omega,
+    hy := by omega,
+    hz := mul_ne_zero (mul_ne_zero (by omega) (by omega)) (by omega),
+    h := by ring }
+
+-- Scaling lemma: solve for n ⇒ solve for mn
+theorem solution_scale (n m : ℕ) (hm : m ≠ 0)
+    (s : Solution n) : Solution (m * n) :=
+  { x := m * s.x, y := m * s.y, z := m * s.z,
+    hx := mul_ne_zero hm s.hx, hy := mul_ne_zero hm s.hy, hz := mul_ne_zero hm s.hz,
+    h := by have := s.h; ring_nf; linarith }
+
+-- Hasse reduction: q ≡ 3 mod 4 prime factor ⇒ Solution
+theorem hasse_reduction (q m : ℕ) (k : ℕ)
+    (hq : q = 4 * k + 3) (hm : m ≠ 0) : Solution (m * q) :=
+  solution_scale q m hm (hq ▸ mordell_3mod4 k)
+\`\`\`
+
+## What's been tried for primes $p \\equiv 1 \\pmod 4$ — DO NOT REPRODUCE
+
+This residual has been picked at for 78 years. Known dead ends:
+
+1. **Polynomial identities of any degree** — Mordell (1967): impossible because $1$ is a quadratic residue mod every prime. **No linear, quadratic, or higher polynomial parameterization in $p$ can solve uniformly for $p \\equiv 1 \\pmod{4}$.**
+
+2. **Greedy / extended-greedy** — produces 4-term expansions, not 3-term, for $p \\equiv 1 \\pmod 4$.
+
+3. **Brute-force computer search** — already verified to $p \\leq 10^{17}$.
+
+4. **Brauer–Manin obstruction analysis** — Bright & Loughran (2020): no obstruction exists. Local solvability is fine; if a global obstruction exists it's *deeper* than Brauer-Manin.
+
+5. **Standard sub-residue covering systems** — Webb, Vaughan, Li, Yang, Ahmadi-Bleicher, Elsholtz pushed this technique to its natural limit. The remaining residual (primes $\\equiv 1 \\pmod 4$ NOT in any covered sub-residue) is irreducibly open.
+
+6. **Heath-Brown's density argument** (1996) — shows failures have density $O((\\log N)^{-3})$ but doesn't eliminate any specific prime.
+
+## Under-explored angles for the residual primes
+
+These are angles that have either (a) recent unverified preprints, (b) Mathlib infrastructure available, or (c) been suggested in the literature but not formally executed:
+
+### Angle A: Verify ED2 identity for specific primes (recent unverified preprint)
+
+**ArXiv 2511.07465 (Nov 2025), unverified by peer review**, claims a constructive proof for all primes $P \\equiv 1 \\pmod 4$ via the identity
+$$
+(4b - 1)(4c - 1) \;=\; 4P\\delta + 1
+$$
+yielding a parameterization $(\\delta, b, c) \\in \\mathbb{Z}^3$ that solves Erdős–Straus.
+
+**Concrete first task**: for each prime $p \\in \\{5, 13, 17, 29, 37, 41, 53, 61, 73, 89, 97, 101, 109, 113, 137, 149, 157, ...\\}$, find integer $(\\delta, b, c)$ satisfying ED2 and the Erdős–Straus equation. Use \`verify_smt\` or \`verify_template\` to confirm. If you find primes where ED2 fails (no integer $(\\delta, b, c)$ satisfies), that's a *counterexample to a recent preprint*, which is a real result.
+
+### Angle B: Multiplicative lifting via Mathlib
+
+You already have the scaling lemma. Combined with the residual reducing to primes, prove formally:
+
+> "If for every prime $p \\equiv 1 \\pmod 4$, $\\frac{4}{p}$ has a 3-term Egyptian decomposition, then for every $n$ that's a product of primes all $\\equiv 1 \\pmod 4$, $\\frac{4}{n}$ has a 3-term Egyptian decomposition."
+
+This is the multiplicative lift; it reduces the residual to the prime case formally. Use Mathlib's \`Nat.Prime\` machinery + induction on prime factorization. This formal reduction theorem isn't in Mathlib.
+
+### Angle C: Combinatorial Nullstellensatz for fixed $p$
+
+A previous run found \`MvPolynomial.combinatorial_nullstellensatz_exists_eval_nonzero\` in Mathlib but didn't bridge it. The bridge: for fixed $p \\equiv 1 \\pmod 4$, recast the existence of $(x, y, z)$ as a non-vanishing polynomial question over $\\mathbb{Z}/p^k\\mathbb{Z}$ for sufficient $k$. This is technically demanding but formally Lean-able.
+
+### Angle D: Quadratic-residue lift à la Ionascu-Wilson (2011)
+
+For each prime $p \\equiv 1 \\pmod 4$, find a *different* prime $q$ such that $p$ is a non-quadratic-residue mod $q$ (always exists by quadratic reciprocity + density). Apply Mordell-style identity for $n \\equiv p \\pmod q$. Was theoretical in 2011; could be made constructive with computer search per $p$.
+
+### Angle E: Empirical small-prime verification via Z3
+
+For each prime $p \\equiv 1 \\pmod 4$ up to (say) $p = 1000$, use Z3's existential search with bounded $(x, y, z)$ to find an explicit decomposition. This is computationally easy per $p$. Empirical pattern detection might suggest a structural construction.
+
+### Angle F: Connection to elliptic curves over $\\mathbb{Q}$
+
+The Erdős–Straus equation $4xyz - n(yz + xz + xy) = 0$ defines an algebraic surface. For specific $n$, this surface has elliptic-curve sub-structure. Mathlib has \`EllipticCurve\` and \`AlgebraicGeometry.EllipticCurve\` infrastructure. Could rational-point analysis on the elliptic-curve fiber for primes $p \\equiv 1 \\pmod 4$ yield existence?
+
+## Process
+
+1. **Re-verify** the 4 prior Lean theorems (even, Mordell, scaling, Hasse) so they're in your branch's env.
+2. **Pick ONE under-explored angle** (A through F above). Don't try multiple at once.
+3. **For each step**, ask: is this a known result I'd be reproducing? Use the literature catalog above as your guide — DON'T attempt polynomial identities for $p \\equiv 1 \\pmod 4$, DON'T attempt Brauer-Manin, DON'T retry covering systems.
+4. **Formalize what you can** in Lean. Use \`lean_search\` aggressively to find Mathlib's primitives. The harness rewards verifiable cross-disciplinary technique imports.
+5. **Verify** with cross-encoding via \`verify_template\` / \`audit\` / \`review\`.
+6. **Ship honestly**: the done-gate requires your final answer to substantively match verified artifacts. Don't claim more than you proved.
+
+## Realistic outcomes
+
+- **Most likely**: you verify the ED2 identity (angle A) for several specific small primes via Z3, confirming or surfacing a counterexample to the 2025 preprint.
+- **Plausible**: you formalize the multiplicative lift (angle B) — a clean Lean theorem that's not in Mathlib.
+- **Significant**: you reach a verifiable structural argument from one of angles C, D, F that goes beyond known partial results.
+- **Vanishingly unlikely**: a full proof for the residual class. We're not expecting to crack this; we're looking for *any verified artifact that goes beyond the literature catalog*.
+
+## Critical reminders
+
+- **Don't reproduce Mordell's QR obstruction.** Polynomial identities for $p \\equiv 1 \\pmod p$ are blocked. Linear, quadratic, any degree.
+- **Don't redo the Hasse reduction.** It's already proved (this run's prior result).
+- **Don't redo sub-residue mod-840.** Already done.
+- **Don't redo brute force at the human-feasible scale.** Already done to $10^{17}$.
+- **Do consult the angle catalog** before each new turn.
+- **Do verify the 2025 preprint claims empirically** — this is the most concrete novel-leaning task.
+
+## Budget: 100 turns`,
+    expectedAnswer:
+      "Open. The hard core of Erdős–Straus is now reduced to: for every prime p ≡ 1 mod 4, does 4/p have a 3-term Egyptian fraction decomposition? Realistic measure of success: any verified artifact going beyond the literature catalog — empirical verification of recent unverified preprint, formalization of multiplicative lift, or genuine cross-disciplinary technique import via Mathlib infrastructure.",
+    maxSteps: 100,
+  },
+
   "erdos-straus-mod1-informed": {
     id: "erdos-straus-mod1-informed",
     type: "OPEN PROBLEM — Erdős–Straus for n ≡ 1 mod 4 (literature-informed)",
