@@ -269,32 +269,83 @@ Both compiled cleanly under Lean 4 + Mathlib. The Z3
 cross-checks (artifacts 3-5 of the run) independently verified
 the same identities.
 
-## Honest assessment of novelty
+## Honest assessment of novelty (post literature search)
 
-**Mathematically novel:** No.
+After writing the initial draft of this report I ran a
+literature search to confirm whether the negative result is new.
+**It is not.** The result B3 produced is a special case of a
+well-known theorem.
 
-The negative result (no linear parameterization works for $n
-\equiv 1 \pmod{24}$) is almost certainly known as a folk
-observation in the Erdős–Straus literature — the conjecture
-remains open precisely *because* such elementary parameterization
-strategies don't crack the residual.
+### Mordell (1967)
 
-**Formally novel:** Yes, modestly.
+L. J. Mordell proved the following obstruction in *Diophantine
+Equations* (1967): a polynomial identity providing an
+Erdős–Straus solution for $n \equiv r \pmod p$ can exist only
+when $r$ is **not** a quadratic residue mod $p$.
 
-The Z3-verified formal proof of this negative result, plus its
-Lean-companion structural setup, are not in standard
-Erdős–Straus references. As a verified artifact, the
-"linear-parameterization rule-out for $n \equiv 1 \pmod{24}$"
-formalization is new.
+Since $1 = 1^2$ is a quadratic residue mod every prime, **no
+polynomial identity** (linear, quadratic, or any degree) can
+cover $n \equiv 1 \pmod p$ for any modulus $p$ — including
+$n \equiv 1 \pmod 3$, $n \equiv 1 \pmod{24}$, and any finer
+sub-residue.
 
-**Strategically meaningful:** Yes.
+This is more general than B3's result, which handles only
+linear parameterizations and the specific residue $n \equiv 1
+\pmod{24}$.
 
-A formally-checked negative lemma closes off a class of
-approaches that future attacks won't waste effort on. It also
-serves as a structural hint: the problem requires *genuinely
-nonlinear* techniques (rational, modular, algebraic-geometric,
-or analytic), which is precisely the cross-disciplinary
-direction the prompt was pushing toward.
+### Terence Tao (blog, 2011)
+
+In his "Tag Archives: Erdős–Straus conjecture" series, Tao
+states the obstruction explicitly:
+
+> "an application of the quadratic reciprocity law shows that
+> these congruence relations cannot eliminate quadratic
+> residues, only quadratic non-residues … this rules out any
+> approach based on using polynomial combinations of $p$ and
+> dividing into cases based on residue classes."
+
+### What this means for the artifact
+
+| Claim | Honest verdict |
+|---|---|
+| The mathematical result B3 produced | A **special case** of Mordell (1967) |
+| Z3-formal verification of this special case | Probably new as a *machine-checkable* artifact (no published SMT/Lean encoding of Mordell's quadratic-residue obstruction that I could find) |
+| Cross-disciplinary technique transfer succeeded | **No** — B3 retreated from Combinatorial Nullstellensatz / Gröbner basis to a direct SMT encoding of a known elementary obstruction |
+| Strategic value | Modest — confirms (in a machine-checkable form) an obstruction that's been known and explicitly cited for 59 years |
+
+So the run produced **no new mathematics**, and the
+cross-disciplinary push **did not succeed in importing a
+formal technique that yielded a positive result**. The verified
+artifact is a small formalization of a folk-named theorem.
+
+This is an honest negative finding. The harness reproduces
+known results in machine-checked form; it did not produce the
+kind of cross-disciplinary creative contribution the prompt was
+asking for.
+
+### Lessons
+
+1. **Always literature-search verified novel-looking claims.**
+   The first draft of this report described B3's result as
+   "almost certainly known as a folk observation" — that
+   phrasing was too soft. The result is explicitly attributed
+   to Mordell (1967), cited by Tao, and prominent enough to
+   appear in the Wikipedia article on the conjecture. Without
+   the search, the report would have over-claimed novelty.
+
+2. **Cross-disciplinary technique-import is genuinely hard for
+   open problems.** Even with explicit prompting and Mathlib's
+   Combinatorial Nullstellensatz available, the model defaulted
+   (after exploration) to encoding a classical obstruction it
+   could verify. This is a structural finding about the
+   harness/model interaction, not a defect of the verification
+   stack.
+
+3. **The harness's job is rigorous verification, not novelty
+   detection.** Distinguishing "novel" from "known" requires
+   external literature search; the harness can verify what's
+   submitted to it, but it can't tell you whether the same
+   result was published in 1967.
 
 ## What this run says about the harness
 
