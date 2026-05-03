@@ -1023,6 +1023,160 @@ Sharper than last time. The space is now narrow and tractable. Pick a task, set 
     maxSteps: 100,
   },
 
+  "erdos-straus-universal-thesis": {
+    id: "erdos-straus-universal-thesis",
+    type: "OPEN — Attempt a UNIVERSAL claim about Erdős–Straus / ED2 (in principle, not by enumeration)",
+    difficulty: "very-hard",
+    prompt: `## Your task — a universal claim, not a list of primes
+
+**Attempt to prove (or disprove) a UNIVERSAL claim about the Erdős–Straus residual class. Not for a fixed list of primes — for ALL primes $p \\equiv 1 \\pmod 4$ uniformly, or for an explicit infinite sub-family.**
+
+Verifying $4/p$ has a 3-term Egyptian decomposition for one more prime is not the goal here. **The goal is a structural statement that's true (or false) in principle, for an infinite class.** The model should produce either:
+
+- A verified universal theorem ("for all primes $p$ in class $C$, [property]") — a real proof.
+- A verified universal disproof ("there is no proof of [statement] using only [tools / framework $F$]") — a meta-result.
+- A verified reduction ("[universal claim about Erdős–Straus] $\\Leftrightarrow$ [easier-to-attack universal claim about $F$]") — pushes the problem somewhere new.
+- A verified obstruction ("any proof of [claim] in framework $F$ requires [structural ingredient missing in $F$]") — narrows the search space honestly.
+
+Pick any of these. **Be creative about the thesis.** Combine techniques from disciplines that haven't been combined here before. The harness rewards verified structural results; it penalizes finite-instance enumeration framed as general claims (audit Check D will catch it).
+
+## Verified knowledge to start from
+
+The harness has, across prior runs, already produced these verified results. **Re-state them as Lean axioms / definitions if your work needs them in scope** (use \`lean_define\`):
+
+### Lean-verified: residue-class coverage
+
+\`\`\`lean
+def IsSolution (n : ℕ) : Prop :=
+  ∃ (x y z : ℕ) (hx : x ≠ 0) (hy : y ≠ 0) (hz : z ≠ 0),
+    4 * x * y * z = n * (x * y + x * z + y * z)
+\`\`\`
+
+| Class | Verified construction |
+|---|---|
+| $n \\equiv 0 \\pmod 2$ | $(k, 2k, 2k)$ for $n = 2k$ |
+| $n \\equiv 0 \\pmod 4$ | $(3m, 3m, 3m)$ for $n = 4m$ |
+| $n \\equiv 3 \\pmod 4$ (Mordell 1967) | $(k+1, n(k+1)+1, n(k+1)(n(k+1)+1))$ for $n = 4k+3$ |
+| $n \\equiv 5 \\pmod 8$ | $(2(k+1), n(k+1), 2n(k+1))$ for $n = 8k+5$ |
+| $n \\equiv 5 \\pmod{12}$ | $(3t+2, (t+1)n, (3t+2)(t+1)n)$ for $n = 12t+5$ |
+| $n$ has prime factor $q \\equiv 3 \\pmod 4$ | scale Mordell's solution for $q$ by $m = n/q$ (Hasse reduction) |
+
+Plus the **scaling lemma**: $(x,y,z)$ solves $4/n$ ⇒ $(mx,my,mz)$ solves $4/(mn)$.
+
+**Combined consequence:** the Erdős–Straus conjecture for the entire residual class reduces to **primes $p \\equiv 1 \\pmod 4$** with all prime factors of $n$ in $\\{p : p \\equiv 1 \\pmod 4\\}$.
+
+### Z3-verified: ED2 instance (latest run)
+
+The arXiv 2511.07465 ED2 method is $\\delta$-parameterized: $(4b-1)(4c-1) = 4P\\delta + 1$, $A = bc/\\delta$, $\\frac{4}{P} = \\frac{1}{A} + \\frac{1}{bP} + \\frac{1}{cP}$.
+
+The latest run **verified one ED2 instance**: $(b, c, \\delta) = (2, 4, 2)$ is a valid ED2 triple for $p = 13$. Diophantine constraint: $7 \\cdot 15 = 105 = 4 \\cdot 13 \\cdot 2 + 1$. Integrality: $\\delta = 2$ divides $bc = 8$. The induced Erdős–Straus solution is the classical $(4, 26, 52)$.
+
+That instance does NOT generalize to a proof of ED2 completeness — it's one cell in an infinite table. **Closing the universal claim "ED2 succeeds for every prime $p \\equiv 1 \\pmod 4$" would prove the Erdős–Straus residual.**
+
+## Approaches that have already been tried — DO NOT REPRODUCE
+
+The residual class has been picked at for 78 years. Spend zero turns on:
+
+1. **Polynomial identity in $p$ of any degree** (Mordell 1967): blocked because $1$ is a quadratic residue mod every prime $p \\equiv 1 \\pmod 4$. No closed form in $p$ alone solves uniformly.
+2. **Sub-residue covering systems** (Webb, Vaughan, Li, Yang, Ahmadi-Bleicher, Elsholtz): pushed to limit. Remaining residual is irreducibly open under this technique.
+3. **Greedy / extended-greedy**: produces 4-term, not 3-term.
+4. **Brauer–Manin obstruction analysis** (Bright & Loughran 2020): no obstruction. Local solvability fine.
+5. **Brute-force search**: Salez 2014 verified to $p \\leq 10^{17}$.
+6. **Heath-Brown 1996 density**: failures have density $O((\\log N)^{-3})$ but doesn't pin down any specific prime.
+7. **Density-1 Hasse-style results** (arXiv 2602.20036v2): cover almost all primes ≡ 1 mod 4 but the residual is still infinite.
+8. **Single-$\\delta$ ED2 disproof** (the harness's own prior run): we now know $\\delta = 1$ fails for $p = 13$ but $\\delta = 2$ succeeds. The general-$\\delta$ method is still standing.
+9. **Finite verification of more primes**: would just be more cells — does not yield a universal claim.
+
+## Where creativity is needed
+
+The harness has not seen any of these *combinations* tried — these are open avenues for novel theses:
+
+### Avenue I — Density / counting arguments
+Use analytic number theory to bound the density of primes $p \\equiv 1 \\pmod 4$ for which **no** $\\delta \\leq f(p)$ yields a valid ED2 representation. If you can prove this density is zero (i.e., every prime $\\equiv 1 \\pmod 4$ has an ED2 representation eventually), Erdős–Straus is closed for the residual. Tools: Dirichlet's theorem on primes in APs, sieve methods, character sums, distribution of products $4P\\delta+1$ over a search range.
+
+### Avenue II — Existence-of-good-factorization
+Recast ED2's success at prime $P$ as: **does there exist $\\delta \\geq 1$ such that $4P\\delta + 1$ has a factorization $(4b-1)(4c-1)$ with both factors $\\equiv 3 \\pmod 4$ AND $\\delta \\mid bc$?** This is purely a question about multiplicative structure of integers near $4P\\delta+1$. Known related results: average number of divisors with constraints, Erdős–Ko–Rado-style structure, multiplicative independence of $4P\\delta+1$ for varying $\\delta$.
+
+If you can prove *some* $\\delta \\leq P^c$ (for a small constant $c$) **always** yields such a factorization, you've closed Erdős–Straus.
+
+### Avenue III — Combinatorial Nullstellensatz over $\\mathbb{F}_p$
+For fixed prime $p$, the Erdős–Straus equation defines a polynomial system over $\\mathbb{F}_p$. Combinatorial Nullstellensatz (Alon 1999) gives non-vanishing conditions. Mathlib has \`MvPolynomial.combinatorial_nullstellensatz_exists_eval_nonzero\`. Bridging this to ED2 requires constructing the right polynomial; bridging the polynomial-method conclusion to "ED2 admits a solution" is the open structural step. **No prior run has formalized this bridge.**
+
+### Avenue IV — Probabilistic / random-model proofs
+Model $4P\\delta+1$ as "a random integer of size $\\sim 4P\\delta$". Random integers of that size have an expected number of divisors $\\sim \\log(4P\\delta)$ and an expected number of factor pairs of any specific residue class $\\sim \\log(4P\\delta) / 4$. A heuristic count suggests ED2 should succeed for $\\delta \\sim \\log P$. **Making this rigorous** — turning the heuristic into a proof for primes — would be a real result. Tools: large-deviation bounds, Erdős–Kac-style theorems, Bombieri–Vinogradov.
+
+### Avenue V — Reverse mathematics / proof-theoretic content
+Ask: **what's the proof-theoretic strength of "Erdős–Straus residual"?** Is it provable in $\\mathrm{PA}$? In $\\mathrm{RCA}_0 + \\mathrm{WKL}$? If you can identify a sub-system in which a proof would exist, you've narrowed the search; if you can show no proof in a specific sub-system suffices, you've narrowed the search differently. This is meta but verifiable. Mathlib has limited reverse-math infrastructure but the proof-theoretic content can be argued informally and shipped as a Lean axiom.
+
+### Avenue VI — Connection to elliptic curves / modular forms
+The Erdős–Straus equation $4xyz = p(yz + xz + xy)$ defines a surface; for fixed $p$ this surface has elliptic-curve fibers. Mathlib has \`EllipticCurve\` and \`AlgebraicGeometry.EllipticCurve\` infrastructure. **No prior run has tried**: rational-point analysis on these fibers as $p$ varies over primes $\\equiv 1 \\pmod 4$. Use: Mordell-Weil, height bounds, Birch–Swinnerton-Dyer (heuristic).
+
+### Avenue VII — Cross-disciplinary technique import
+Pull a technique from a *different field entirely* and apply it. Examples that have NOT been tried in this thread:
+- **Information-theoretic argument** — entropy lower bounds on the number of integer solutions to certain Diophantine equations (à la PFR / Bourgain–Gamburd).
+- **Ergodic theory** — recurrence of Diophantine systems under group actions.
+- **Topology** — local-global principles via étale cohomology (deeper than Brauer-Manin which is ruled out).
+- **Quantum computing analogy** — the ED2 search resembles a structured-search problem; there may be a classical-complexity statement to make about ED2's verifiability.
+- **Sieve theory specifically Selberg's $\\Lambda^2$** — bound the number of primes WITHOUT an ED2 representation in $\\delta \\leq P^c$, hope to push to zero.
+
+These are starting points. **Better: invent a thesis nobody has tried.** A novel cross-disciplinary thesis that's even partially verifiable counts as real progress under the audit gate.
+
+## Mandatory thesis-first protocol (from prior runs)
+
+You MUST call \`thesis\` BEFORE any verification toward the goal. Without one, \`audit\` (and therefore \`done\`) cannot fire. Your thesis must include:
+
+- **goal**: the universal statement you're attacking. Make it explicit and quantifier-clear ("for every prime $p \\equiv 1 \\pmod 4$, ..." or "there exists no ... for any prime in class $C$").
+- **subClaims**: the proof skeleton. Each entry is one verifiable structural step. **Sub-claims that just verify finite instances do not count toward a universal goal.** A sub-claim like "verify the lemma symbolically in Z3 with $p$ a free symbolic constant" is fine; "verify for $p = 13$" is finite-only.
+- **technique**: the framework — name it precisely. "Combinatorial Nullstellensatz over $\\mathbb{F}_p$ via Mathlib's existing nullstellensatz lemma" is a precise technique. "Number theory" is not.
+- **nonFiniteJustification**: why the technique scales to the infinite class. **Be specific.** Examples that pass: "the Z3 query treats $p$ as a free symbolic Int with \`(forall ((p Int)) (=> (and (> p 0) (= (mod p 4) 1)) ...))\`, so SAT/UNSAT is over all primes." Examples that fail: "by analogy" / "I'll generalize later."
+
+## What COUNTS as progress under the audit gate
+
+- A **Lean-verified theorem** quantifying over all primes $p \\equiv 1 \\pmod 4$ (or an explicit infinite sub-family).
+- A **Z3-verified universally-quantified lemma** with $p$ as a free symbolic Int (not pinned to a specific value).
+- A **verified reduction**: "if $X$ holds for all primes $\\equiv 1 \\pmod 4$ then ED2 succeeds for all primes $\\equiv 1 \\pmod 4$" — Lean lemma.
+- A **verified meta-statement**: "framework $F$ cannot prove [universal claim] because $F$ lacks $X$" — formalized argument, ideally in Lean.
+- A **verified obstruction**: "any proof of [universal claim] requires [non-trivial structural ingredient]" — formalized.
+- A **density / counting bound**: "the set of primes $\\equiv 1 \\pmod 4$ for which ED2 fails up to $\\delta = f(p)$ has density at most [explicit bound]" — formalized.
+
+## What does NOT count
+
+- Verifying ED2 (or any partial result) for any specific prime or finite list.
+- Re-stating the Lean theorems already verified above.
+- A verbal / hand-waved universal claim with no formal artifact.
+- A claim of universality whose verified artifact is instance-only — audit Check D will reject this.
+
+## Process
+
+1. **Spend the first 1–2 turns thinking** about which avenue (I–VII or your own) is most plausible given the obstructions catalogued. Write your reasoning explicitly in prose. Don't tool-call yet.
+2. **Call \`thesis\`** with your structural plan. The goal must be universal; the sub-claims must be structural; the non-finite justification must be specific.
+3. **Decompose into the registered sub-claims** and attack each. Use Z3 with $p$ as a free symbolic Int when possible. Use Lean for structural / inductive arguments. Use Prolog for combinatorial structure proofs.
+4. **If you hit a wall, update your thesis** and continue. A change of approach is fine; finite-instance drift is not.
+5. **Audit honestly**. The audit's Check D specifically watches for "claimed universal but verified instance-only." Frame the answer to match what's actually verified.
+
+## Critical reminders
+
+- **The audit gate is active and Check D is sharp.** Universal thesis + instance-only artifact = audit FAIL. Frame your thesis to MATCH what your verified artifact actually shows. If you discover the universal goal is too ambitious, revise the thesis to a verified narrower claim — that's still real progress.
+- **Z3 over symbolic primes:** \`(declare-const p Int) (assert (and (> p 0) (= (mod p 4) 1)))\` plus quantifier instantiation. UNSAT here is a universal claim over the residue class. Use this pattern to make Z3 work for universal claims rather than instances.
+- **Lean for genuine generality:** if your structural argument needs induction or quantifier alternation that Z3 struggles with, formalize in Lean. The harness has Lean + Mathlib + a stateful proof environment.
+- **Don't promise more than you verified.** A verified \`reduction\` ("[claim A] reduces to [claim B]") is a real result even if [claim B] is itself unproved. Ship the reduction, scope your answer to "I verified this reduces to B; B is open."
+- **Negative / impossibility results count.** "I tried $X$, it provably can't work because of $Y$ — verified" is a real ship.
+
+## Realistic outcomes (ranked by likelihood × value)
+
+- **Likely + meaningful**: a Lean-verified reduction theorem (Erdős–Straus residual ⇒ some easier-to-state structural claim). Even partial.
+- **Plausible + meaningful**: a Z3-verified universal lemma over symbolic $p$ that constitutes a sufficient condition for a sub-class.
+- **Plausible + significant**: a verified obstruction proving no proof in [framework] suffices.
+- **Vanishingly unlikely + transformative**: a full proof of the Erdős–Straus residual. Don't promise; aim for the structural intermediate steps.
+
+## Budget: 100 turns
+
+Be creative. Be honest. Set a universal thesis. Verify what you actually verify. Ship narrow if needed.`,
+    expectedAnswer:
+      "OPEN. Expected outcome: a verified universal claim — a structural reduction, a verified sufficient condition, a verified obstruction, or a verified meta-statement (e.g., \"framework F cannot suffice because Y\"). Success measured by: (a) thesis is genuinely universal (not finite); (b) verified artifact's scope matches the thesis's scope (audit Check D enforces); (c) novel cross-disciplinary technique import or original thesis structure (not a retread of the catalogued dead ends).",
+    maxSteps: 100,
+  },
+
   "erdos-straus-mod1-informed": {
     id: "erdos-straus-mod1-informed",
     type: "OPEN PROBLEM — Erdős–Straus for n ≡ 1 mod 4 (literature-informed)",
