@@ -1610,6 +1610,198 @@ Build on the scaffolding. Pick a target. Set a universal thesis. Verify what you
     maxSteps: 100,
   },
 
+  "hadwiger-nelson-chi": {
+    id: "hadwiger-nelson-chi",
+    type: "OPEN — Hadwiger–Nelson chromatic number of the plane (universal claim, partial-progress target)",
+    difficulty: "very-hard",
+    prompt: `## The Hadwiger–Nelson Problem
+
+**The question.** Let $G_2$ be the **unit-distance graph** on the Euclidean plane: vertex set $\\mathbb{R}^2$, with an edge between two points iff their Euclidean distance is exactly $1$. The **chromatic number of the plane** is $\\chi(\\mathbb{R}^2) := \\chi(G_2)$ — the minimum number of colors needed so that no two unit-distance points share a color.
+
+**Universal claim.** The conjecture (open since 1950) asks: *what is $\\chi(\\mathbb{R}^2)$?*
+
+## Status
+
+**Currently $5 \\leq \\chi(\\mathbb{R}^2) \\leq 7$.**
+
+| Bound | Value | Year | Reference |
+|---|---:|---|---|
+| Lower (trivial) | $\\geq 2$ | — | any non-trivial graph |
+| Lower (Moser spindle) | $\\geq 4$ | 1961 | Moser & Moser, 7-vertex unit-distance graph with $\\chi = 4$ |
+| **Lower (de Grey)** | **$\\geq 5$** | **2018** | **de Grey 2018, 1581-vertex unit-distance graph with $\\chi = 5$** |
+| Upper (Hadwiger) | $\\leq 7$ | 1945 | Hadwiger, explicit 7-coloring via hexagonal tiling |
+
+**Recent activity (lower-bound graph shrinking via SAT)**:
+- Heule 2018: 1577 vertices.
+- Heule–Wagner 2019: 553 vertices.
+- **Parts 2020: 510 vertices** (current published smallest 5-chromatic unit-distance graph).
+- Exoo–Ismailescu and others: continuing minor reductions.
+
+**Both directions are open**: no 6-chromatic unit-distance graph is known (would prove $\\chi \\geq 6$); no proper 6-coloring of $\\mathbb{R}^2$ is known (would prove $\\chi \\leq 6$).
+
+## Your task
+
+**Make verified universal progress on $\\chi(\\mathbb{R}^2)$.** Concretely, attempt one of these (ranked by difficulty + impact):
+
+### Target A — Lean formalization of $\\chi(\\mathbb{R}^2) \\geq k$ via an explicit unit-distance graph
+
+Mathlib has \`SimpleGraph\`, \`SimpleGraph.Coloring\`, and \`SimpleGraph.chromaticNumber\` but **does not have a Hadwiger–Nelson formalization**. Pick a $k \\in \\{3, 4, 5\\}$ and ship a Lean proof of $\\chi(\\mathbb{R}^2) \\geq k$ via:
+1. An explicit finite graph $G_k$ with vertex set $\\subset \\mathbb{R}^2$.
+2. A proof that every edge of $G_k$ has Euclidean length $1$ (so $G_k$ is a unit-distance subgraph of $G_2$).
+3. A proof that $\\chi(G_k) \\geq k$.
+4. A reduction theorem: $G_k$ is unit-distance + $\\chi(G_k) \\geq k$ $\\Rightarrow$ $\\chi(\\mathbb{R}^2) \\geq k$.
+
+**The Moser spindle ($k = 4$)** is the canonical small example (7 vertices). $k = 5$ requires a much larger graph (the smallest published is 510 vertices, likely beyond a single-shot Lean proof but tractable with a structural argument).
+
+### Target B — Lean formalization of $\\chi(\\mathbb{R}^2) \\leq 7$ via Hadwiger's hexagonal coloring
+
+Hadwiger's 1945 7-coloring uses a tiling of $\\mathbb{R}^2$ by regular hexagons of carefully-chosen size, colored periodically with 7 colors. Formalize:
+1. The tiling (as a function $\\mathbb{R}^2 \\to \\{0, \\ldots, 6\\}$).
+2. The coloring's well-definedness (modulo measure-zero boundary).
+3. A proof that no two unit-distance points receive the same color.
+
+This is **not in Mathlib**. Mathlib has \`Real.sin\`, \`Real.cos\`, basic Euclidean geometry — sufficient.
+
+### Target C — SAT-verified $\\chi(G) \\geq 5$ for an explicit small unit-distance graph
+
+Z3 / a SAT solver can verify $\\chi(G) \\geq 5$ for an explicit graph $G$ by encoding "no proper 4-coloring exists." For graphs with $\\sim 50$–$500$ vertices, this is tractable. Ship a verified SAT certificate for $\\chi(G) \\geq 5$ on the smallest unit-distance graph you can find, plus a proof that $G$ is unit-distance.
+
+### Target D — Verified structural reduction or sufficient condition
+
+Prove a Lean theorem of the form: "any finite graph satisfying property $P$ has $\\chi \\geq k$" where $P$ is a structural condition that the de-Grey-style 510-vertex graph (or Moser spindle) satisfies. E.g., "any graph containing $G_0$ as a subgraph with $\\chi(G_0) \\geq k$ has $\\chi \\geq k$." Or a sub-graph reduction lemma. The audit gate will reject claims that just restate trivial monotonicity.
+
+### Target E — Verified obstruction for the upper bound
+
+Prove that some specific class of colorings cannot be a 6-coloring of $\\mathbb{R}^2$ (i.e., $\\chi(\\mathbb{R}^2) > 6$ relative to that class). Examples: "no 6-coloring induced by a periodic tiling with period $\\leq L$ exists" for explicit $L$.
+
+## Lean starting material — definitions to establish
+
+Re-define via \`lean_define\` as your first turn:
+
+\`\`\`lean
+import Mathlib
+
+-- The unit-distance graph on R²: vertices are points in R², two points are
+-- adjacent iff their Euclidean distance is exactly 1.
+def unitDistance (p q : ℝ × ℝ) : Prop :=
+  (p.1 - q.1)^2 + (p.2 - q.2)^2 = 1
+
+def planeUnitDistanceGraph : SimpleGraph (ℝ × ℝ) where
+  Adj p q := p ≠ q ∧ unitDistance p q
+  symm := fun p q ⟨hne, hd⟩ => ⟨hne.symm, by rw [show (q.1 - p.1)^2 = (p.1 - q.1)^2 from by ring, show (q.2 - p.2)^2 = (p.2 - q.2)^2 from by ring]; exact hd⟩
+  loopless := fun p ⟨hne, _⟩ => hne rfl
+
+-- Chromatic number of the plane.
+noncomputable def chiR2 : ℕ∞ := planeUnitDistanceGraph.chromaticNumber
+
+-- A finite unit-distance graph: any finite vertex set V ⊂ R² with the induced
+-- subgraph of planeUnitDistanceGraph.
+def UnitDistanceGraph (V : Finset (ℝ × ℝ)) : SimpleGraph V :=
+  planeUnitDistanceGraph.induce V
+\`\`\`
+
+(Adjust as needed — Mathlib's SimpleGraph API may suggest different idioms.)
+
+## What's been tried — DO NOT REPRODUCE IN ANY FRAMING
+
+70+ years of attention. Spend zero turns on:
+
+1. **Re-stating Hadwiger's 7-coloring** (1945): well-known explicit construction. Re-deriving with a different parameterization is a re-derivation; **audit Check E will reject**.
+2. **Reproducing the Moser spindle** ($\\chi \\geq 4$, 1961): canonical 7-vertex example, in every textbook. Re-deriving is banned. **Lean-formalizing the Moser spindle** is OK as scaffolding (Target A) but must be honestly framed as formalization, not new mathematics.
+3. **Reproducing de Grey's 1581-vertex construction**: published 2018. Don't re-derive. Verifying parts of it formally is allowed as Target C.
+4. **Brute-force enumeration of small unit-distance graphs**: extensive computer searches have catalogued unit-distance graphs up to $\\sim 50$ vertices. New small constructions in this range are unlikely to be novel without a specific structural twist.
+5. **The Heule / Heule–Wagner / Parts SAT-shrinking pipeline**: their reduced graphs (1577 → 553 → 510 vertices) are published; re-running the same shrinking is not progress.
+6. **Standard 4-coloring impossibility on the Moser spindle**: this is the textbook proof. Re-deriving is banned.
+7. **Probabilistic / measurable-coloring lower bounds** (Falconer 1981: any *measurable* coloring needs $\\geq 5$): published, the unrestricted question is what's open.
+8. **Pritikin 1998's $\\chi(\\mathbb{R}^d) \\geq d + 2$ for $d \\geq 3$**: higher-dimensional bound, doesn't apply to $d = 2$.
+9. **Coulson 2002 / Soifer's restatements**: re-statements of known bounds in book form.
+
+## The genuinely-open frontier
+
+After all the above, the open ground for $n = 2$ is:
+- **Closing the gap $5 \\leq \\chi \\leq 7$** in either direction (both genuinely open).
+- **A smaller 5-chromatic unit-distance graph than 510 vertices** (would tighten the structural picture).
+- **A formal Lean proof** of any of the partial bounds (none currently in Mathlib).
+- **A 6-chromatic unit-distance graph** (would push the lower bound to $\\chi \\geq 6$ — major result).
+- **A 6-coloring of $\\mathbb{R}^2$** (would push the upper bound to $\\chi \\leq 6$ — major result).
+
+## Where creativity is needed
+
+The harness has not seen these tried — open avenues for novel theses:
+
+### Avenue I — SAT verification of $\\chi(G) \\geq k$ via Z3
+Encode the chromatic-number lower bound as boolean-satisfiability: variables $x_{v,c}$ for "vertex $v$ has color $c$," clauses for "every vertex has a color," "no edge has both endpoints the same color." Negate and check UNSAT in Z3 for $k - 1$ colors. This is **exactly Z3's wheelhouse** and the harness's strongest verification mode.
+
+### Avenue II — Lean formalization of the Moser spindle ($k = 4$)
+The smallest interesting case: 7 vertices, $\\chi = 4$, all edges of length 1. Mathlib has the prerequisite \`SimpleGraph\` machinery. Formalizing this would be a clean Mathlib-grade contribution and gives the scaffolding for $k = 5$.
+
+### Avenue III — Polynomial method
+For specific structured unit-distance graphs (e.g., sub-graphs of the triangular lattice), encode chromatic-number lower bounds via polynomial non-vanishing. Mathlib's \`MvPolynomial.combinatorial_nullstellensatz_exists_eval_nonzero\` is the relevant lemma. **No published HN work uses Combinatorial Nullstellensatz directly.**
+
+### Avenue IV — Lean formalization of Hadwiger's 7-coloring
+Define the hexagonal tiling explicitly; prove no two unit-distance points share a color. Requires basic Euclidean geometry + measure-theoretic care for boundaries. Mathlib has the prerequisites.
+
+### Avenue V — Smaller 5-chromatic graph search
+Use Z3 + structural reductions to find a unit-distance graph $G$ with $\\chi(G) \\geq 5$ and fewer than 510 vertices. Each vertex reduction is a real result (the Heule/Parts pipeline shrinks one vertex at a time). **Requires both unit-distance verification AND chromatic-lower-bound verification.**
+
+### Avenue VI — 6-coloring impossibility for periodic colorings
+Formalize "no 6-coloring of $\\mathbb{R}^2$ with period $L \\leq L_0$ exists" for explicit $L_0$. SAT-verifiable via discretization to a finite torus.
+
+### Avenue VII — Cross-disciplinary import
+Pull a technique from a different field. Examples that have NOT been tried in HN literature in formalized form:
+- **Information theory**: entropy bounds on the color distribution constrained by unit-distance pairs.
+- **Algebraic geometry**: rational points on the variety $\\{(p, q) : |p - q| = 1\\}$ over discrete sub-fields.
+- **Topology**: covering arguments for minimum-color partitions.
+- **Spectral graph theory**: eigenvalue bounds on chromatic number (Hoffman bound) applied to specific small unit-distance graphs.
+
+## Mandatory thesis-first protocol
+
+You MUST call \`thesis\` BEFORE any verification toward the goal. Without one, \`audit\` (and therefore \`done\`) cannot fire. Your thesis must include:
+
+- **goal**: the explicit universal claim. Example: "$\\chi(\\mathbb{R}^2) \\geq 4$, formalized in Lean via the Moser spindle." Or: "$\\chi(G) \\geq 5$ for an explicit graph $G$ with $\\leq 100$ vertices, verified by Z3."
+- **subClaims**: the proof skeleton. Each entry is verifiable (Lean / Z3 / Prolog).
+- **technique**: name precisely (e.g., "Z3 SAT-encoding of chromatic-number lower bound", "Lean structural proof using SimpleGraph.chromaticNumber and explicit 4-coloring impossibility").
+- **nonFiniteJustification**: $\\chi(\\mathbb{R}^2)$ is a single number, but its lower bound via a finite graph $G$ is a UNIVERSAL claim about $\\mathbb{R}^2$ (since $G \\hookrightarrow \\mathbb{R}^2$ as unit-distance + $\\chi(G) \\geq k$ implies $\\chi(\\mathbb{R}^2) \\geq k$). State this explicitly.
+
+## What COUNTS as progress
+
+- A Lean theorem $\\chi(\\mathbb{R}^2) \\geq k$ for any $k \\in \\{3, 4, 5\\}$, with the proof going through an explicit unit-distance graph + chromatic lower bound.
+- A Lean theorem $\\chi(\\mathbb{R}^2) \\leq 7$ formalizing Hadwiger's 7-coloring.
+- A Z3-verified $\\chi(G) \\geq 5$ for an explicit graph $G$ with fewer than 510 vertices, paired with a Lean-or-Z3 proof that $G$ is unit-distance.
+- A Lean-verified structural reduction theorem (e.g., "if $G$ contains $H$ and $\\chi(H) \\geq k$, then $\\chi(G) \\geq k$" — note: this is a known triviality, but a formal version isn't in Mathlib in HN form).
+- A verified obstruction proving a specific structured class of colorings cannot be a 6-coloring.
+- A polynomial-method bound on $\\chi(G)$ for a specific $G$ via Combinatorial Nullstellensatz.
+
+## What does NOT count
+
+- Re-stating Hadwiger's 7-coloring without formal verification.
+- Re-stating the Moser spindle's $\\chi = 4$ without a formal proof (just the proof structure).
+- Verifying $\\chi(G) \\geq 4$ on a graph isomorphic to the Moser spindle (= reproducing the textbook example with relabeling). **Audit Check E will reject** unless the verification is in Lean as a Mathlib-grade artifact, in which case it's the formalization that counts.
+- Brute-force search for unit-distance graphs without producing a Lean theorem or Z3-verified certificate.
+
+## Critical reminders
+
+- **The audit gate is active (Checks A–E).** Universal-but-instance-only artifacts fail Check D. Re-derivations of Hadwiger / Moser / de Grey fail Check E.
+- **Z3 SAT-encoding of chromatic-number lower bounds**: this is the harness's sweet spot. Use \`(declare-const x_v_c Bool)\` per (vertex, color), assert "every vertex has a color" + "edges have different colors," check UNSAT for $k - 1$ colors. UNSAT proves $\\chi(G) \\geq k$.
+- **Lean for structural generality**: with SimpleGraph in scope, you can state Hadwiger–Nelson cleanly as a theorem and attempt the proof.
+- **Don't promise more than you verified.** A verified $\\chi(G) \\geq 5$ for an explicit 100-vertex graph $G$, with a separate proof that $G$ is unit-distance, is a real partial result. Framing it as "I closed Hadwiger–Nelson" is a D-fail.
+- **Negative / impossibility results count.** "Method $X$ provably can't push above $\\chi \\geq 5$ — verified" is real.
+
+## Realistic outcomes
+
+- **Likely + meaningful**: a Lean formalization of $\\chi(\\mathbb{R}^2) \\geq 4$ via the Moser spindle (Mathlib-grade).
+- **Plausible + meaningful**: a Z3-verified $\\chi(G) \\geq 5$ for a small explicit graph (Avenue V), with a Lean-verified unit-distance certificate.
+- **Plausible + significant**: a Lean formalization of Hadwiger's 7-coloring (Mathlib-grade).
+- **Unlikely + transformative**: a 6-chromatic unit-distance graph or a 6-coloring of $\\mathbb{R}^2$, closing the gap.
+
+## Budget: 100 turns
+
+You have 100 turns. Pick a target. Set a universal thesis. Verify what you actually verify. Ship narrow if needed.`,
+    expectedAnswer:
+      "OPEN. Expected outcome: a verified partial result on χ(R²) — typically a Lean formalization of χ(R²) ≥ 4 via the Moser spindle (Mathlib gap), a Z3-verified χ(G) ≥ 5 for an explicit small unit-distance graph, a Lean formalization of Hadwiger's 7-coloring upper bound, or a verified structural reduction. Audit Checks D + E enforce honest scope and reject re-derivations.",
+    maxSteps: 100,
+  },
+
   "erdos-straus-mod1-informed": {
     id: "erdos-straus-mod1-informed",
     type: "OPEN PROBLEM — Erdős–Straus for n ≡ 1 mod 4 (literature-informed)",
