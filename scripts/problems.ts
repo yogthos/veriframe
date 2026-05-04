@@ -1973,6 +1973,189 @@ Decouple. State the abstract graph. Prove $\\chi \\geq 4$ on it. Then embed. The
     maxSteps: 100,
   },
 
+  "hadwiger-nelson-moser-embedding": {
+    id: "hadwiger-nelson-moser-embedding",
+    type: "OPEN — Lean unit-distance embedding for the Moser spindle (chromatic part already verified)",
+    difficulty: "very-hard",
+    prompt: `## Your task
+
+**Ship a Lean 4 / Mathlib formalization of $\\chi(\\mathbb{R}^2) \\geq 4$ via the Moser spindle.**
+
+The chromatic-number lower bound for the abstract Moser spindle is **already verified** (see prelude below). Your remaining job is the **embedding**: define $f : \\text{Fin 7} \\to \\mathbb{R}^2$ with explicit coordinates, prove each of the 11 spindle edges has Euclidean length exactly 1, and combine into the final $\\chi(\\mathbb{R}^2) \\geq 4$ theorem.
+
+## Verified prelude — re-define VERBATIM as your first turn
+
+The following Lean code has been **verified to compile against Mathlib**. The chromatic-number proofs use \`native_decide\` (a few seconds) and the rest is structural. **Do NOT include \`import Mathlib\`** in your lean_define snippet — Mathlib is auto-imported by the harness REPL; including it in the middle fails with "invalid import".
+
+\`\`\`lean
+def spindleAdj : Fin 7 → Fin 7 → Bool
+  | 0, 1 => true | 1, 0 => true
+  | 0, 2 => true | 2, 0 => true
+  | 1, 2 => true | 2, 1 => true
+  | 1, 3 => true | 3, 1 => true
+  | 2, 3 => true | 3, 2 => true
+  | 0, 4 => true | 4, 0 => true
+  | 0, 5 => true | 5, 0 => true
+  | 4, 5 => true | 5, 4 => true
+  | 4, 6 => true | 6, 4 => true
+  | 5, 6 => true | 6, 5 => true
+  | 3, 6 => true | 6, 3 => true
+  | _, _ => false
+
+def isProperColoring {k : ℕ} (f : Fin 7 → Fin k) : Bool :=
+  decide (∀ i j : Fin 7, spindleAdj i j = true → f i ≠ f j)
+
+theorem no_3_coloring : ¬ ∃ f : Fin 7 → Fin 3, isProperColoring f = true := by
+  native_decide
+
+theorem exists_4_coloring : ∃ f : Fin 7 → Fin 4, isProperColoring f = true := by
+  native_decide
+
+def moserSpindle : SimpleGraph (Fin 7) where
+  Adj i j := spindleAdj i j = true
+  symm := by
+    intro i j h
+    fin_cases i <;> fin_cases j <;> simp_all [spindleAdj]
+  loopless := ⟨by
+    intro i h
+    fin_cases i <;> simp [spindleAdj] at h⟩
+
+instance : DecidableRel moserSpindle.Adj := fun i j => by
+  unfold moserSpindle
+  exact inferInstance
+
+theorem moserSpindle_not_colorable_3 : ¬ moserSpindle.Colorable 3 := by
+  intro h
+  obtain ⟨c⟩ := h
+  apply no_3_coloring
+  refine ⟨fun i => c i, ?_⟩
+  unfold isProperColoring
+  simp only [decide_eq_true_eq]
+  intro i j hadj
+  exact c.valid hadj
+
+theorem moserSpindle_chromaticNumber_ge_4 :
+    4 ≤ moserSpindle.chromaticNumber := by
+  by_contra h
+  push_neg at h
+  have hle : moserSpindle.chromaticNumber ≤ 3 := by
+    have : moserSpindle.chromaticNumber < (3 : ℕ∞) + 1 := h
+    exact Order.le_of_lt_add_one this
+  have : moserSpindle.Colorable 3 := by
+    rw [show (3 : ℕ∞) = ((3 : ℕ) : ℕ∞) from rfl] at hle
+    exact (SimpleGraph.chromaticNumber_le_iff_colorable).mp hle
+  exact moserSpindle_not_colorable_3 this
+\`\`\`
+
+After lean_define-ing this, you have:
+- \`spindleAdj : Fin 7 → Fin 7 → Bool\`
+- \`isProperColoring : (Fin 7 → Fin k) → Bool\`
+- \`no_3_coloring\` and \`exists_4_coloring\` (both via \`native_decide\`)
+- \`moserSpindle : SimpleGraph (Fin 7)\` with decidable adjacency
+- \`moserSpindle_not_colorable_3 : ¬ moserSpindle.Colorable 3\`
+- **\`moserSpindle_chromaticNumber_ge_4 : 4 ≤ moserSpindle.chromaticNumber\`** ← chromatic part complete.
+
+## Remaining work — the embedding
+
+Define $f : \\text{Fin 7} \\to \\mathbb{R}^2$ such that $\\| f(i) - f(j) \\| = 1$ for every edge of moserSpindle. Standard coordinates (with $\\cos \\theta = 5/6$, $\\sin \\theta = \\sqrt{11}/6$ for the rotation that closes the spindle):
+
+| $i$ | $f(i) = (x_i, y_i)$ |
+|---|---|
+| 0 | $(0, 0)$ |
+| 1 | $(1, 0)$ |
+| 2 | $(1/2, \\sqrt 3/2)$ |
+| 3 | $(3/2, \\sqrt 3/2)$ |
+| 4 | $(5/6, \\sqrt{11}/6)$ |
+| 5 | $((5 - \\sqrt{33})/12,\\ (\\sqrt{11} + 5\\sqrt 3)/12)$ |
+| 6 | $((15 - \\sqrt{33})/12,\\ (3\\sqrt{11} + 5\\sqrt 3)/12)$ |
+
+The 11 edges are: $\\{0,1\\}, \\{0,2\\}, \\{1,2\\}, \\{1,3\\}, \\{2,3\\}, \\{0,4\\}, \\{0,5\\}, \\{4,5\\}, \\{4,6\\}, \\{5,6\\}, \\{3,6\\}$.
+
+### The verified arithmetic pattern for unit-distance proofs
+
+The following pattern compiles. Use it as a template for each edge:
+
+\`\`\`lean
+-- Edge {0, 2}: |v0 - v2|² = (1/2)² + (√3/2)² = 1.
+example : ((0 : ℝ) - 1/2)^2 + ((0 : ℝ) - Real.sqrt 3 / 2)^2 = 1 := by
+  have h3 : Real.sqrt 3 * Real.sqrt 3 = 3 := Real.mul_self_sqrt (by norm_num)
+  nlinarith [h3]
+
+-- Edge {0, 4}: |v0 - v4|² = (5/6)² + (√11/6)² = 1.
+example : ((0 : ℝ) - 5/6)^2 + ((0 : ℝ) - Real.sqrt 11 / 6)^2 = 1 := by
+  have h11 : Real.sqrt 11 * Real.sqrt 11 = 11 := Real.mul_self_sqrt (by norm_num)
+  nlinarith [h11]
+\`\`\`
+
+For the harder edges (those involving $v_5$ and $v_6$), you'll need both $\\sqrt 3$ and $\\sqrt{11}$ squared, plus possibly $\\sqrt{33}$ (since $\\sqrt 3 \\cdot \\sqrt{11} = \\sqrt{33}$):
+
+\`\`\`lean
+have h3 : Real.sqrt 3 * Real.sqrt 3 = 3 := Real.mul_self_sqrt (by norm_num)
+have h11 : Real.sqrt 11 * Real.sqrt 11 = 11 := Real.mul_self_sqrt (by norm_num)
+have h33 : Real.sqrt 33 * Real.sqrt 33 = 33 := Real.mul_self_sqrt (by norm_num)
+have h3_11 : Real.sqrt 3 * Real.sqrt 11 = Real.sqrt 33 := by
+  rw [← Real.sqrt_mul (by norm_num : (3 : ℝ) ≥ 0)]; norm_num
+\`\`\`
+
+Then \`nlinarith\` with all of these in scope should close the goal.
+
+## Plan
+
+1. **Turn 1**: \`lean_define\` the verified prelude above (verbatim, no \`import Mathlib\`).
+2. **Turn 2**: \`thesis\` with goal "Lean-formalize $\\chi(\\mathbb{R}^2) \\geq 4$ via the Moser spindle's unit-distance embedding," subClaims = "(1) define $f$, (2) prove each of 11 edge-distance equations, (3) combine via the chromatic-monotonicity lemma," technique = "Lean direct-coordinate definition + \`Real.mul_self_sqrt\` + \`nlinarith\` for each edge," nonFiniteJustification = "the embedding $f$ is a graph homomorphism from moserSpindle into the unit-distance graph on $\\mathbb{R}^2$, so $\\chi(\\mathbb{R}^2) \\geq \\chi(\\text{moserSpindle}) \\geq 4$ — UNIVERSAL claim about $\\mathbb{R}^2$, not about a finite instance."
+3. **Turn 3**: define \`f : Fin 7 → ℝ × ℝ\` via the coordinates table above. Use \`noncomputable def\`.
+4. **Turns 4–14**: prove each of the 11 unit-distance lemmas. One at a time, using the pattern above.
+5. **Turn 15+**: define the unit-distance graph on $\\mathbb{R}^2$, state $\\chi(\\mathbb{R}^2)$, build the homomorphism from \`moserSpindle\` into it via $f$, and combine with \`moserSpindle_chromaticNumber_ge_4\` for the final theorem.
+6. **Audit + done.**
+
+## What's been tried — DO NOT REPRODUCE
+
+- The harness's prior runs on \`hadwiger-nelson-chi\` (commit \`86db656\`) and \`hadwiger-nelson-moser-lean\` (commit \`88450b0\`) failed because:
+  - **They tried to define everything coordinate-first, getting stuck on \`Real.sqrt\` in pair literals.**
+  - **They included \`import Mathlib\` in \`lean_define\`, which fails (Mathlib is auto-imported).**
+  - **Their \`planeUnitDistanceGraph.symm\` proof used \`linarith [hd]\` which doesn't close the polynomial goal — needs \`nlinarith\` or \`ring\`.**
+  - **They didn't pre-stage the chromatic-number proof, so each branch re-attempted it from scratch and got stuck on \`SimpleGraph.Coloring\`'s decidability.**
+
+This problem prompt addresses every one of those failure modes by pre-staging the verified prelude. **Do not retry the broken prior approaches.**
+
+- Hadwiger 1945's 7-coloring upper bound is well-known and out of scope here.
+- de Grey 2018's 5-bound is also out of scope; the deliverable is the 4-bound only.
+
+## What COUNTS as progress
+
+- A Lean theorem stating that the Moser spindle's $f : \\text{Fin 7} \\to \\mathbb{R}^2$ is a unit-distance embedding (each of 11 edges has length 1).
+- A combined Lean theorem $\\chi(\\mathbb{R}^2) \\geq 4$ (or equivalently, an explicit unit-distance subgraph of the plane with $\\chi \\geq 4$).
+- Even **partial unit-distance proofs** (e.g., the 5 edges of rhombus 1) ship as scoped progress — the rhombus 1 work uses only \`Real.sqrt 3\`, simpler than the rotation arithmetic.
+
+## What does NOT count
+
+- Re-deriving \`moserSpindle_not_colorable_3\` or \`moserSpindle_chromaticNumber_ge_4\`. These are pre-staged as verified theorems. **Audit Check E will reject** if your shipped answer reproves them.
+- Sorry-containing proofs. Audit Check A rejects.
+- Verbal arguments without machine verification.
+
+## Critical reminders
+
+- **No \`import Mathlib\`** in lean_define snippets. Mathlib is already in scope.
+- **JSON escaping**: use literal \`\\\\n\` for newlines inside the lean_define string, NOT raw newlines. The harness has auto-repair but it's noisy and unreliable; clean JSON saves you debugging time.
+- **Verify the pre-staged prelude compiles on turn 1** before doing anything else. If \`lean_define\` rejects it, something in the harness changed and you should report what you see.
+- **For each edge, do one verify_lean / proof_start at a time.** Don't try to define all 11 edge lemmas in one go — the proof tactics are different for each edge depending on which $\\sqrt n$ values are involved.
+- **\`Real.mul_self_sqrt\` is the key lemma**: \`Real.mul_self_sqrt : 0 ≤ x → Real.sqrt x * Real.sqrt x = x\`.
+- **Audit Check D**: the registered thesis is universal (about $\\mathbb{R}^2$), so partial-edge results are scoped progress only — the full $\\chi(\\mathbb{R}^2) \\geq 4$ theorem requires all 11 edges.
+
+## Realistic outcomes
+
+- **Most likely + valuable**: 5 unit-distance edges of rhombus 1 verified (uses only $\\sqrt 3$), shipped as a partial result with explicit scope.
+- **Plausible**: all 11 edges verified, plus the combined $\\chi(\\mathbb{R}^2) \\geq 4$ theorem.
+- **Stretch**: a Mathlib-PR-ready bundle.
+
+## Budget: 100 turns
+
+The chromatic part is done. Define $f$. Verify the 11 edges. Combine. Ship narrow if needed.`,
+    expectedAnswer:
+      "Lean 4 formalization of χ(R²) ≥ 4 via the Moser spindle. Pre-staged: chromatic-number lower bound (verified). Remaining: unit-distance embedding for 11 edges + combination. Even partial-edge results (e.g., rhombus 1's 5 edges using only √3) are shippable as scoped progress.",
+    maxSteps: 100,
+  },
+
   "erdos-straus-mod1-informed": {
     id: "erdos-straus-mod1-informed",
     type: "OPEN PROBLEM — Erdős–Straus for n ≡ 1 mod 4 (literature-informed)",
