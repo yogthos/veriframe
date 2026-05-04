@@ -1075,52 +1075,56 @@ That instance does NOT generalize to a proof of ED2 completeness — it's one ce
 
 ## Approaches that have already been tried — DO NOT REPRODUCE IN ANY FRAMING
 
-The residual class has been picked at for 78 years. Spend zero turns on:
+The residual class has been picked at for 78 years. The published catalog of solved residues is **far larger than the Lean theorems we have**. Spend zero turns on:
 
-### A. Already-proved residue classes (do not re-derive in any framing)
+### A. Already-solved residue classes (Mordell 1967 + subsequent extensions)
 
-**Critical**: any proof for ANY of the following classes — even via a different parameterization, a different technique, or a different reformulation — is a re-derivation, not progress. The audit's Check E will reject these.
+**Mordell's classical 1967 catalogue solves Erdős–Straus for any $n$ falling in any of these residue classes** (this list is verbatim from the Wikipedia / Elsholtz–Tao survey):
 
-1. $n \\equiv 0 \\pmod 2$ (even). Lean theorem covers this.
-2. $n \\equiv 0 \\pmod 4$. Lean theorem covers this.
-3. $n \\equiv 3 \\pmod 4$ (Mordell). Lean theorem covers this. Includes the construction via $4k+3 = $ the prime, $(k+1, n(k+1)+1, n(k+1)(n(k+1)+1))$.
-4. $n \\equiv 5 \\pmod 8$. Lean theorem covers this.
-5. **$n \\equiv 5 \\pmod{12}$**. Lean theorem covers this. **Also re-derived in a prior run via ED2 with $(b, c, \\delta) = (1, (p+1)/3, 1)$ — this re-derivation is now itself a known and banned framing.** Any further "new" universal proof for $n \\equiv 5 \\pmod{12}$ — through ED2, through a polynomial identity, through any algebraic manipulation — is a re-derivation. Audit Check E will reject.
-6. **$n$ with any prime factor $q \\equiv 3 \\pmod 4$** (Hasse-style scaling reduction). Lean theorem covers this.
+- $n \\equiv 2 \\pmod 3$
+- $n \\equiv 3 \\pmod 4$
+- $n \\equiv 2 \\pmod 5$ or $n \\equiv 3 \\pmod 5$
+- $n \\equiv 3, 5, 6 \\pmod 7$
+- $n \\equiv 5 \\pmod 8$
 
-The actually-open territory, after these reductions, is **primes $p$ with all prime factors $\\equiv 1 \\pmod 4$** — equivalently, **primes $p \\equiv 1 \\pmod 4$ themselves and products thereof**. Any "novel universal proof" must address this residual, not the already-covered classes above.
+**Combined with the obvious cases ($n$ even, $n \\equiv 5 \\pmod{12}$, $n$ with any prime factor $\\equiv 3 \\pmod 4$ via Hasse scaling), this leaves only six residue classes mod 840 unresolved**:
 
-**Specifically banned residue classes for re-derivation**:
-- $p \\equiv 5 \\pmod{12}$ (covered by Lean + by ED2 with $b=1, c=(p+1)/3, \\delta=1$).
-- $p \\equiv 1 \\pmod{12}$ that's also $\\equiv 5 \\pmod 8$ — already covered.
-- Any sub-residue $p \\equiv k \\pmod m$ where the residue class's *coverage* is implied by the existing Lean theorems above.
+$$n \\bmod 840 \\;\\in\\; \\{1,\\ 121,\\ 169,\\ 289,\\ 361,\\ 529\\}$$
 
-### B. Methodological dead ends (do not reproduce regardless of framing)
+These six are the **genuinely open residues mod 840**. Note that $121 = 11^2$, $169 = 13^2$, $289 = 17^2$, $361 = 19^2$, $529 = 23^2$ — each is a square of a prime $\\equiv 1 \\pmod 4$. The class $n \\equiv 1 \\pmod{840}$ contains all the troublesome small primes that the rest of the catalog doesn't cover.
 
-7. **Polynomial identity in $p$ of any degree** (Mordell 1967): blocked because $1$ is a quadratic residue mod every prime $p \\equiv 1 \\pmod 4$. No closed form in $p$ alone solves uniformly.
-8. **Sub-residue covering systems** (Webb, Vaughan, Li, Yang, Ahmadi-Bleicher, Elsholtz): pushed to limit. Remaining residual is irreducibly open under this technique.
-9. **Greedy / extended-greedy**: produces 4-term, not 3-term.
-10. **Brauer–Manin obstruction analysis** (Bright & Loughran 2020): no obstruction. Local solvability fine.
-11. **Brute-force search**: Salez 2014 verified to $p \\leq 10^{17}$.
-12. **Heath-Brown 1996 density**: failures have density $O((\\log N)^{-3})$ but doesn't pin down any specific prime.
-13. **Density-1 Hasse-style results** (arXiv 2602.20036v2): cover almost all primes ≡ 1 mod 4 but the residual is still infinite.
-14. **Single-$\\delta$ ED2 disproof** (the harness's own prior run): we now know $\\delta = 1$ fails for $p = 13$ but $\\delta = 2$ succeeds. The general-$\\delta$ method is still standing.
-15. **Finite verification of more primes**: would just be more cells — does not yield a universal claim.
+**Critical**: any "new" universal proof for a residue class that's a SUB-RESIDUE of the solved cells above — i.e., a residue class whose every member also lies in one of Mordell's classes — is a re-derivation, even if the construction differs. Examples of re-derivations the audit's Check E will reject:
 
-### C. Self-check before you set your thesis
+- $p \\equiv 5 \\pmod{12}$ (already in 5 mod 8 / Hasse / Mordell mod 3). A prior run shipped this via ED2 with $(b, c, \\delta) = (1, (p+1)/3, 1)$. Banned.
+- **$p \\equiv 13 \\pmod{28}$** (already in Mordell's 6 mod 7 cover, since $13 \\equiv 6 \\pmod 7$). A prior run shipped this via ED2 with $(b, \\delta) = (2, 2)$ giving $(8k+4,\\, 2p,\\, (8k+4)p)$ for $p = 28k+13$. Banned.
+- Any class $\\equiv k \\pmod{m}$ that, when reduced mod 3, 4, 5, 7, or 8, lands in one of Mordell's solved cells above.
 
-Before you call \`thesis\`, ask: **does my goal address territory that's NOT in the lists A and B above?** If the goal is "verify ED2 succeeds for some sub-residue of primes $\\equiv 1 \\pmod 4$," check whether that sub-residue is implied by an existing Lean theorem. The following residue classes (and their unions / intersections) are ALL already covered:
+**Self-check rule**: take your proposed residue class, compute its reduction mod each of 3, 4, 5, 7, 8. If ANY of those reductions lands in a Mordell-covered cell, your "new construction" is in already-solved territory.
 
-- $\\{n : 2 \\mid n\\}$ — even
-- $\\{n : 4 \\mid n\\}$
-- $\\{n : n \\equiv 3 \\pmod 4\\}$
-- $\\{n : n \\equiv 5 \\pmod 8\\}$
-- $\\{n : n \\equiv 5 \\pmod{12}\\}$
-- $\\{n : \\exists q \\text{ prime}, q \\equiv 3 \\pmod 4, q \\mid n\\}$ — has a 3-mod-4 prime factor
+### B. Methodological dead ends
 
-The residual is exactly **primes $p \\equiv 1 \\pmod 4$ themselves** (and products of such). Anything narrower than that is a re-derivation.
+1. **Polynomial identity in $p$ of any degree** (Mordell 1967): no closed form in $p$ alone solves uniformly over $p \\equiv 1 \\pmod 4$ because $1$ is a QR mod every such prime.
+2. **Sub-residue covering systems** (Webb, Vaughan, Li, Yang, Ahmadi-Bleicher, Elsholtz–Tao 2013): pushed to limit. Mordell's catalog as listed in A above is the resulting state of the art for explicit-identity covers. The 6 residues mod 840 listed in A are the irreducibly open frontier.
+3. **Greedy / extended-greedy**: produces 4-term, not 3-term, for the open residues.
+4. **Brauer–Manin obstruction analysis** (Bright & Loughran 2020): no obstruction.
+5. **Brute-force search**: Salez 2014 verified to $p \\leq 10^{17}$.
+6. **Heath-Brown 1996 density**: failures have density $O((\\log N)^{-3})$.
+7. **Density-1 Hasse-style results** (arXiv 2602.20036v2): cover almost all primes but the residual is still infinite.
+8. **Single-$\\delta$ ED2 disproof** for one prime: harness already verified $\\delta = 1$ fails for $p = 13$ but $\\delta = 2$ succeeds. Not progress on its own.
+9. **Finite verification of more primes**: would just be more cells.
+10. **Type II / ED2 (b, δ)-pinning** that lands in a Mordell-covered residue (e.g., $b=2, \\delta=2$ landing in 6 mod 7): mechanical re-derivation. The audit will reject.
+
+### C. The actually-open frontier
+
+After all the above reductions, the genuinely open territory for explicit-identity work is **primes $p$ with $p \\bmod 840 \\in \\{1, 121, 169, 289, 361, 529\\}$**. Note $121 = 11^2$, $169 = 13^2$, etc. — these residues catch primes for which all the standard small-modulus covers fail simultaneously.
+
+Concrete examples of primes in the open residue $n \\equiv 1 \\pmod{840}$: $1009, 2521, 5881, 6553, 7561, 9241, \\ldots$ Any "new" sub-residue covering identity must address one of these six cells (or a finer sub-residue WITHIN one of them, NOT a sub-residue of an already-solved cell).
+
+**Even more honestly: a polynomial-identity sub-residue cover for any of the 6 open residues mod 840 would be a real new result.** That's the explicit frontier for explicit-identity work. Anything else is re-derivation.
 
 ## Where creativity is needed
+
+The genuinely open frontier is **the six residues mod 840 listed in section A**: $\\{1, 121, 169, 289, 361, 529\\}$. Anything that addresses one of these — even partially — is real progress.
 
 The harness has not seen any of these *combinations* tried — these are open avenues for novel theses:
 
