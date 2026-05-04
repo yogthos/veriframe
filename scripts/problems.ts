@@ -1802,6 +1802,177 @@ You have 100 turns. Pick a target. Set a universal thesis. Verify what you actua
     maxSteps: 100,
   },
 
+  "hadwiger-nelson-moser-lean": {
+    id: "hadwiger-nelson-moser-lean",
+    type: "OPEN — Lean formalization of χ(R²) ≥ 4 via the Moser spindle (Mathlib contribution target)",
+    difficulty: "very-hard",
+    prompt: `## The narrow target
+
+**Ship a Lean 4 / Mathlib formalization of $\\chi(\\mathbb{R}^2) \\geq 4$ via the Moser spindle.** That is the entire deliverable. Other facets of the Hadwiger–Nelson problem (the de-Grey 5-bound, the 7-coloring upper bound, etc.) are explicitly out of scope for this run.
+
+This is **Mathlib-grade work** — no proven Hadwiger–Nelson result is currently in Mathlib, and this would be a clean small contribution.
+
+## Why this specific target
+
+The Hadwiger–Nelson Conjecture (1950, open) asks for $\\chi(\\mathbb{R}^2)$, the chromatic number of the unit-distance graph on the plane. Currently $5 \\leq \\chi \\leq 7$. The first non-trivial lower bound is **$\\chi \\geq 4$ via the Moser spindle** (Moser & Moser 1961): an explicit 7-vertex unit-distance graph $S$ with $\\chi(S) = 4$. The proof:
+1. $S$ is a finite subgraph of the unit-distance graph on $\\mathbb{R}^2$.
+2. $\\chi(S) = 4$ (no proper 3-coloring; explicit 4-coloring exists).
+3. Therefore $\\chi(\\mathbb{R}^2) \\geq 4$.
+
+This is **textbook mathematics**. The work is the **formalization** — making it a Lean 4 theorem against Mathlib's \`SimpleGraph.chromaticNumber\` API.
+
+## The Moser spindle, concretely
+
+7 vertices, 11 edges. Two unit rhombi (each composed of two equilateral triangles sharing an edge), joined at one vertex with the rhombi rotated to make a specific pair of distant vertices coincide at unit distance.
+
+Vertex coordinates (one standard placement):
+
+$$
+\\begin{aligned}
+v_0 &= (0, 0) \\\\
+v_1 &= (1, 0) \\\\
+v_2 &= (\\tfrac{1}{2}, \\tfrac{\\sqrt{3}}{2}) \\\\
+v_3 &= (\\tfrac{3}{2}, \\tfrac{\\sqrt{3}}{2}) \\\\
+v_4 &= \\text{rotation of } v_2 \\text{ around } v_0 \\text{ by some angle } \\theta \\\\
+v_5 &= \\text{rotation of } v_3 \\text{ around } v_0 \\text{ by } \\theta \\\\
+v_6 &= \\text{vertex completing the second rhombus, chosen so } |v_4 - v_6| = |v_5 - v_6| = 1
+\\end{aligned}
+$$
+with $\\theta$ chosen so $|v_3 - v_5| = 1$ as well — this is the constraint that makes the spindle work.
+
+**You don't need explicit Real coordinates to formalize $\\chi \\geq 4$.** See the strategy below.
+
+## Strategy — abstract graph FIRST, embedding SECOND
+
+The cleanest formalization decouples the two concerns:
+
+### Step 1: define the spindle as an abstract graph $S : \\text{SimpleGraph (Fin 7)}$
+
+Just the edge list. No coordinates.
+
+\`\`\`lean
+import Mathlib
+
+-- The Moser spindle: 7 vertices, 11 edges.
+-- Edge list (as unordered pairs, drawn from Mathlib examples):
+-- Triangle 1 (rhombus 1): {0,1,2} and {1,2,3} share edge {1,2}.
+-- Triangle 2 (rhombus 2): {0,4,5} and {4,5,6} share edge {4,5}.
+-- Connecting edge: {3,6}.
+def moserSpindleEdges : Finset (Sym2 (Fin 7)) :=
+  { s(0,1), s(0,2), s(1,2), s(1,3), s(2,3),  -- rhombus 1
+    s(0,4), s(0,5), s(4,5), s(4,6), s(5,6),  -- rhombus 2
+    s(3,6) }                                  -- connecting edge
+
+def moserSpindle : SimpleGraph (Fin 7) :=
+  SimpleGraph.fromEdgeSet (moserSpindleEdges : Set (Sym2 (Fin 7)))
+\`\`\`
+
+### Step 2: prove $\\chi(S) \\geq 4$ in Lean
+
+Lean's \`SimpleGraph.chromaticNumber\` is in \`Mathlib.Combinatorics.SimpleGraph.Coloring\`. The cleanest approach: prove $\\neg \\exists c : S.\\text{Coloring (Fin 3)}, \\text{True}$ — i.e., no proper 3-coloring exists.
+
+For 7 vertices and 3 colors, the search space is $3^7 = 2187$ — easily exhaustive in Lean via \`decide\` if we make \`Coloring (Fin 3)\` decidable. With \`Fin 7\` and \`Fin 3\` both being \`Fintype\`s, this should work directly with the right decidability instances.
+
+Alternative: prove $\\chi(S) \\geq 4$ via a structural argument — every 3-coloring restricted to one of the rhombi forces a specific pattern, and the connecting edge forces a contradiction.
+
+### Step 3: prove $S$ embeds as a unit-distance subgraph of $\\mathbb{R}^2$
+
+Define a map $f : \\text{Fin 7} \\to \\mathbb{R}^2$ (using Real square roots for the irrational $y$-coordinates) and prove:
+- $f$ is injective.
+- For every edge $\\{i, j\\}$ in moserSpindle, $\\| f(i) - f(j) \\| = 1$.
+
+Mathlib has \`Real.sqrt\`, \`Real.sqrt_three\`, basic \`@[simp]\` lemmas for $\\sqrt{3}^2 = 3$, etc. The arithmetic check $(p - q).1^2 + (p - q).2^2 = 1$ for each of the 11 edges is solvable by \`norm_num [Real.sq_sqrt]\` or similar.
+
+### Step 4: combine into the final theorem
+
+\`\`\`lean
+theorem chi_R2_ge_4 : 4 ≤ chiR2 := by
+  -- Use the embedding + chromatic-number monotonicity:
+  -- chiR2 ≥ chromaticNumber moserSpindle ≥ 4.
+  sorry
+\`\`\`
+
+You'll need a lemma stating that if $G \\hookrightarrow$ planeUnitDistanceGraph as a unit-distance subgraph, then $\\chi(G) \\leq \\chi(\\mathbb{R}^2)$. This is just monotonicity of chromatic number under sub-graph inclusion — Mathlib has \`SimpleGraph.chromaticNumber_le_of_hom\` or similar.
+
+## Lean starting material to re-define on turn 1
+
+\`\`\`lean
+import Mathlib
+
+-- Unit-distance relation on R².
+def unitDistance (p q : ℝ × ℝ) : Prop :=
+  (p.1 - q.1)^2 + (p.2 - q.2)^2 = 1
+
+-- The unit-distance graph on R².
+def planeUnitDistanceGraph : SimpleGraph (ℝ × ℝ) where
+  Adj p q := p ≠ q ∧ unitDistance p q
+  symm := by
+    intro p q ⟨hne, hd⟩
+    refine ⟨hne.symm, ?_⟩
+    show (q.1 - p.1)^2 + (q.2 - p.2)^2 = 1
+    have h1 : (q.1 - p.1)^2 = (p.1 - q.1)^2 := by ring
+    have h2 : (q.2 - p.2)^2 = (p.2 - q.2)^2 := by ring
+    linarith [hd]
+  loopless := fun p ⟨hne, _⟩ => hne rfl
+
+-- Chromatic number of the plane.
+noncomputable def chiR2 : ℕ∞ := planeUnitDistanceGraph.chromaticNumber
+\`\`\`
+
+## Process
+
+1. **Turn 1**: \`lean_define\` the prelude above.
+2. **Turn 2**: call \`thesis\` with goal = "Lean-formalize χ(R²) ≥ 4 via the Moser spindle", subClaims = the four steps above, technique = "Lean SimpleGraph + explicit edge list + finite-enumeration chromatic lower bound + Real-arithmetic embedding", nonFiniteJustification = "the Moser spindle's chromatic-number lower bound combined with its embedding gives a UNIVERSAL claim about R² (any coloring of R² induces a coloring of the embedded spindle, which has chromatic number ≥ 4)."
+3. **Turn 3+**: define \`moserSpindleEdges\` and \`moserSpindle\` abstractly (no coordinates yet).
+4. **Following turns**: prove $\\chi(\\text{moserSpindle}) \\geq 4$ — try \`decide\` first; if it times out, use a structural case analysis.
+5. **Then**: define the embedding $f : \\text{Fin 7} \\to \\mathbb{R}^2$ with explicit coordinates using \`Real.sqrt\`. Prove unit-distance for each of the 11 edges via \`norm_num\`-style tactics.
+6. **Finally**: combine into the theorem $\\chi(\\mathbb{R}^2) \\geq 4$.
+7. **Audit + done.**
+
+## What's been tried — DO NOT REPRODUCE
+
+1. **Verbal restatement of the spindle's $\\chi = 4$**: textbook. Just stating "the Moser spindle has chromatic number 4" without a formal Lean proof is not progress.
+2. **Hand-drawn case analysis without machine-checked steps**: re-deriving the standard case-analysis proof in prose is not progress; the proof must be in Lean and check.
+3. **Citing de Grey 2018 / Moser & Moser 1961 / Soifer's book**: pre-existing references aren't formalization.
+4. **The harness's own prior attempts** (commit \`86db656\`, problem \`hadwiger-nelson-chi\`): the prior run on a broader version of this problem hit Lean-syntax issues and shipped nothing. Don't repeat its failure mode (jumping straight to coordinates and getting stuck on \`Real.sqrt\` in pair literals). **Use the abstract-graph-first strategy above.**
+
+## What COUNTS as progress
+
+- A Lean theorem $\\chi(\\text{moserSpindle}) \\geq 4$ — a formal, machine-checked proof.
+- A Lean theorem stating that moserSpindle embeds as a unit-distance subgraph of $\\mathbb{R}^2$ (each edge has length exactly 1).
+- A combined Lean theorem $\\chi(\\mathbb{R}^2) \\geq 4$ via the spindle.
+- **Even a partial result** — e.g., the abstract spindle's $\\chi \\geq 4$ proven in Lean without the embedding — is a real contribution.
+- The unit-distance certificate for the spindle (i.e., for each edge $\\{i, j\\}$, $\\| f(i) - f(j) \\| = 1$) verified in Lean is a real artifact even on its own.
+
+## What does NOT count
+
+- A prose description of the proof without machine verification.
+- A Lean theorem statement with \`sorry\` or \`admit\`.
+- Verifying the spindle in Z3 alone — it must be in Lean, since the formalization is the deliverable.
+- Reproducing the chromatic-number lower bound for a different small graph that happens to also have $\\chi \\geq 4$ (e.g., $K_4$); the spindle is the canonical Hadwiger–Nelson witness and that's what we want formalized.
+
+## Critical reminders
+
+- **No \`sorry\`, no \`admit\`** in shipped proofs. The audit gate's Check A will reject incomplete proofs framed as complete.
+- **Abstract graph first, embedding second.** Most prior failure is from trying to do both at once and getting stuck on Real-arithmetic in vertex literals. Decouple.
+- **Try \`decide\` early.** For 7 vertices and 3 colors (chromatic-lower-bound check), the search space is $3^7 = 2187$. Lean's \`decide\` should handle this directly if the \`Coloring\` and \`SimpleGraph\` instances are decidable.
+- **JSON escaping**: use \`\\\\n\` for newlines in Lean snippets you embed in tool-call JSON. The harness has auto-repair but it's fragile and noisy.
+- **The audit gate is active.** Frame the answer to MATCH what's actually verified — if you only got the abstract spindle's $\\chi \\geq 4$ but not the embedding, ship that scoped honestly. Don't claim $\\chi(\\mathbb{R}^2) \\geq 4$ without the embedding.
+
+## Realistic outcomes
+
+- **Most likely + most valuable**: a Lean proof of $\\chi(\\text{moserSpindle}) \\geq 4$ on the abstract graph (without the $\\mathbb{R}^2$ embedding). This alone is shippable as a Mathlib contribution.
+- **Plausible**: the full $\\chi(\\mathbb{R}^2) \\geq 4$ theorem, including the embedding.
+- **Stretch**: the full theorem plus a proof that $\\chi(\\text{moserSpindle}) = 4$ (also exhibiting an explicit 4-coloring).
+
+## Budget: 100 turns
+
+Decouple. State the abstract graph. Prove $\\chi \\geq 4$ on it. Then embed. Then combine. Ship narrow if you don't make it all the way.`,
+    expectedAnswer:
+      "OPEN — but the deliverable is concrete: a Lean 4 formalization of χ(R²) ≥ 4 via the Moser spindle, or any verified partial step (the abstract spindle's chromatic-number lower bound, the unit-distance embedding certificate, or a combined theorem). Audit Check A rejects sorry-containing proofs; Check D rejects scope mismatches; Check E rejects re-derivations of the textbook prose proof.",
+    maxSteps: 100,
+  },
+
   "erdos-straus-mod1-informed": {
     id: "erdos-straus-mod1-informed",
     type: "OPEN PROBLEM — Erdős–Straus for n ≡ 1 mod 4 (literature-informed)",
