@@ -2156,6 +2156,279 @@ The chromatic part is done. Define $f$. Verify the 11 edges. Combine. Ship narro
     maxSteps: 100,
   },
 
+  "hadwiger-nelson-moser-final": {
+    id: "hadwiger-nelson-moser-final",
+    type: "OPEN — Land the χ(ℝ²) ≥ 4 ship: assemble the verified pipeline + audit + done",
+    difficulty: "hard",
+    prompt: `## Your task
+
+**Land the Lean 4 / Mathlib formalization of $\\chi(\\mathbb{R}^2) \\geq 4$ via the Moser spindle.** The mathematics is fully verified — the prior run shipped 9 of 11 edge unit-distance proofs in Lean, and the 2 missing edges plus the homomorphism + final theorem have been hand-verified to compile (full source below). **Your job is to lean_define the verified pipeline in chunks, verify each checkpoint, and ship via audit + done with a tight proposedAnswer.**
+
+This run is about **packaging and shipping** a fully-verified result. The audit gate has been over-rejecting on framing in prior runs; the framing rules are now explicit.
+
+## Background (verified before this run)
+
+The full proof of $\\chi(\\mathbb{R}^2) \\geq 4$ via the Moser spindle has been **hand-verified end-to-end** against Lean 4.29.1 + Mathlib (file: \`docs/lean-artifacts-MoserSpindle.lean\` in the repo). It consists of:
+
+1. **Chromatic part** (already worked in prior runs): \`spindleAdj\`, \`isProperColoring\`, \`no_3_coloring\`, \`moserSpindle\`, \`moserSpindle_not_colorable_3\`, \`moserSpindle_chromaticNumber_ge_4\`.
+2. **Plane unit-distance graph**: \`planeUnitDistanceGraph : SimpleGraph (ℝ × ℝ)\`.
+3. **Embedding**: \`f : Fin 7 → ℝ × ℝ\` with explicit coordinates.
+4. **11 edge unit-distance lemmas**: \`edge_0_1, edge_0_2, …, edge_5_6, edge_3_6\`. The 2 hardest ($\\{5,6\\}$ and $\\{3,6\\}$) use **\`ring\`-rewriting of $\\Delta x, \\Delta y$ before \`nlinarith\`** — this was the missing tactic in the prior run.
+5. **Symmetry helper**: \`distSq_symm\`.
+6. **Combined edge lemma**: \`f_edge_distSq\`.
+7. **Final theorem**: \`chiR2_ge_4 : 4 ≤ planeUnitDistanceGraph.chromaticNumber\`.
+
+## The verified Lean source — load via \`lean_define\` in chunks
+
+**Do NOT include \`import Mathlib\` in any \`lean_define\` snippet.** The harness REPL auto-imports Mathlib; including it mid-stream fails with "invalid import."
+
+**Chunk 1 — chromatic part** (verified compiling):
+
+\`\`\`lean
+def spindleAdj : Fin 7 → Fin 7 → Bool
+  | 0, 1 => true | 1, 0 => true | 0, 2 => true | 2, 0 => true
+  | 1, 2 => true | 2, 1 => true | 1, 3 => true | 3, 1 => true
+  | 2, 3 => true | 3, 2 => true | 0, 4 => true | 4, 0 => true
+  | 0, 5 => true | 5, 0 => true | 4, 5 => true | 5, 4 => true
+  | 4, 6 => true | 6, 4 => true | 5, 6 => true | 6, 5 => true
+  | 3, 6 => true | 6, 3 => true | _, _ => false
+
+def isProperColoring {k : ℕ} (f : Fin 7 → Fin k) : Bool :=
+  decide (∀ i j : Fin 7, spindleAdj i j = true → f i ≠ f j)
+
+theorem no_3_coloring : ¬ ∃ f : Fin 7 → Fin 3, isProperColoring f = true := by native_decide
+
+def moserSpindle : SimpleGraph (Fin 7) where
+  Adj i j := spindleAdj i j = true
+  symm := by intro i j h; fin_cases i <;> fin_cases j <;> simp_all [spindleAdj]
+  loopless := ⟨by intro i h; fin_cases i <;> simp [spindleAdj] at h⟩
+
+instance : DecidableRel moserSpindle.Adj := fun i j => by unfold moserSpindle; exact inferInstance
+
+theorem moserSpindle_not_colorable_3 : ¬ moserSpindle.Colorable 3 := by
+  intro h
+  obtain ⟨c⟩ := h
+  apply no_3_coloring
+  refine ⟨fun i => c i, ?_⟩
+  unfold isProperColoring
+  simp only [decide_eq_true_eq]
+  intro i j hadj
+  exact c.valid hadj
+\`\`\`
+
+**Chunk 2 — plane unit-distance graph + embedding** (verified compiling):
+
+\`\`\`lean
+def planeUnitDistanceGraph : SimpleGraph (ℝ × ℝ) where
+  Adj p q := p ≠ q ∧ (p.1 - q.1)^2 + (p.2 - q.2)^2 = 1
+  symm := by
+    intro p q ⟨hne, hd⟩
+    refine ⟨hne.symm, ?_⟩
+    have : (q.1 - p.1)^2 + (q.2 - p.2)^2 = (p.1 - q.1)^2 + (p.2 - q.2)^2 := by ring
+    rw [this]; exact hd
+  loopless := ⟨fun p ⟨hne, _⟩ => hne rfl⟩
+
+noncomputable def f : Fin 7 → ℝ × ℝ
+  | 0 => (0, 0)
+  | 1 => (1, 0)
+  | 2 => (1/2, Real.sqrt 3 / 2)
+  | 3 => (3/2, Real.sqrt 3 / 2)
+  | 4 => (5/6, Real.sqrt 11 / 6)
+  | 5 => ((5 - Real.sqrt 33) / 12, (Real.sqrt 11 + 5 * Real.sqrt 3) / 12)
+  | 6 => ((15 - Real.sqrt 33) / 12, (3 * Real.sqrt 11 + 5 * Real.sqrt 3) / 12)
+\`\`\`
+
+**Chunk 3 — easy edges** (5 edges using only $\\sqrt 3$ or $\\sqrt{11}$):
+
+\`\`\`lean
+theorem edge_0_1 : ((f 0).1 - (f 1).1)^2 + ((f 0).2 - (f 1).2)^2 = 1 := by
+  show ((0:ℝ) - 1)^2 + ((0:ℝ) - 0)^2 = 1; norm_num
+
+theorem edge_0_2 : ((f 0).1 - (f 2).1)^2 + ((f 0).2 - (f 2).2)^2 = 1 := by
+  show ((0:ℝ) - 1/2)^2 + ((0:ℝ) - Real.sqrt 3 / 2)^2 = 1
+  have h3 : Real.sqrt 3 * Real.sqrt 3 = 3 := Real.mul_self_sqrt (by positivity)
+  nlinarith [h3]
+
+theorem edge_1_2 : ((f 1).1 - (f 2).1)^2 + ((f 1).2 - (f 2).2)^2 = 1 := by
+  show ((1:ℝ) - 1/2)^2 + ((0:ℝ) - Real.sqrt 3 / 2)^2 = 1
+  have h3 : Real.sqrt 3 * Real.sqrt 3 = 3 := Real.mul_self_sqrt (by positivity)
+  nlinarith [h3]
+
+theorem edge_1_3 : ((f 1).1 - (f 3).1)^2 + ((f 1).2 - (f 3).2)^2 = 1 := by
+  show ((1:ℝ) - 3/2)^2 + ((0:ℝ) - Real.sqrt 3 / 2)^2 = 1
+  have h3 : Real.sqrt 3 * Real.sqrt 3 = 3 := Real.mul_self_sqrt (by positivity)
+  nlinarith [h3]
+
+theorem edge_2_3 : ((f 2).1 - (f 3).1)^2 + ((f 2).2 - (f 3).2)^2 = 1 := by
+  show ((1:ℝ)/2 - 3/2)^2 + (Real.sqrt 3 / 2 - Real.sqrt 3 / 2)^2 = 1; ring
+
+theorem edge_0_4 : ((f 0).1 - (f 4).1)^2 + ((f 0).2 - (f 4).2)^2 = 1 := by
+  show ((0:ℝ) - 5/6)^2 + ((0:ℝ) - Real.sqrt 11 / 6)^2 = 1
+  have h11 : Real.sqrt 11 * Real.sqrt 11 = 11 := Real.mul_self_sqrt (by positivity)
+  nlinarith [h11]
+\`\`\`
+
+**Chunk 4 — middle edges** (3 edges with all sqrt lemmas — the prior run got these via straight \`nlinarith\`):
+
+\`\`\`lean
+theorem edge_0_5 : ((f 0).1 - (f 5).1)^2 + ((f 0).2 - (f 5).2)^2 = 1 := by
+  show ((0:ℝ) - (5 - Real.sqrt 33) / 12)^2 + ((0:ℝ) - (Real.sqrt 11 + 5 * Real.sqrt 3) / 12)^2 = 1
+  have h3 : Real.sqrt 3 * Real.sqrt 3 = 3 := Real.mul_self_sqrt (by positivity)
+  have h11 : Real.sqrt 11 * Real.sqrt 11 = 11 := Real.mul_self_sqrt (by positivity)
+  have h33 : Real.sqrt 33 * Real.sqrt 33 = 33 := Real.mul_self_sqrt (by positivity)
+  have h3_11 : Real.sqrt 3 * Real.sqrt 11 = Real.sqrt 33 := by
+    rw [← Real.sqrt_mul (by positivity : (3 : ℝ) ≥ 0)]; norm_num
+  nlinarith [h3, h11, h33, h3_11]
+
+theorem edge_4_5 : ((f 4).1 - (f 5).1)^2 + ((f 4).2 - (f 5).2)^2 = 1 := by
+  show ((5:ℝ)/6 - (5 - Real.sqrt 33) / 12)^2 + (Real.sqrt 11 / 6 - (Real.sqrt 11 + 5 * Real.sqrt 3) / 12)^2 = 1
+  have h3 : Real.sqrt 3 * Real.sqrt 3 = 3 := Real.mul_self_sqrt (by positivity)
+  have h11 : Real.sqrt 11 * Real.sqrt 11 = 11 := Real.mul_self_sqrt (by positivity)
+  have h33 : Real.sqrt 33 * Real.sqrt 33 = 33 := Real.mul_self_sqrt (by positivity)
+  have h3_11 : Real.sqrt 3 * Real.sqrt 11 = Real.sqrt 33 := by
+    rw [← Real.sqrt_mul (by positivity : (3 : ℝ) ≥ 0)]; norm_num
+  nlinarith [h3, h11, h33, h3_11]
+
+theorem edge_4_6 : ((f 4).1 - (f 6).1)^2 + ((f 4).2 - (f 6).2)^2 = 1 := by
+  show ((5:ℝ)/6 - (15 - Real.sqrt 33) / 12)^2 + (Real.sqrt 11 / 6 - (3 * Real.sqrt 11 + 5 * Real.sqrt 3) / 12)^2 = 1
+  have h3 : Real.sqrt 3 * Real.sqrt 3 = 3 := Real.mul_self_sqrt (by positivity)
+  have h11 : Real.sqrt 11 * Real.sqrt 11 = 11 := Real.mul_self_sqrt (by positivity)
+  have h33 : Real.sqrt 33 * Real.sqrt 33 = 33 := Real.mul_self_sqrt (by positivity)
+  have h3_11 : Real.sqrt 3 * Real.sqrt 11 = Real.sqrt 33 := by
+    rw [← Real.sqrt_mul (by positivity : (3 : ℝ) ≥ 0)]; norm_num
+  nlinarith [h3, h11, h33, h3_11]
+\`\`\`
+
+**Chunk 5 — hard edges** (the 2 the prior run failed; **uses ring-rewrite of Δx, Δy first** before nlinarith — this is the missing tactic):
+
+\`\`\`lean
+theorem edge_5_6 : ((f 5).1 - (f 6).1)^2 + ((f 5).2 - (f 6).2)^2 = 1 := by
+  show (((5 : ℝ) - Real.sqrt 33) / 12 - ((15 : ℝ) - Real.sqrt 33) / 12)^2
+    + ((Real.sqrt 11 + 5 * Real.sqrt 3) / 12 - (3 * Real.sqrt 11 + 5 * Real.sqrt 3) / 12)^2 = 1
+  have h_dx : (((5 : ℝ) - Real.sqrt 33) / 12 - ((15 : ℝ) - Real.sqrt 33) / 12) = -5/6 := by ring
+  have h_dy : ((Real.sqrt 11 + 5 * Real.sqrt 3) / 12 - (3 * Real.sqrt 11 + 5 * Real.sqrt 3) / 12) = -Real.sqrt 11 / 6 := by ring
+  rw [h_dx, h_dy]
+  have h11 : Real.sqrt 11 * Real.sqrt 11 = 11 := Real.mul_self_sqrt (by positivity)
+  nlinarith [h11]
+
+theorem edge_3_6 : ((f 3).1 - (f 6).1)^2 + ((f 3).2 - (f 6).2)^2 = 1 := by
+  show ((3:ℝ)/2 - ((15 : ℝ) - Real.sqrt 33) / 12)^2 + (Real.sqrt 3 / 2 - (3 * Real.sqrt 11 + 5 * Real.sqrt 3) / 12)^2 = 1
+  have h_dx : ((3 : ℝ)/2 - ((15 : ℝ) - Real.sqrt 33) / 12) = (3 + Real.sqrt 33) / 12 := by ring
+  have h_dy : (Real.sqrt 3 / 2 - (3 * Real.sqrt 11 + 5 * Real.sqrt 3) / 12) = (Real.sqrt 3 - 3 * Real.sqrt 11) / 12 := by ring
+  rw [h_dx, h_dy]
+  have h3 : Real.sqrt 3 * Real.sqrt 3 = 3 := Real.mul_self_sqrt (by positivity)
+  have h11 : Real.sqrt 11 * Real.sqrt 11 = 11 := Real.mul_self_sqrt (by positivity)
+  have h33 : Real.sqrt 33 * Real.sqrt 33 = 33 := Real.mul_self_sqrt (by positivity)
+  have h3_11 : Real.sqrt 3 * Real.sqrt 11 = Real.sqrt 33 := by
+    rw [← Real.sqrt_mul (by positivity : (3 : ℝ) ≥ 0)]; norm_num
+  nlinarith [h3, h11, h33, h3_11]
+\`\`\`
+
+**Chunk 6 — combined edge lemma + final theorem** (verified compiling):
+
+\`\`\`lean
+theorem distSq_symm (i j : Fin 7)
+    (h : ((f i).1 - (f j).1)^2 + ((f i).2 - (f j).2)^2 = 1) :
+    ((f j).1 - (f i).1)^2 + ((f j).2 - (f i).2)^2 = 1 := by
+  have : ((f j).1 - (f i).1)^2 + ((f j).2 - (f i).2)^2
+       = ((f i).1 - (f j).1)^2 + ((f i).2 - (f j).2)^2 := by ring
+  rw [this]; exact h
+
+theorem f_edge_distSq : ∀ i j : Fin 7, spindleAdj i j = true →
+    ((f i).1 - (f j).1)^2 + ((f i).2 - (f j).2)^2 = 1 := by
+  intro i j hadj
+  fin_cases i <;> fin_cases j <;> simp_all [spindleAdj] <;> first
+    | exact edge_0_1 | exact distSq_symm 0 1 edge_0_1
+    | exact edge_0_2 | exact distSq_symm 0 2 edge_0_2
+    | exact edge_1_2 | exact distSq_symm 1 2 edge_1_2
+    | exact edge_1_3 | exact distSq_symm 1 3 edge_1_3
+    | exact edge_2_3 | exact distSq_symm 2 3 edge_2_3
+    | exact edge_0_4 | exact distSq_symm 0 4 edge_0_4
+    | exact edge_0_5 | exact distSq_symm 0 5 edge_0_5
+    | exact edge_4_5 | exact distSq_symm 4 5 edge_4_5
+    | exact edge_4_6 | exact distSq_symm 4 6 edge_4_6
+    | exact edge_5_6 | exact distSq_symm 5 6 edge_5_6
+    | exact edge_3_6 | exact distSq_symm 3 6 edge_3_6
+
+theorem chiR2_ge_4 : 4 ≤ planeUnitDistanceGraph.chromaticNumber := by
+  have h_not_3 : ¬ planeUnitDistanceGraph.Colorable 3 := by
+    intro ⟨c⟩
+    apply moserSpindle_not_colorable_3
+    refine ⟨{
+      toFun := fun i => c (f i),
+      map_rel' := by
+        intro i j hij
+        have hadj : spindleAdj i j = true := hij
+        have hd : ((f i).1 - (f j).1)^2 + ((f i).2 - (f j).2)^2 = 1 :=
+          f_edge_distSq i j hadj
+        have hne : f i ≠ f j := by
+          intro heq
+          rw [heq] at hd
+          have : ((f j).1 - (f j).1)^2 + ((f j).2 - (f j).2)^2 = 0 := by ring
+          linarith
+        exact c.valid ⟨hne, hd⟩
+    }⟩
+  by_contra h
+  rw [not_le] at h
+  have hle : planeUnitDistanceGraph.chromaticNumber ≤ 3 := by
+    have : planeUnitDistanceGraph.chromaticNumber < (3 : ℕ∞) + 1 := h
+    exact Order.le_of_lt_add_one this
+  apply h_not_3
+  rw [show (3 : ℕ∞) = ((3 : ℕ) : ℕ∞) from rfl] at hle
+  exact (SimpleGraph.chromaticNumber_le_iff_colorable).mp hle
+\`\`\`
+
+## Process
+
+1. **Turn 1**: \`thesis\` with goal "Lean 4 / Mathlib formalization of $\\chi(\\mathbb{R}^2) \\geq 4$ via the Moser spindle, end-to-end verified," subClaims = ["chromatic part loaded", "embedding loaded", "all 11 edges loaded", "f_edge_distSq combined", "chiR2_ge_4 closes"], technique = "lean_define each chunk verbatim, verify_lean checkpoint after each chunk loads, audit + done with the final theorem statement as proposedAnswer," nonFiniteJustification = "the final theorem $4 \\leq \\text{planeUnitDistanceGraph.chromaticNumber}$ is a UNIVERSAL claim about all colorings of $\\mathbb{R}^2$ — not a finite-instance verification."
+2. **Turns 2–7**: \`lean_define\` each of the 6 chunks above, in order. Verify with \`verify_lean #check theorem_name\` after each.
+3. **Turn 8+**: \`audit\` with the full theorem statement as the proposedAnswer (see specifics below). Then \`done\`.
+
+## Critical: the audit-gate framing rules
+
+The prior run's audits all failed because:
+- The proposedAnswer was a verbal summary, not the actual theorem.
+- The proposedAnswer included \`import Mathlib\` for documentation, which the auditor flagged as a compile error.
+
+**For this run, the proposedAnswer MUST**:
+1. Begin with the verbatim Lean theorem signature: \`theorem chiR2_ge_4 : 4 ≤ planeUnitDistanceGraph.chromaticNumber\`.
+2. State that it's verified by Lean kernel (which it is — see the verified file \`docs/lean-artifacts-MoserSpindle.lean\`).
+3. NOT include \`import Mathlib\`.
+4. NOT include verbose prose summarizing — just the theorem + a one-paragraph honest scope note.
+
+**Sample acceptable proposedAnswer** (use this template):
+
+> \`theorem chiR2_ge_4 : 4 ≤ planeUnitDistanceGraph.chromaticNumber\` is proved end-to-end in Lean 4 / Mathlib via the Moser spindle. The proof goes through (i) a verified-by-\`native_decide\` chromatic-lower-bound on the abstract spindle (\`moserSpindle_not_colorable_3\`), (ii) a unit-distance embedding \`f : Fin 7 → ℝ × ℝ\` with explicit coordinates using $\\sqrt 3$, $\\sqrt{11}$, $\\sqrt{33}$, (iii) 11 edge-distance-equals-1 lemmas combined into \`f_edge_distSq\`, and (iv) a graph-homomorphism construction transferring 3-coloring impossibility from the spindle to the plane. The final theorem is a universal claim about $\\chi(\\mathbb{R}^2)$, not a finite-instance verification. Mathlib does not currently have any Hadwiger–Nelson formalization; this is a Mathlib-grade contribution candidate. Honest scope: the proof establishes $\\chi(\\mathbb{R}^2) \\geq 4$ (the pre-de-Grey textbook bound), not $\\geq 5$ (de Grey 2018) or any improvement.
+
+## What's been tried — DO NOT REPRODUCE
+
+- The prior runs on \`hadwiger-nelson-chi\`, \`hadwiger-nelson-moser-lean\`, \`hadwiger-nelson-moser-embedding\` (commits \`86db656\`, \`88450b0\`, \`54d7af7\`). The first two failed on Lean syntax. The third verified 9 of 11 edges but couldn't ship due to audit-framing issues.
+- Re-deriving the chromatic bound via different SimpleGraph encodings.
+- Re-deriving any of the 11 edge lemmas via \`norm_num\` alone (won't close $\\sqrt 3$-bearing goals).
+- Re-deriving the hard edges $\\{5,6\\}$ and $\\{3,6\\}$ via straight \`nlinarith\` without \`ring\`-rewriting first (the prior run tried this and it didn't close).
+
+## Critical reminders
+
+- **No \`import Mathlib\`** in any \`lean_define\` snippet.
+- **The proposedAnswer must include the verbatim theorem signature** \`theorem chiR2_ge_4 : 4 ≤ planeUnitDistanceGraph.chromaticNumber\` so audit Check A can verify the deliverable's claim concretely.
+- **Honest scope**: $\\chi(\\mathbb{R}^2) \\geq 4$ is the pre-de-Grey bound. Don't claim $\\geq 5$ or anything stronger. Audit Check D will reject.
+- **Audit Check E**: this is a Mathlib formalization of a textbook result (Moser & Moser 1961) — not new mathematics. Frame as a Mathlib contribution / verification artifact, not as a new theorem.
+- **JSON escaping**: use \`\\\\n\` for newlines in lean_define strings, NOT raw newlines.
+
+## Realistic outcomes
+
+- **Most likely**: full ship of \`chiR2_ge_4\` as a Lean theorem.
+- **Plausible**: chunks 1–5 load, chunk 6's combined-edge \`first | ...\` doesn't quite work, ship the 11 individual edge theorems + chromatic part as scoped progress.
+- **Unlikely**: prelude doesn't load — would indicate a Mathlib-version drift since the hand-verification.
+
+## Budget: 100 turns
+
+Pre-stage. Verify. Audit. Ship.`,
+    expectedAnswer:
+      "Full ship: theorem chiR2_ge_4 : 4 ≤ planeUnitDistanceGraph.chromaticNumber, end-to-end verified in Lean 4 / Mathlib via the Moser spindle. Mathematics is hand-verified before this run; the run packages and ships.",
+    maxSteps: 100,
+  },
+
   "erdos-straus-mod1-informed": {
     id: "erdos-straus-mod1-informed",
     type: "OPEN PROBLEM — Erdős–Straus for n ≡ 1 mod 4 (literature-informed)",
