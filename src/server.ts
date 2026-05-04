@@ -11,10 +11,24 @@
  */
 
 import http from "node:http";
+import fs from "node:fs";
+import path from "node:path";
+import os from "node:os";
 import crypto from "node:crypto";
 import type { LLMClient } from "./llm/types.js";
 import type { ServerConfig } from "./config.js";
 import { runAgent } from "./harness/agent.js";
+
+/**
+ * Slugify a string into a filesystem-safe id (used for result-file paths
+ * when the client passes a `run_id`). Strict allowlist + length cap
+ * prevents an arbitrary-write vector if a malicious request sets
+ * run_id="../../etc/passwd".
+ */
+function slugifyRunId(s: string): string | null {
+  const cleaned = s.replace(/[^A-Za-z0-9_.-]/g, "").slice(0, 80);
+  return cleaned.length > 0 ? cleaned : null;
+}
 
 const MAX_BODY_SIZE = 10 * 1024 * 1024;
 
@@ -64,6 +78,12 @@ interface ChatRequest {
   max_turns?: number;
   /** When true, bypass the harness and call the model directly. */
   raw?: boolean;
+  /** Optional id used to write the run's full result to a file at
+   *  `${run_results_dir}/agent-<run_id>.json` once the harness loop
+   *  completes. Lets the client recover the result even if the HTTP
+   *  connection drops mid-run (long beam searches frequently outlast
+   *  TCP idle timeouts on flaky links). Slugified server-side. */
+  run_id?: string;
 }
 
 export function createServer(
@@ -160,7 +180,7 @@ export function createServer(
           }
         }
 
-        jsonResponse(res, 200, {
+        const responseBody = {
           id,
           object: "chat.completion",
           created,
@@ -174,7 +194,34 @@ export function createServer(
           ],
           usage: { prompt_tokens: 0, completion_tokens: 0, total_tokens: 0 },
           ...extra,
-        });
+        };
+
+        // Persist the run's full result to disk if the client passed a
+        // run_id. Lets the client recover after a TCP/idle-timeout
+        // disconnect on long beam searches — the file is the source of
+        // truth, the HTTP response is just the "done" signal. We write
+        // BEFORE sending the response so a client racing to read after
+        // a successful response always finds the file.
+        if (!body.raw && typeof body.run_id === "string") {
+          const slug = slugifyRunId(body.run_id);
+          if (slug) {
+            try {
+              const dir = path.join(os.tmpdir(), "harness-runs");
+              fs.mkdirSync(dir, { recursive: true });
+              const file = path.join(dir, `agent-${slug}.json`);
+              const tmp = `${file}.tmp`;
+              fs.writeFileSync(tmp, JSON.stringify(responseBody, null, 2));
+              fs.renameSync(tmp, file);
+              (responseBody as Record<string, unknown>).result_file = file;
+            } catch (e) {
+              console.error(
+                `[server] failed to write result file for run_id=${slug}: ${e instanceof Error ? e.message : String(e)}`,
+              );
+            }
+          }
+        }
+
+        jsonResponse(res, 200, responseBody);
       } catch (err) {
         errorResponse(
           res,
