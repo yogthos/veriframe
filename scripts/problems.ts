@@ -1073,19 +1073,52 @@ The latest run **verified one ED2 instance**: $(b, c, \\delta) = (2, 4, 2)$ is a
 
 That instance does NOT generalize to a proof of ED2 completeness — it's one cell in an infinite table. **Closing the universal claim "ED2 succeeds for every prime $p \\equiv 1 \\pmod 4$" would prove the Erdős–Straus residual.**
 
-## Approaches that have already been tried — DO NOT REPRODUCE
+## Approaches that have already been tried — DO NOT REPRODUCE IN ANY FRAMING
 
 The residual class has been picked at for 78 years. Spend zero turns on:
 
-1. **Polynomial identity in $p$ of any degree** (Mordell 1967): blocked because $1$ is a quadratic residue mod every prime $p \\equiv 1 \\pmod 4$. No closed form in $p$ alone solves uniformly.
-2. **Sub-residue covering systems** (Webb, Vaughan, Li, Yang, Ahmadi-Bleicher, Elsholtz): pushed to limit. Remaining residual is irreducibly open under this technique.
-3. **Greedy / extended-greedy**: produces 4-term, not 3-term.
-4. **Brauer–Manin obstruction analysis** (Bright & Loughran 2020): no obstruction. Local solvability fine.
-5. **Brute-force search**: Salez 2014 verified to $p \\leq 10^{17}$.
-6. **Heath-Brown 1996 density**: failures have density $O((\\log N)^{-3})$ but doesn't pin down any specific prime.
-7. **Density-1 Hasse-style results** (arXiv 2602.20036v2): cover almost all primes ≡ 1 mod 4 but the residual is still infinite.
-8. **Single-$\\delta$ ED2 disproof** (the harness's own prior run): we now know $\\delta = 1$ fails for $p = 13$ but $\\delta = 2$ succeeds. The general-$\\delta$ method is still standing.
-9. **Finite verification of more primes**: would just be more cells — does not yield a universal claim.
+### A. Already-proved residue classes (do not re-derive in any framing)
+
+**Critical**: any proof for ANY of the following classes — even via a different parameterization, a different technique, or a different reformulation — is a re-derivation, not progress. The audit's Check E will reject these.
+
+1. $n \\equiv 0 \\pmod 2$ (even). Lean theorem covers this.
+2. $n \\equiv 0 \\pmod 4$. Lean theorem covers this.
+3. $n \\equiv 3 \\pmod 4$ (Mordell). Lean theorem covers this. Includes the construction via $4k+3 = $ the prime, $(k+1, n(k+1)+1, n(k+1)(n(k+1)+1))$.
+4. $n \\equiv 5 \\pmod 8$. Lean theorem covers this.
+5. **$n \\equiv 5 \\pmod{12}$**. Lean theorem covers this. **Also re-derived in a prior run via ED2 with $(b, c, \\delta) = (1, (p+1)/3, 1)$ — this re-derivation is now itself a known and banned framing.** Any further "new" universal proof for $n \\equiv 5 \\pmod{12}$ — through ED2, through a polynomial identity, through any algebraic manipulation — is a re-derivation. Audit Check E will reject.
+6. **$n$ with any prime factor $q \\equiv 3 \\pmod 4$** (Hasse-style scaling reduction). Lean theorem covers this.
+
+The actually-open territory, after these reductions, is **primes $p$ with all prime factors $\\equiv 1 \\pmod 4$** — equivalently, **primes $p \\equiv 1 \\pmod 4$ themselves and products thereof**. Any "novel universal proof" must address this residual, not the already-covered classes above.
+
+**Specifically banned residue classes for re-derivation**:
+- $p \\equiv 5 \\pmod{12}$ (covered by Lean + by ED2 with $b=1, c=(p+1)/3, \\delta=1$).
+- $p \\equiv 1 \\pmod{12}$ that's also $\\equiv 5 \\pmod 8$ — already covered.
+- Any sub-residue $p \\equiv k \\pmod m$ where the residue class's *coverage* is implied by the existing Lean theorems above.
+
+### B. Methodological dead ends (do not reproduce regardless of framing)
+
+7. **Polynomial identity in $p$ of any degree** (Mordell 1967): blocked because $1$ is a quadratic residue mod every prime $p \\equiv 1 \\pmod 4$. No closed form in $p$ alone solves uniformly.
+8. **Sub-residue covering systems** (Webb, Vaughan, Li, Yang, Ahmadi-Bleicher, Elsholtz): pushed to limit. Remaining residual is irreducibly open under this technique.
+9. **Greedy / extended-greedy**: produces 4-term, not 3-term.
+10. **Brauer–Manin obstruction analysis** (Bright & Loughran 2020): no obstruction. Local solvability fine.
+11. **Brute-force search**: Salez 2014 verified to $p \\leq 10^{17}$.
+12. **Heath-Brown 1996 density**: failures have density $O((\\log N)^{-3})$ but doesn't pin down any specific prime.
+13. **Density-1 Hasse-style results** (arXiv 2602.20036v2): cover almost all primes ≡ 1 mod 4 but the residual is still infinite.
+14. **Single-$\\delta$ ED2 disproof** (the harness's own prior run): we now know $\\delta = 1$ fails for $p = 13$ but $\\delta = 2$ succeeds. The general-$\\delta$ method is still standing.
+15. **Finite verification of more primes**: would just be more cells — does not yield a universal claim.
+
+### C. Self-check before you set your thesis
+
+Before you call \`thesis\`, ask: **does my goal address territory that's NOT in the lists A and B above?** If the goal is "verify ED2 succeeds for some sub-residue of primes $\\equiv 1 \\pmod 4$," check whether that sub-residue is implied by an existing Lean theorem. The following residue classes (and their unions / intersections) are ALL already covered:
+
+- $\\{n : 2 \\mid n\\}$ — even
+- $\\{n : 4 \\mid n\\}$
+- $\\{n : n \\equiv 3 \\pmod 4\\}$
+- $\\{n : n \\equiv 5 \\pmod 8\\}$
+- $\\{n : n \\equiv 5 \\pmod{12}\\}$
+- $\\{n : \\exists q \\text{ prime}, q \\equiv 3 \\pmod 4, q \\mid n\\}$ — has a 3-mod-4 prime factor
+
+The residual is exactly **primes $p \\equiv 1 \\pmod 4$ themselves** (and products of such). Anything narrower than that is a re-derivation.
 
 ## Where creativity is needed
 
@@ -1156,24 +1189,26 @@ You MUST call \`thesis\` BEFORE any verification toward the goal. Without one, \
 
 ## Critical reminders
 
-- **The audit gate is active and Check D is sharp.** Universal thesis + instance-only artifact = audit FAIL. Frame your thesis to MATCH what your verified artifact actually shows. If you discover the universal goal is too ambitious, revise the thesis to a verified narrower claim — that's still real progress.
-- **Z3 over symbolic primes:** \`(declare-const p Int) (assert (and (> p 0) (= (mod p 4) 1)))\` plus quantifier instantiation. UNSAT here is a universal claim over the residue class. Use this pattern to make Z3 work for universal claims rather than instances.
+- **The audit gate is active and Checks D + E are sharp.** Universal thesis + instance-only artifact = D-fail. Re-derivation of an already-covered residue class (or an already-known result, in any framing) = E-fail. Frame your thesis to MATCH what your verified artifact actually shows AND target territory NOT covered by the prior catalog.
+- **Audit Check E (NEW) catches re-derivations.** A prior run shipped a "novel universal construction" for $p \\equiv 5 \\pmod{12}$ via ED2 — but $p \\equiv 5 \\pmod{12}$ is already covered by a Lean theorem with a different parameterization. The two constructions are mathematically equivalent (different (x,y,z) but same residue class). Check E catches this. **Before claiming novelty, compute one or two small instances of your construction and compare to the listed prior constructions for the same input — if they cover the same input, it's a re-derivation.**
+- **Z3 over symbolic primes:** \`(declare-const p Int) (assert (and (> p 0) (= (mod p 4) 1)))\` plus quantifier instantiation. UNSAT here is a universal claim over the residue class. Use this pattern to make Z3 work for universal claims rather than instances. **But verifying a universal-quantified algebraic identity over a residue class that's already covered does not buy novelty** — the identity is true (Z3 confirms) but the residue class is known.
 - **Lean for genuine generality:** if your structural argument needs induction or quantifier alternation that Z3 struggles with, formalize in Lean. The harness has Lean + Mathlib + a stateful proof environment.
 - **Don't promise more than you verified.** A verified \`reduction\` ("[claim A] reduces to [claim B]") is a real result even if [claim B] is itself unproved. Ship the reduction, scope your answer to "I verified this reduces to B; B is open."
 - **Negative / impossibility results count.** "I tried $X$, it provably can't work because of $Y$ — verified" is a real ship.
+- **Self-check before \`thesis\`**: does your goal address the genuinely open residual (primes $p \\equiv 1 \\pmod 4$ with no prime factor $\\equiv 3 \\pmod 4$, NOT in any sub-residue already covered)? If not, audit Check E will reject your eventual ship.
 
 ## Realistic outcomes (ranked by likelihood × value)
 
 - **Likely + meaningful**: a Lean-verified reduction theorem (Erdős–Straus residual ⇒ some easier-to-state structural claim). Even partial.
-- **Plausible + meaningful**: a Z3-verified universal lemma over symbolic $p$ that constitutes a sufficient condition for a sub-class.
+- **Plausible + meaningful**: a Z3-verified universal lemma over symbolic $p$ that constitutes a sufficient condition **for the genuinely open residual** (not for an already-covered sub-class).
 - **Plausible + significant**: a verified obstruction proving no proof in [framework] suffices.
 - **Vanishingly unlikely + transformative**: a full proof of the Erdős–Straus residual. Don't promise; aim for the structural intermediate steps.
 
 ## Budget: 100 turns
 
-Be creative. Be honest. Set a universal thesis. Verify what you actually verify. Ship narrow if needed.`,
+Be creative. Be honest. Set a universal thesis on the GENUINELY OPEN residual (not a sub-class of an already-covered result). Verify what you actually verify. Ship narrow if needed.`,
     expectedAnswer:
-      "OPEN. Expected outcome: a verified universal claim — a structural reduction, a verified sufficient condition, a verified obstruction, or a verified meta-statement (e.g., \"framework F cannot suffice because Y\"). Success measured by: (a) thesis is genuinely universal (not finite); (b) verified artifact's scope matches the thesis's scope (audit Check D enforces); (c) novel cross-disciplinary technique import or original thesis structure (not a retread of the catalogued dead ends).",
+      "OPEN. Expected outcome: a verified universal claim about the GENUINELY OPEN residual (primes p ≡ 1 mod 4 with all prime factors ≡ 1 mod 4) — a structural reduction, a verified sufficient condition, a verified obstruction, or a verified meta-statement. Success measured by: (a) thesis is genuinely universal (not finite); (b) verified artifact's scope matches thesis's scope (audit Check D); (c) target territory is NOT already covered by the prior Lean catalog or prior runs (audit Check E).",
     maxSteps: 100,
   },
 
