@@ -1417,6 +1417,199 @@ You have 100 turns. Pick a target (A–E). Set a universal thesis. Verify what y
     maxSteps: 100,
   },
 
+  "lonely-runner-n8-bound": {
+    id: "lonely-runner-n8-bound",
+    type: "OPEN — Verified universal lower bound on the Lonely Runner gap for n = 8",
+    difficulty: "very-hard",
+    prompt: `## Your task
+
+**Build on the prior run's verified Lean scaffolding to attempt a universal lower bound on the gap of loneliness $\\nu(S)$ for $n = 8$ that improves on Chen–Cusick's $1/(2n - 3) = 1/13$.**
+
+The prior run shipped a complete Lean 4 / Mathlib formalization of LRC's scaffolding for $n = 8$: definitions, the equivalence of circular distance to fractional-part condition, integer time-shift invariance, and the WLOG-zero reduction theorem — all proofs compiled (no \`sorry\`). **Your job now is to use that scaffolding to prove (Lean) or verify (Z3 over symbolic speeds) a universal gap-of-loneliness lower bound for $n = 8$.**
+
+## What "universal lower bound" means here
+
+For $n = 8$, after WLOG-zero reduction, a speed configuration is a 7-element \`Finset ℤ\` of distinct nonzero integers. The gap of loneliness is
+$$
+\\nu(S) \\;:=\\; \\max_{t \\in [0, 1)} \\min_{v \\in S} \\min(\\{vt\\},\\ 1 - \\{vt\\}).
+$$
+A "universal lower bound on $\\nu(S)$ for $n = 8$" is a constant $c > 0$ such that
+$$
+\\forall S \\subset \\mathbb{Z}\\setminus\\{0\\},\\ |S| = 7,\\ \\nu(S) \\geq c.
+$$
+The Lonely Runner Conjecture says $c = 1/8$ works. The current best published universal bound is $c = 1/13$ (Chen–Cusick 1999). **Any verified $c \\in (1/13,\\ 1/8]$ is a real result.**
+
+The bound can be **conditional**: e.g., a verified $c$ that holds for all speed sets with $\\max |v_i| \\leq M$ for some explicit $M$. State $M$ explicitly in your thesis and answer.
+
+## Lean scaffolding from the prior run — pre-staged for re-use
+
+The prior run shipped these definitions and lemmas. **Re-define them via \`lean_define\` as your first turn** so they're in your branch's Lean env:
+
+\`\`\`lean
+import Mathlib
+
+def isLonelyAt (S : Finset ℤ) (n : ℕ) (t : ℝ) : Prop :=
+  ∀ v ∈ S, (1 : ℝ) / n ≤ Int.fract (v * t) ∧
+            Int.fract (v * t) ≤ 1 - (1 : ℝ) / n
+
+def LonelyRunnerHolds (S : Finset ℤ) (n : ℕ) : Prop :=
+  ∃ t : ℝ, t ∈ Set.Ico (0 : ℝ) 1 ∧ isLonelyAt S n t
+
+def LonelyRunnerConjecture (n : ℕ) : Prop :=
+  ∀ S : Finset ℤ, S.card = n - 1 → (0 ∉ S) →
+    LonelyRunnerHolds S n
+
+def LonelyRunnerConjecture8 : Prop := LonelyRunnerConjecture 8
+
+theorem fract_iff_circledist (x : ℝ) (n : ℕ) (hnpos : 0 < n) :
+  (min x (1 - x) ≥ (1 : ℝ) / n) ↔
+  ((1 : ℝ) / n ≤ x ∧ x ≤ 1 - (1 : ℝ) / n) := by
+  constructor
+  · intro hmin
+    have hx : (1 : ℝ)/n ≤ x := le_trans hmin (min_le_left x (1 - x))
+    have h1x : (1 : ℝ)/n ≤ 1 - x := le_trans hmin (min_le_right x (1 - x))
+    have hxub : x ≤ 1 - (1 : ℝ)/n := by nlinarith
+    exact ⟨hx, hxub⟩
+  · intro ⟨hx1, hx2⟩
+    have h1x2 : (1 : ℝ)/n ≤ 1 - x := by nlinarith
+    exact le_min hx1 h1x2
+
+lemma fract_mul_add_int (v : ℤ) (t : ℝ) (k : ℤ) :
+    Int.fract (v * (t + (k : ℝ))) = Int.fract (v * t) := by
+  calc
+    Int.fract (v * (t + (k : ℝ))) = Int.fract (v * t + v * (k : ℝ)) := by ring
+    _ = Int.fract (v * t + ((v * k : ℤ) : ℝ)) := by push_cast; ring
+    _ = Int.fract (v * t) := by
+      simpa using Int.fract_add_intCast (v * t) (v * k)
+
+lemma isLonelyAt_add_int (S : Finset ℤ) (n : ℕ) (t : ℝ) (k : ℤ)
+    (h : isLonelyAt S n t) : isLonelyAt S n (t + (k : ℝ)) := by
+  unfold isLonelyAt at h ⊢
+  intro v hv
+  rcases h v hv with ⟨hl, hu⟩
+  have hfract : Int.fract (v * (t + (k : ℝ))) = Int.fract (v * t) :=
+    fract_mul_add_int v t k
+  exact ⟨hfract ▸ hl, hfract ▸ hu⟩
+\`\`\`
+
+You may need to add: a definition of $\\nu(S)$ (the gap of loneliness as a $\\sup$-or-$\\max$ over $t$), a lemma about its lower-bound semantics, and reductions to symbolic-speed verification.
+
+## Status of bounds
+
+| Bound | $n = 8$ value | Source |
+|---|---:|---|
+| Trivial pigeonhole | $1/14 = 1/(2n - 2)$ | Folklore |
+| **Chen–Cusick 1999** | **$1/13 = 1/(2n - 3)$** | Published |
+| **Conjectured (LRC)** | **$1/8$** | Wills 1967 |
+
+Recent / specialised improvements:
+- **Henze–Malikiosis 2017**: small improvements for specific $n$ via lattice-point methods.
+- **Beck–Hoşten–Sabia 2018**: integer-programming reformulation; computational bounds.
+- **Tao 2018 survey**: connects to view-obstruction; suggests polynomial-method potential (untried).
+- **Dubickas 2014**: density-1 result (for "most" speed sets, the conjecture holds).
+- **Pandey 2009**: explicit bounds for arithmetic-progression speeds.
+
+**The genuinely-open frontier for explicit $n = 8$ bounds is the gap from $1/13$ to $1/8$.** Even a verified $c = 1/13.5$ or $c = 1/12.9$ over a structured speed sub-class is a real partial result.
+
+## Approaches that have been tried — DO NOT REPRODUCE
+
+The conjecture has been worked on for 60 years.
+
+1. **Pigeonhole + naive bound** ($1/(2n-2) = 1/14$): trivial. Banned.
+2. **Chen–Cusick 1999 bound** ($1/(2n - 3) = 1/13$): published. Re-deriving with a different parameterization is a re-derivation; **audit Check E will reject**.
+3. **Reproducing the $n \\leq 7$ proofs** (Wills 1967, Betke–Wills 1972, Cusick–Pomerance 1984, Bohman–Holzman–Kleitman 2001, Barajas–Serra 2008): settled cases. Banned.
+4. **Brute-force over small speeds**: extensive computational checks have been done for $n = 8$ with $\\max v \\leq O(n!)$. Specific instance verifications are not progress.
+5. **View-obstruction equivalence** (Cusick 1973): the equivalence is established; re-deriving it is a re-derivation.
+6. **Generic Fourier-analytic upper bounds** on speed counts: standard. Re-deriving is banned.
+7. **Reductions to integer programming** (Beck–Hoşten–Sabia 2018): the IP formulation is published; re-deriving without solving is a re-derivation.
+8. **Probabilistic / density-1 arguments** (Dubickas 2014): density-1 is known; the residual is the open part.
+9. **Pandey 2009 arithmetic-progression bound** for general $n$: published. Re-deriving is banned. (Pandey covers $\\nu \\geq 1/(\\lfloor (n+1)/2 \\rfloor + 1) = 1/5$ for AP speeds at $n=8$; you must beat this for AP speeds to count as progress in that sub-class.)
+
+## Where the open frontier lives for $n = 8$
+
+The hardest cases are speed configurations where:
+- All seven speeds have small magnitudes relative to each other.
+- Continued-fraction expansions of speed ratios have specific Diophantine structure (small partial quotients).
+- The configuration has algebraic structure that makes Chen–Cusick tight.
+
+**Concrete sub-classes of $n = 7$ speed configurations where the open frontier sits**:
+- Speeds with $\\max |v| \\leq 100$ — a finite enumerable space; the universal bound restricted here is $\\geq 1/13$ but possibly strictly greater (Beck et al. 2018 conjecture this is exactly $1/8$).
+- Arithmetic-progression speeds $\\{a, a+d, \\ldots, a+6d\\}$ with $\\gcd(a, d) = 1$.
+- Coprime speeds (all $v_i$ pairwise coprime).
+- "Near-extremal" sets — those that achieve $\\nu(S)$ close to the Chen–Cusick bound for $n \\leq 7$.
+
+## Where creativity is needed
+
+The harness has not seen these tried — open avenues for novel theses:
+
+### Avenue I — Z3 over symbolic bounded speeds
+Encode the universal-quantified gap-of-loneliness inequality with $|v_i| \\leq M$ for an explicit $M$ (e.g., $M = 50, 100$). Negate the claim "$\\exists t: \\forall v_i \\in S, \\{v_i t\\} \\in [c, 1-c]$" and assert UNSAT. The result is **a verified universal bound for $n = 8$ over $|v| \\leq M$**. Tightening $M$ progressively gives stronger bounds.
+
+### Avenue II — Lean structural induction on speed configuration size
+The prior scaffolding lets you state $\\nu(S) \\geq c$ as a Lean theorem. Attempt a proof by induction on $|S|$: base case $|S| = 1$ trivially gives $\\nu(\\{v\\}) = 1/2$; inductive step would require a careful gap-tracking lemma.
+
+### Avenue III — Continued fractions for $n = 8$
+Express the speed ratios via continued fractions and bound $\\nu(S)$ from below using the convergents. Mathlib has \`Nat.continued\` (limited but partially usable). A Lean-formalized continued-fraction lower bound for $n = 8$ would be novel.
+
+### Avenue IV — Polynomial method (untried on LRC)
+Encode "$\\{v_i t\\} \\notin [c, 1-c]$" as a polynomial non-vanishing condition in $\\mathbb{F}_p$ for some auxiliary prime $p$. Apply Combinatorial Nullstellensatz to bound the number of valid $t$. **No published work on LRC uses the polynomial method.**
+
+### Avenue V — Sub-class verifications
+Pick a structurally interesting sub-class (AP speeds, coprime speeds, etc.) and prove a tight bound for it. The Lean scaffolding lets you state "$\\forall S \\in \\text{AP}_d : \\nu(S) \\geq c$" as a theorem.
+
+### Avenue VI — Cross-disciplinary
+- **Information theory**: bound the entropy of $(\\{v_i t\\})_{i=1}^7$ as $t$ varies; if entropy is high enough, all values must be far from $\\{0, 1\\}$.
+- **Algebraic geometry**: the variety $V_S = \\{t : \\exists v_i, \\{v_i t\\} = c\\}$ has bounded measure for small $c$; bound directly.
+- **Discrete Fourier analysis**: cancellations in $\\sum_i e^{2\\pi i v_i t}$ near $t = 0, 1$.
+
+## Mandatory thesis-first protocol
+
+You MUST call \`thesis\` BEFORE any verification toward the goal. Without one, \`audit\` (and therefore \`done\`) cannot fire. Your thesis must include:
+
+- **goal**: the explicit lower bound you're attempting. Include $c$, $M$ (if bounded), and the speed-class restriction (if any). Example: "$\\forall S \\subset \\mathbb{Z}\\setminus\\{0\\}, |S| = 7, \\max |v_i| \\leq 50: \\nu(S) \\geq 1/12$."
+- **subClaims**: the proof skeleton. Each entry is a verifiable step (Lean or Z3).
+- **technique**: name precisely (e.g., "Z3 universal-quantifier negation with $|v| \\leq 50$", "Lean inductive proof on $|S|$ via Mathlib's \`Finset.induction\`").
+- **nonFiniteJustification**: why the bound is universal in the relevant sense. State explicitly what's quantified-over and what's bounded.
+
+## What COUNTS as progress
+
+- A Lean-verified theorem $\\forall S, |S| = 7, P(S) \\Rightarrow \\nu(S) \\geq c$ for some explicit $c > 1/13$ and predicate $P$ that defines a non-trivial speed sub-class.
+- A Z3-verified universal bound $\\forall S, |v| \\leq M, |S| = 7, \\nu(S) \\geq c > 1/13$ with explicit $c$ and $M$.
+- A Lean-verified theorem stating $\\nu(S) \\geq 1/13$ over the FULL class (i.e., a Lean formalization of the Chen–Cusick bound) — Mathlib doesn't have this. **Lean formalization of an existing published bound counts as progress** because it's a different kind of work (formalization vs. proof discovery).
+- A verified reduction theorem narrowing the residual class (e.g., "if LRC holds for $\\max |v| \\leq M_0$, then it holds for all $|v|$" with explicit $M_0$).
+- A verified obstruction proving a specific proof technique can't push beyond $c = 1/12$.
+
+## What does NOT count
+
+- Verifying $\\nu(S) \\geq c$ for a specific instance $S$ (= one cell, no progress).
+- Restating Chen–Cusick's $1/13$ bound without a Lean proof (you must actually formalize it).
+- A bound that holds for "almost all" $S$ (density-1 results are Dubickas; banned).
+- A bound for $n \\leq 7$ (already settled).
+- A claim of $\\nu(S) \\geq c$ without an explicit $c$.
+
+## Critical reminders
+
+- **The audit gate is active (Checks A–E)**. Universal thesis + finite-instance artifact = D-fail. Re-derivation of Chen–Cusick / Bohman–Holzman–Kleitman / etc. = E-fail. Frame your thesis to MATCH what your verified artifact shows AND target territory NOT in the literature catalog.
+- **Z3 over bounded speeds**: \`(declare-const v_1 Int) ... (declare-const v_7 Int)\` with bounds. Distinctness via \`(distinct v_1 ... v_7 0)\`. Negation of \`(exists ((t Real)) (and ...))\` and check UNSAT. UNSAT here proves the bound holds for all bounded speed configurations.
+- **Lean for genuine generality**: with the scaffolding pre-staged, you can state $\\nu(S) \\geq c$ as a clean Lean theorem and attempt a proof. Use \`Finset.induction\`, \`Real.exists_lt_iff_ne_top\`, etc.
+- **Don't promise more than you verified.** A verified $c = 1/12.5$ for $|v| \\leq 50$ is a real partial result; framing it as "I closed LRC for $n = 8$" is a D-fail. State scope.
+- **Negative results count.** "Method $X$ provably can't push beyond $c = 1/12$ — verified" is a real ship.
+
+## Realistic outcomes
+
+- **Likely + meaningful**: a Lean formalization of an existing published bound (Chen–Cusick or a sub-class result) — Mathlib doesn't have these.
+- **Plausible + meaningful**: a Z3-verified universal bound with $|v| \\leq M$ for explicit small $M$ at $c$ slightly above $1/13$.
+- **Plausible + significant**: a Lean-verified bound for a structured sub-class (AP, coprime, etc.) at $c$ matching the literature.
+- **Vanishingly unlikely + transformative**: a verified universal bound at $c = 1/8$ closing LRC for $n = 8$.
+
+## Budget: 100 turns
+
+Build on the scaffolding. Pick a target. Set a universal thesis. Verify what you actually verify. Ship narrow if needed.`,
+    expectedAnswer:
+      "OPEN. Expected outcome: a verified bound on the gap of loneliness for n = 8 — typically a Lean formalization of Chen-Cusick (currently absent from Mathlib), a Z3-verified bound over symbolic speeds with explicit bounds, a Lean-verified bound for a structured sub-class, or a verified obstruction. Audit Checks D + E enforce honest scope and reject re-derivations.",
+    maxSteps: 100,
+  },
+
   "erdos-straus-mod1-informed": {
     id: "erdos-straus-mod1-informed",
     type: "OPEN PROBLEM — Erdős–Straus for n ≡ 1 mod 4 (literature-informed)",
