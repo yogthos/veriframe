@@ -2429,6 +2429,137 @@ Pre-stage. Verify. Audit. Ship.`,
     maxSteps: 100,
   },
 
+  "cap-set-f3-bound": {
+    id: "cap-set-f3-bound",
+    type: "Lean formalization target — Croot-Lev-Pach / Ellenberg-Gijswijt cap-set bound",
+    difficulty: "hard",
+    prompt: `## Your task
+
+**Lean-formalize the Croot–Lev–Pach / Ellenberg–Gijswijt upper bound on cap sets in $\\mathbb{F}_3^n$.** Mathlib does not currently have this formalization. Like the prior Hadwiger–Nelson Moser-spindle ship, this is a **formalization of textbook mathematics** — not a new theorem — that fills a Mathlib gap.
+
+The bound: every 3-AP-free subset $S \\subseteq \\mathbb{F}_3^n$ satisfies $|S| \\leq c^n$ for some $c < 3$. The Croot–Lev–Pach / Ellenberg–Gijswijt 2017 proof gives $c \\leq 2.756$ via the polynomial method (slice rank). Concretely, $|S| \\leq 3 \\cdot \\binom{n}{\\lceil 2n/3 \\rceil}$ which is $\\Theta((3 \\sqrt[3]{6})^n / n) \\approx 2.756^n$.
+
+The formalization target is the **non-asymptotic combinatorial bound** $|S| \\leq 3 \\cdot \\binom{n}{\\lceil 2n/3 \\rceil}$. The asymptotic constant $c \\leq 2.756$ is a corollary via Stirling but can be left as a follow-up.
+
+## Status of cap-set bounds
+
+| Bound | Year | By |
+|---|---|---|
+| $|S| \\leq O(3^n / n)$ | 1995 | Meshulam (Fourier-analytic) |
+| **$|S| \\leq c^n$ with $c \\leq 2.756$** | **2017** | **Croot–Lev–Pach / Ellenberg–Gijswijt (slice rank)** ← formalization target |
+| Lower bound $c \\geq 2.217$ | 2004 | Edel (explicit construction) |
+| Tightening either bound | OPEN | — |
+
+The "open problem" framing: closing the gap $c \\in [2.217, 2.756]$ is open and hard. Our target is the **2017 upper bound itself**, which is textbook polynomial-method.
+
+## What's already in Mathlib
+
+* \`MvPolynomial.combinatorial_nullstellensatz_exists_eval_nonzero\` (the polynomial method's core).
+* \`Finset.sum\`, \`Finset.card\`, \`Nat.choose\`, multinomial coefficients in \`Mathlib.Data.Nat.Choose.\*\`.
+* \`Matrix.rank\` / \`LinearAlgebra.Matrix.Rank\` — the Croot–Lev–Pach proof uses *slice rank*, which is Mathlib-formalizable but not currently a named definition.
+
+What's NOT in Mathlib:
+* The slice rank of a tensor / multilinear function.
+* Cap-set definitions (3-AP-free subsets of $\\mathbb{F}_3^n$).
+* The Croot–Lev–Pach / Ellenberg–Gijswijt theorem.
+
+## The proof outline (textbook)
+
+The polynomial-method proof is short — about 5 pages in Tao's blog exposition. Sketch:
+
+1. **Polynomial encoding**: for a cap set $S \\subseteq \\mathbb{F}_3^n$, define the polynomial
+   $P(x, y) = \\prod_i (1 - (x_i + y_i)^2)$
+   over $\\mathbb{F}_3$. Check $P(x, y) = 1$ if $x + y$ has no $-1$ entries (equivalently, $x + y$ is in the support of $\\{0, 1\\}^n$ as a subset of $\\mathbb{F}_3^n$).
+2. **Cap-set property**: for $a, b, c \\in S$ pairwise distinct, $a + b + c \\neq 0$ (since otherwise $a, b, c$ form a 3-AP). So $P(a, -b - a) = 0$ if $a, b \\in S$ are distinct (because $-b - a$ has a $-1$ entry where $a$ and $b$ disagree, otherwise it's $0$, but distinct $a, b$ means there's at least one disagreement).
+3. **Diagonal vs off-diagonal**: $P(a, -a - a) = P(a, -2a) = P(a, a) = 1$ for any $a \\in S$. So the matrix $M_{a,b} := P(a, -a - b)$ is the identity-on-diagonal matrix when restricted to $S \\times S$.
+4. **Slice rank**: by the slice-rank inequality, the slice rank of $M$ as a function of $a, b$ is at most $\\dim_{\\mathbb{F}_3}(\\text{deg-} \\leq d \\text{ polynomials})$ for $d = $ the bivariate-polynomial degree of $P$. Since $P$ has bivariate degree $2n$, the relevant subspace has dimension $\\binom{n}{\\lceil 2n/3 \\rceil}$ trivariate-polynomial wise (the precise calculation gives the binomial bound).
+5. **Conclude**: $|S| \\leq 3 \\cdot \\binom{n}{\\lceil 2n/3 \\rceil}$.
+
+The cleanest reference is **Tao's blog post "A symmetric formulation of the Croot–Lev–Pach / Ellenberg–Gijswijt capset bound" (2016-05-18)**.
+
+## Realistic targets, ranked by difficulty
+
+### Target A — Just the cap-set definition + a small explicit-instance verification
+Define \`isCapSet : Finset (Fin n → Fin 3) → Prop\` and verify a small explicit cap set (e.g., $|S| = 9$ in $\\mathbb{F}_3^3$, the maximum possible). Mathlib gap; small but real.
+
+### Target B — Slice rank definition + basic lemmas
+Define the slice rank of a multilinear function. Prove the bound used by CLP/EG: a tensor with diagonal-1 / off-diagonal-0 has slice rank exactly $|S|$. Mathlib gap; medium-sized contribution.
+
+### Target C — Full Croot–Lev–Pach / Ellenberg–Gijswijt theorem
+Prove the bound $|S| \\leq 3 \\cdot \\binom{n}{\\lceil 2n/3 \\rceil}$ for any cap set. Requires Targets A + B + the polynomial encoding + the dimension calculation. Significant Lean work but the proof is bounded in length.
+
+### Target D — Asymptotic exponent $c \\leq 2.756$
+Stirling-based corollary of Target C. Small follow-up.
+
+## Honest framing for the audit gate
+
+This is a Lean formalization of a 2017 textbook proof. The audit's Check E should accept this as a Mathlib formalization, not as new mathematics — frame your proposedAnswer accordingly. Re-deriving Croot–Lev–Pach (i.e., proving the same bound with a different polynomial encoding) is fine because the *formalization* is novel, even though the math is known.
+
+## Lean starting material to define
+
+\`\`\`lean
+import Mathlib
+
+-- Cap set: a 3-AP-free subset of (Fin 3)^n.
+def isCapSet {n : ℕ} (S : Finset (Fin n → Fin 3)) : Prop :=
+  ∀ a b c : Fin n → Fin 3, a ∈ S → b ∈ S → c ∈ S →
+    a + b + c = 0 → a = b ∧ b = c
+
+-- The maximum cap-set size for given n.
+noncomputable def maxCapSet (n : ℕ) : ℕ :=
+  sSup { k | ∃ S : Finset (Fin n → Fin 3), isCapSet S ∧ k = S.card }
+\`\`\`
+
+(Adjust as needed — Mathlib's idioms may suggest variants.)
+
+## Approaches to skip (DO NOT REPRODUCE)
+
+1. **Meshulam 1995's $O(3^n / n)$ Fourier bound**: weaker than Croot–Lev–Pach. Out of scope.
+2. **Edel 2004's lower-bound construction**: reverse direction; out of scope.
+3. **Tao's symmetric reformulation as a different proof**: pick one form (the original CLP polynomial $P(x, y) = \\prod(1 - (x+y)^2)$ works fine).
+4. **Restating known instances** (e.g., $|S| \\leq 9$ for $n = 3$) without a Lean proof.
+
+## Mandatory thesis-first protocol
+
+You MUST call \`thesis\` BEFORE any verification toward the goal. Your thesis must include:
+
+- **goal**: the Lean theorem you're targeting (state it as a precise Lean signature).
+- **subClaims**: the proof skeleton, decomposed into formally verifiable steps.
+- **technique**: name precisely (polynomial method via slice rank, or whatever route you choose).
+- **nonFiniteJustification**: this is a **Lean formalization** target — the universal claim is "for all $n$ and all cap sets $S$ in $\\mathbb{F}_3^n$, the bound holds." State that explicitly. Audit Check E accepts formalization framings.
+
+## What COUNTS as progress
+
+- Any Lean theorem in the chain above that compiles cleanly. Even Target A (the cap-set definition + a small instance) is a real Mathlib gap.
+- Target B (slice rank definition + diagonal lemma) is independently shippable as a Mathlib contribution.
+- Target C (the full bound) is the headline target.
+
+## What does NOT count
+
+- Re-deriving Meshulam's weaker bound.
+- A Lean theorem with \`sorry\` or \`admit\`.
+- A claim of the bound without a Lean proof.
+
+## Critical reminders
+
+- **No \`import Mathlib\` in lean_define snippets.** The harness REPL auto-imports.
+- **The audit gate is active (Checks A–E).** Use the prior runs' lessons: explicit Lean code in proposedAnswer, honest "this is a formalization, not a new theorem" framing, no overclaim.
+- **Lean has Mathlib's polynomial machinery.** Use \`MvPolynomial\`, \`Finset.sum\`, \`Nat.choose\`. Stepwise proofs via \`proof_start\`, etc.
+
+## Realistic outcomes
+
+- **Most likely**: Target A (cap-set definition + a small instance verification) ships. ~30 turns.
+- **Plausible**: Target A + Target B (slice rank). ~80 turns.
+- **Stretch**: Target A + B + C (full bound). May need significant hand-verification scaffolding like the Hadwiger–Nelson run, possibly across multiple runs.
+
+## Budget: 100 turns
+
+Pick a target. Set a thesis. Verify. Ship narrow if needed.`,
+    expectedAnswer:
+      "Lean formalization of a step toward the Croot-Lev-Pach / Ellenberg-Gijswijt cap-set bound. Most likely outcome: cap-set definition + a small instance verification (Target A). Stretch: slice rank definition (B) or full bound (C). Audit Checks A–E enforce honest formalization framing.",
+    maxSteps: 100,
+  },
+
   "erdos-straus-mod1-informed": {
     id: "erdos-straus-mod1-informed",
     type: "OPEN PROBLEM — Erdős–Straus for n ≡ 1 mod 4 (literature-informed)",
