@@ -2560,6 +2560,131 @@ Pick a target. Set a thesis. Verify. Ship narrow if needed.`,
     maxSteps: 100,
   },
 
+  "hadwiger-nelson-open": {
+    id: "hadwiger-nelson-open",
+    type: "OPEN PROBLEM — Push χ(ℝ²) past the existing 5/7 bounds with a general proof",
+    difficulty: "very-hard",
+    prompt: `## Your task
+
+Produce a Lean-formalized proof that improves on one of the two open bounds for the Hadwiger–Nelson chromatic number of the plane. Either:
+
+* **$\\chi(\\mathbb{R}^2) \\geq 6$** — exhibit and verify a 6-chromatic unit-distance graph, or
+* **$\\chi(\\mathbb{R}^2) \\leq 6$** — exhibit and verify a proper 6-coloring of $\\mathbb{R}^2$
+
+The proof must be a **universal claim about $\\mathbb{R}^2$**, formalized end-to-end in Lean.
+
+**Bounded counterexamples are explicitly NOT the goal.** A finite-instance verification of a known result (another $\\chi \\geq 5$ graph, Hadwiger's $\\chi \\leq 7$ coloring, etc.) does not satisfy this. The audit gate's Check D rejects universal-thesis-from-instance-only artifacts; that constraint is fully in force.
+
+## Current state of the art
+
+* **Lower bound**: $\\chi(\\mathbb{R}^2) \\geq 5$ — de Grey 2018 (1581-vertex unit-distance graph; reduced to ~510 vertices by Heule, Parts, Exoo).
+* **Upper bound**: $\\chi(\\mathbb{R}^2) \\leq 7$ — Hadwiger 1945 (explicit 7-coloring via hexagonal tiling, side length $\\sqrt 3$).
+
+Both bounds have stood since 1950. The genuine open territory is everything strictly between $\\chi \\geq 5$ and $\\chi \\leq 7$.
+
+## What we already have (current findings to build on)
+
+The harness's prior Hadwiger–Nelson runs produced a 313-line Lean file that compiles cleanly under Lean 4 + Mathlib. Re-define via \`lean_define\` as your first turn:
+
+\`\`\`lean
+-- Boolean adjacency for the Moser spindle (Moser–Moser 1961, χ ≥ 4 witness).
+def moserSpindleAdj : Fin 7 → Fin 7 → Bool
+  | 0, 1 => true | 1, 0 => true | 0, 2 => true | 2, 0 => true
+  | 1, 2 => true | 2, 1 => true | 1, 3 => true | 3, 1 => true
+  | 2, 3 => true | 3, 2 => true | 0, 4 => true | 4, 0 => true
+  | 0, 5 => true | 5, 0 => true | 4, 5 => true | 5, 4 => true
+  | 4, 6 => true | 6, 4 => true | 5, 6 => true | 6, 5 => true
+  | 3, 6 => true | 6, 3 => true | _, _ => false
+
+def moserSpindle : SimpleGraph (Fin 7) where
+  Adj i j := moserSpindleAdj i j = true
+  symm := by intro i j h; fin_cases i <;> fin_cases j <;> simp_all only [moserSpindleAdj]
+  loopless := ⟨by intro i h; fin_cases i <;> simp [moserSpindleAdj] at h⟩
+\`\`\`
+
+Plus 11 unit-distance edge lemmas under the embedding $f : \\text{Fin 7} \\to \\text{EuclideanSpace}\\, \\mathbb{R}\\, (\\text{Fin 2})$ with rotation $\\cos\\theta = 5/6$, $\\sin\\theta = \\sqrt{11}/6$, and a structural proof of $\\chi(\\text{moserSpindle}) \\geq 4$ via a Fin 3 case-analysis lemma. These give you the embedding mechanics and the chromatic-lower-bound infrastructure that any new $\\chi \\geq 6$ proof would also need.
+
+Mathlib's \`SimpleGraph.UnitDistEmbedding\` (Tan, Dec 2025) is also available and is the right abstraction for this problem.
+
+## What's been tried — DO NOT REPRODUCE
+
+Spend zero turns on these. The audit gate's Check E will reject re-derivations.
+
+1. **Re-deriving de Grey's $\\chi \\geq 5$ with a 1581-vertex graph** or any of its variants. The graph is published. Re-deriving with a different graph that also achieves $\\chi \\geq 5$ doesn't push past de Grey.
+2. **Re-deriving Hadwiger's $\\chi \\leq 7$ hexagonal coloring**. Standard textbook construction. Formalizing it is interesting but it's still $\\leq 7$.
+3. **The Heule / Parts / Exoo SAT-shrinking pipeline** for $\\chi \\geq 5$ graphs. They've already pushed from 1581 to ~510 vertices. The harness's verifier budget can't beat their compute.
+4. **Falconer 1981's measurable-coloring $\\chi \\geq 5$**. Restricted to measurable colorings, doesn't push the unrestricted bound.
+5. **Density-1 / "almost-all" results**. Not universal claims about $\\mathbb{R}^2$.
+6. **Mundinger 2023's contested $\\chi \\geq 6$ claim** which has not been independently verified. Re-deriving an unverified claim is not progress.
+7. **Verifying the Moser spindle's $\\chi \\geq 4$ in any new framing**. Already done in our prior run.
+
+## Where the open frontier actually is
+
+If $\\chi(\\mathbb{R}^2) \\geq 6$ is true, the witness is some unit-distance graph that is not 5-colorable. None has been found in 75 years. The space is constrained — there's no clean enumeration argument that closes this.
+
+If $\\chi(\\mathbb{R}^2) \\leq 6$ is true, the witness is a proper 6-coloring with no unit-distance pair sharing a color. Hadwiger's 7-coloring works because every color class has bounded diameter under $1$. A 6-coloring needs denser packing, and no construction has achieved this.
+
+Genuine angles that **haven't been successfully applied** by anyone:
+* Polynomial method or slice-rank arguments on unit-distance constraints.
+* Algebraic-geometry analysis of the unit-distance variety.
+* Spectral / Hoffman-bound analysis on candidate small graphs.
+* Fourier-analytic obstructions to periodic 6-colorings.
+* New SMT-based search for $\\chi \\geq 6$ graphs leveraging structural constraints we know de Grey-style $\\chi \\geq 5$ graphs satisfy.
+* Cross-disciplinary techniques from additive combinatorics, ergodic theory, or coding theory.
+
+## Use \`branch_theses\` from the start
+
+This problem genuinely admits multiple structurally orthogonal attacks. Use the new \`branch_theses\` tool at planning time with 2–4 candidate theses, each pulling from a **distinct** mathematical sub-area. Examples of distinct angles:
+
+* "Polynomial method via Combinatorial Nullstellensatz on unit-distance polynomials over $\\mathbb{F}_p$"
+* "Spectral lower bound (Hoffman) on candidate small unit-distance graphs"
+* "Fourier-analytic obstruction to periodic 6-colorings of $\\mathbb{R}^2$"
+* "SMT-based search for $\\chi \\geq 6$ graphs using de Grey's spindle structure as scaffolding"
+
+Don't propose two variants of the same idea — that doesn't buy diversity. Each thesis should be a different attack the others can't directly help.
+
+## What COUNTS as progress
+
+* A Lean-verified theorem of the form $\\chi(\\mathbb{R}^2) \\geq 6$ or $\\chi(\\mathbb{R}^2) \\leq 6$ (the headline result; would be a research breakthrough).
+* A Lean-verified reduction theorem: "if structural property $X$ holds for $\\mathbb{R}^2$, then $\\chi(\\mathbb{R}^2) \\geq 6$" (or $\\leq 6$), with a separately-checkable $X$.
+* A verified Z3 obstruction proving some specific class of constructions cannot achieve $\\chi \\geq 6$ or $\\leq 6$ (negative structural result; partial but real).
+* A verified proof that some new technique applied to a small candidate graph gives chromatic-lower-bound information that's not in the literature.
+
+## What does NOT count
+
+* **Bounded results**. A verified $\\chi \\geq 5$ for one specific graph, even a new one, doesn't push the universal bound past 5. The goal is the universal claim about $\\mathbb{R}^2$, not finite-instance work.
+* Restating known results (Hadwiger $\\chi \\leq 7$, Moser spindle $\\chi \\geq 4$, de Grey $\\chi \\geq 5$) in any framing.
+* Density / "almost-all" claims.
+* Heuristic numerical evidence (e.g., "we ran SAT and it didn't find a 5-coloring up to $N=100$").
+* A Lean theorem with \`sorry\` or \`admit\`.
+* A verified $\\chi \\geq 5$ on a smaller-than-510-vertex graph (incremental at most; not a new bound).
+
+## Mandatory thesis-first protocol
+
+You MUST call \`thesis\` or \`branch_theses\` BEFORE any verification toward the goal. Audit Checks A–E are all active:
+
+* **Check A** (encoding soundness): rejects vacuous SAT, missing distinctness, scope errors.
+* **Check B** (verdict-vs-answer): rejects misreadings of the engine's output.
+* **Check C** (thesis-vs-problem): rejects answers that address an easier related question.
+* **Check D** (thesis-vs-artifact): rejects universal claims backed only by instance verifications. Universal-bound work that lands an instance-only artifact will not pass.
+* **Check E** (novelty / re-derivation): rejects results that just dress up de Grey, Hadwiger, Moser, or Falconer in different parameterizations.
+
+## Realistic outcomes
+
+This problem has been open since 1950. Field Medal–adjacent techniques have been thrown at it. The realistic outcome is **honest failure**: produce verified partial progress while documenting why the chosen technique doesn't close the bound. That's a useful artifact even if it's not a research breakthrough.
+
+The non-realistic but possible outcomes:
+* A verified $\\chi(\\mathbb{R}^2) \\geq 6$ or $\\chi(\\mathbb{R}^2) \\leq 6$ — major research result.
+* A verified obstruction proving an entire technique class can't reach the open territory — significant negative result.
+
+## Budget: 100 turns per branch
+
+Branch with \`branch_theses\` to maximize angle diversity. Set theses. Verify what you actually verify. If your approach fails, document why honestly. Don't ship bounded results pretending they're general.`,
+    expectedAnswer:
+      "OPEN. Most likely outcome: honestly-scoped partial progress with a verified obstruction or reduction, not a closed bound. A verified chi(R²) ≥ 6 or chi(R²) ≤ 6 would be a major research result; not expected in this budget, but the harness should at minimum produce verified work that doesn't overclaim.",
+    maxSteps: 100,
+  },
+
   "erdos-straus-mod1-informed": {
     id: "erdos-straus-mod1-informed",
     type: "OPEN PROBLEM — Erdős–Straus for n ≡ 1 mod 4 (literature-informed)",
