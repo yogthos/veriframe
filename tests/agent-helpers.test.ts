@@ -35,6 +35,7 @@ function fakeBranch(over: Partial<BranchState> & { id: string }): BranchState {
     lastReview: over.lastReview ?? null,
     lastAudit: over.lastAudit ?? null,
     thesis: over.thesis ?? null,
+    pendingBranchTheses: over.pendingBranchTheses ?? null,
     milestonePromptInjected: over.milestonePromptInjected ?? false,
     messages: over.messages ?? [],
   };

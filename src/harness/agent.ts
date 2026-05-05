@@ -83,6 +83,14 @@ interface VerifyEvent {
  */
 const BEAM_WIDTH = 5;
 const CULL_THRESHOLD = 3;
+
+/** Max candidate theses a single `branch_theses` call may propose. The
+ *  first thesis commits the calling branch, the rest spawn children. */
+const MAX_BRANCH_THESES = 4;
+/** Hard cap on total branches per run, including dynamically-spawned
+ *  children. Prevents thesis-level forking from blowing up resources
+ *  if the model gets clever about it. */
+const MAX_TOTAL_BRANCHES = 15;
 /**
  * A branch is protected from culling if it produced a confirmed
  * artifact within the last N turns. Lets incremental-growth
@@ -250,6 +258,18 @@ export interface BranchState {
     nonFiniteJustification: string;
     setAtTurn: number;
   } | null;
+  /** Pending child theses to be spawned as sibling branches at the end
+   *  of the current turn. Populated by the `branch_theses` tool when a
+   *  branch proposes multiple candidate approaches. The harness's run
+   *  loop reads this field after each turn, spawns one child branch
+   *  per pending thesis, and then clears the field. Always null in
+   *  steady state. */
+  pendingBranchTheses: Array<{
+    goal: string;
+    subClaims: string[];
+    technique: string;
+    nonFiniteJustification: string;
+  }> | null;
   /** True once the harness has injected the "you have a verified
    *  result, time to review and ship" milestone prompt. Fires the
    *  first time the branch has any confirmed artifact. Prevents
@@ -401,6 +421,8 @@ Example:
 When verify_template confirms, **the cross-check is built in** — \`done\` is unblocked without needing a separate \`review\` call. For non-templated problems, fall back to \`verify_smt\` and run \`review\` manually.
 
 **thesis** — \`{"goal": "...", "subClaims": ["...", "..."], "technique": "...", "nonFiniteJustification": "..."}\`. **Required before \`audit\` (and therefore before \`done\`).** Commit to the structural plan you'll execute. \`goal\` is the universal statement you intend to prove (e.g., "for every prime p ≡ 1 mod 4, ∃ x,y,z ∈ ℕ⁺ with 4/p = 1/x + 1/y + 1/z"). \`subClaims\` is the proof skeleton, decomposed into formally verifiable steps. \`technique\` names the proof framework (e.g., "Combinatorial Nullstellensatz over Z/pZ", "Frobenius-structure case split", "rational-point counting on the surface S_p"). \`nonFiniteJustification\` is your explicit explanation for WHY this approach scales to the infinite/universal class — what makes the argument uniform-over-primes (or uniform-over-the-class) rather than just verifying finitely many instances. **Why this gate exists:** without a thesis, models default to verifying small instances of the easy parts and frame them as "general progress." The audit gate cross-checks each verified artifact against the registered thesis: if your thesis is universal and your artifact is instance-only, the audit will fail. **Calling \`thesis\` again overwrites** — committing to a different route is allowed but clears prior audit/review state. State your thesis EARLY (before any verify_* targeting the goal) so you have a reference to plan against; refine it as you learn what's tractable.
+
+**branch_theses** — \`{"theses": [Thesis, Thesis, ...]}\`. **Use this INSTEAD OF \`thesis\` when you see multiple structurally distinct angles worth exploring in parallel.** Each entry has the same shape as \`thesis\` (\`goal\`, \`subClaims\`, \`technique\`, \`nonFiniteJustification\`). The first thesis commits to the calling branch; each remaining thesis spawns a sibling child branch. Children inherit the parent's message history and Lean REPL env at fork time (so any prelude \`lean_define\`s carry through), but get fresh Prolog sessions and verified-artifacts lists. **Constraints:** branching is only allowed in the planning phase — before any thesis is committed AND before any confirmed verification work on the branch. Once you have a verified artifact you're committed to that route; use \`thesis\` to update the plan in place, no fork. Limit ${MAX_BRANCH_THESES} candidate theses per call. Children cannot themselves call \`branch_theses\`; they're committed to the depth-first feedback loop with the verifier. Use this when the problem genuinely admits two or more orthogonal attacks (e.g., polynomial method vs probabilistic vs algebraic), not when you're picking between minor variants of the same approach.
 
 **audit** — \`{"claim": "...", "proposedAnswer": "..."}\`. **MANDATORY pre-done step.** The auditor (a separate LLM call) reads the original problem, **your registered thesis**, your claim, the SMT-LIB / Lean code, AND your proposed final answer, then performs five checks: (a) **encoding soundness** — vacuous SAT, missing distinctness, quantifier scope, polarity, witness sanity; (b) **verdict-vs-answer alignment** — does your prose accurately describe what the engine actually verified? (catches the "Z3 said yes but I'm reading it as proving X when it actually shows Y" pattern); (c) **thesis-vs-problem reflection** — does the proposed answer address the original problem, or a different (possibly easier) related question?; (d) **thesis-vs-artifact alignment** — does the verified artifact advance a registered sub-claim? if the registered thesis is universal but the artifact verifies finitely many instances, the audit fails unless the answer explicitly scopes itself to those instances; (e) **novelty / re-derivation check (NEW)** — re-reads the problem's "prior verified results / DO NOT reproduce" sections and checks whether the proposed answer substantively re-derives any catalogued result with a different framing, parameterization, or technique. Re-derivation of a known result in new clothing fails E. Returns AUDIT PASSED or AUDIT FAILED. On FAILED, the audited artifact is downgraded to refuted; address the auditor's specific concern and re-audit. On PASSED, the audit unlocks \`done\` provided the eventual done()'s answer matches the audited proposedAnswer. \`done\` REQUIRES \`audit\` to have passed with a matching proposedAnswer — this is the harness's last line of defense against shipping a misframed conclusion. Requires \`thesis\` to be set first.
 
@@ -1692,6 +1714,114 @@ async function runTool(
       };
     }
 
+    case "branch_theses": {
+      // Thesis-level fork. Model proposes 2-N candidate approaches; the
+      // first commits to the calling branch, the remaining ones spawn
+      // sibling branches at end of turn (handled by the run loop, not
+      // here). Children inherit message history + Lean env up to this
+      // call but get fresh Prolog sessions and verified-artifacts lists.
+      //
+      // Only allowed in the planning phase: no thesis already committed
+      // AND no confirmed verification work on this branch. Once the
+      // proof loop has produced verified artifacts, the branch is
+      // committed to a route and any redirection should go through
+      // `thesis` (which overwrites in place, no fork).
+      if (session.thesis !== null) {
+        return {
+          result:
+            "[error] branch_theses can only be called before a thesis is committed. Use `thesis` to refine your current plan, or you've already committed.",
+        };
+      }
+      const hasConfirmed = session.verifiedArtifacts.some(
+        (a) =>
+          a.claimStatus === "confirmed" &&
+          !a.claim.startsWith("[review of]") &&
+          !a.claim.startsWith("[template "),
+      );
+      if (hasConfirmed) {
+        return {
+          result:
+            "[error] branch_theses is a planning-phase tool. This branch already has confirmed verification work — use `thesis` to update the plan in place instead of forking.",
+        };
+      }
+      const thesesRaw = args.theses;
+      if (!Array.isArray(thesesRaw) || thesesRaw.length < 2) {
+        return {
+          result:
+            "[error] branch_theses requires {theses: Thesis[]} with at least 2 entries. Each thesis has the same shape as `thesis`: {goal, subClaims, technique, nonFiniteJustification}. Use `thesis` (singular) if you only want one plan.",
+        };
+      }
+      if (thesesRaw.length > MAX_BRANCH_THESES) {
+        return {
+          result: `[error] branch_theses limit is ${MAX_BRANCH_THESES} candidate theses per call. Pick the ${MAX_BRANCH_THESES} most distinct angles.`,
+        };
+      }
+      // Validate each entry shares the same shape as `thesis`.
+      const validated: Array<{
+        goal: string;
+        subClaims: string[];
+        technique: string;
+        nonFiniteJustification: string;
+      }> = [];
+      for (let idx = 0; idx < thesesRaw.length; idx++) {
+        const t = thesesRaw[idx] as Record<string, unknown>;
+        if (typeof t !== "object" || t === null) {
+          return {
+            result: `[error] branch_theses[${idx}] must be an object with {goal, subClaims, technique, nonFiniteJustification}.`,
+          };
+        }
+        const goal = typeof t.goal === "string" ? t.goal.trim() : "";
+        const technique =
+          typeof t.technique === "string" ? t.technique.trim() : "";
+        const nonFiniteJustification =
+          typeof t.nonFiniteJustification === "string"
+            ? t.nonFiniteJustification.trim()
+            : "";
+        const subClaimsRaw = t.subClaims;
+        if (!goal || !technique || !nonFiniteJustification) {
+          return {
+            result: `[error] branch_theses[${idx}] is missing one of {goal, technique, nonFiniteJustification}. All four fields are required (same as the \`thesis\` tool).`,
+          };
+        }
+        if (!Array.isArray(subClaimsRaw) || subClaimsRaw.length === 0) {
+          return {
+            result: `[error] branch_theses[${idx}].subClaims must be a non-empty array of non-empty strings.`,
+          };
+        }
+        const subClaims: string[] = [];
+        for (const c of subClaimsRaw) {
+          if (typeof c !== "string" || c.trim().length === 0) {
+            return {
+              result: `[error] branch_theses[${idx}].subClaims must be a non-empty array of non-empty strings.`,
+            };
+          }
+          subClaims.push(c.trim());
+        }
+        validated.push({ goal, subClaims, technique, nonFiniteJustification });
+      }
+      // Commit the FIRST thesis to this branch.
+      session.thesis = {
+        ...validated[0],
+        setAtTurn: session.turns.length + 1,
+      };
+      // Stash the rest for the run loop to spawn as children.
+      session.pendingBranchTheses = validated.slice(1);
+      session.lastAudit = null;
+      session.lastReview = null;
+      const childCount = validated.length - 1;
+      const summaryLines = validated.map(
+        (t, i) =>
+          `  ${i + 1}. [${i === 0 ? "this branch" : `child branch`}] ${t.technique.slice(0, 80)} — ${t.goal.slice(0, 100)}`,
+      );
+      return {
+        result:
+          `OK — branch_theses committed. ${validated.length} candidate theses registered.\n` +
+          summaryLines.join("\n") +
+          `\n\nThis branch commits to thesis 1. ${childCount} sibling branch${childCount === 1 ? "" : "es"} will be spawned at the end of this turn pursuing thesis ${childCount === 1 ? "2" : `2..${childCount + 1}`}. Each child inherits the prelude (Lean env + message history) but gets a fresh Prolog session and verified-artifacts list.\n\nNext: attack thesis 1's sub-claims with Lean / SMT / Prolog. The audit gate will check artifacts against this thesis.`,
+        category: "success",
+      };
+    }
+
     case "audit": {
       // Layer 5 — LLM auditor. A sub-LLM call performs THREE checks:
       //   1. Soundness of the most recent confirmed artifact's
@@ -2124,7 +2254,7 @@ async function runTool(
 
     default:
       return {
-        result: `[error] unknown tool "${name}". Valid: add_rule, retract_rule, commit, verify, verify_smt, verify_template, verify_lean, lean_define, lean_search, proof_start, proof_step, proof_state, proof_undo, proof_close, proof_abandon, assume, discharge, review, thesis, audit, done, give_up.`,
+        result: `[error] unknown tool "${name}". Valid: add_rule, retract_rule, commit, verify, verify_smt, verify_template, verify_lean, lean_define, lean_search, proof_start, proof_step, proof_state, proof_undo, proof_close, proof_abandon, assume, discharge, review, thesis, branch_theses, audit, done, give_up.`,
       };
   }
 }
@@ -2439,8 +2569,86 @@ async function createBranch(
     lastReview: null,
     lastAudit: null,
     thesis: null,
+    pendingBranchTheses: null,
     milestonePromptInjected: false,
     messages: [{ role: "user", content: buildInitialUserMessage(problem) }],
+  };
+}
+
+/**
+ * Spawn a child branch off a parent at thesis-fork time. Children
+ * inherit:
+ *   - parent's full message history at the moment of fork (cloned)
+ *   - parent's Lean REPL env id (so any prelude `lean_define`s carry
+ *     through; subsequent extensions in parent vs child diverge into
+ *     independent env ids)
+ *   - parent's `problem` (same task)
+ *
+ * Children get fresh:
+ *   - Prolog session (a new process; we don't try to replay
+ *     `add_rule` history)
+ *   - verified-artifacts list (children attribute their own work)
+ *   - lastReview / lastAudit / consecutiveFailures (independent
+ *     verification state)
+ *
+ * The assigned thesis is set immediately; the child is ready to
+ * participate in the next turn's beam advance with that thesis as its
+ * registered structural plan.
+ */
+async function spawnChildBranch(
+  parent: BranchState,
+  childId: string,
+  assignedThesis: {
+    goal: string;
+    subClaims: string[];
+    technique: string;
+    nonFiniteJustification: string;
+  },
+  forkedAtTurn: number,
+): Promise<BranchState> {
+  const prolog = await createSession();
+  // Clone parent's message history. Each child needs an independent
+  // array since they'll diverge from this point.
+  const messages: ChatMessage[] = parent.messages.map((m) => ({
+    role: m.role,
+    content: m.content,
+  }));
+  // Append a synthesized framing message so the child's first
+  // independent turn understands the fork context.
+  const thesisLines = [
+    `You are branch ${childId}, spawned at turn ${forkedAtTurn} from a \`branch_theses\` call on parent branch ${parent.id}. The parent committed to a different candidate thesis. You are committed to this thesis:`,
+    `  goal: ${assignedThesis.goal}`,
+    `  technique: ${assignedThesis.technique}`,
+    `  sub-claims:`,
+    ...assignedThesis.subClaims.map((c, i) => `    ${i + 1}. ${c}`),
+    `  non-finite justification: ${assignedThesis.nonFiniteJustification}`,
+    "",
+    "Begin attacking the sub-claims. The Lean REPL env from the parent's prelude carries over (any `lean_define`s the parent did before the fork are in scope). Prolog session and verified artifacts are fresh for you.",
+  ].join("\n");
+  messages.push({ role: "user", content: thesisLines });
+  return {
+    id: childId,
+    status: "active",
+    problem: parent.problem,
+    finalAnswer: null,
+    turns: [],
+    prolog,
+    assertedBytes: 0,
+    verifyHistory: [],
+    hintCooldownTurns: 0,
+    leanProof: null,
+    verifiedArtifacts: [],
+    consecutiveFailures: 0,
+    // Inherit parent's lean env id. Subsequent `lean_define`s by either
+    // parent or child create new envs from this base, so they diverge
+    // cleanly without sharing post-fork state.
+    leanEnv: parent.leanEnv,
+    lastReview: null,
+    lastAudit: null,
+    thesis: { ...assignedThesis, setAtTurn: forkedAtTurn },
+    pendingBranchTheses: null,
+    milestonePromptInjected: false,
+    messages,
   };
 }
 
@@ -2731,6 +2939,66 @@ export async function runAgent(
           }
         } else if (outcome.category === "success") {
           b.consecutiveFailures = 0;
+        }
+      }
+
+      // Spawn any child branches requested via `branch_theses` this
+      // turn. The current branch keeps thesis 1; each remaining
+      // pending thesis becomes a sibling under MAX_TOTAL_BRANCHES cap.
+      // We process this after the outcome loop so the parent's state
+      // (esp. message history and lean env) is fully updated.
+      if (!state.doneBranchId) {
+        const newChildren: Promise<BranchState>[] = [];
+        for (const b of state.branches) {
+          if (!b.pendingBranchTheses || b.pendingBranchTheses.length === 0) {
+            continue;
+          }
+          const remainingBudget = MAX_TOTAL_BRANCHES - state.branches.length - newChildren.length;
+          if (remainingBudget <= 0) {
+            // No room left for more branches; warn the parent.
+            b.messages.push({
+              role: "user",
+              content:
+                `[harness note] Your branch_theses call requested ${b.pendingBranchTheses.length} child branch(es), but the run is at the total branch cap of ${MAX_TOTAL_BRANCHES}. Children were not spawned. Consider that the existing branches may already cover similar ground.`,
+            });
+            b.pendingBranchTheses = null;
+            continue;
+          }
+          const toSpawn = b.pendingBranchTheses.slice(0, remainingBudget);
+          if (toSpawn.length < b.pendingBranchTheses.length) {
+            b.messages.push({
+              role: "user",
+              content:
+                `[harness note] Your branch_theses call requested ${b.pendingBranchTheses.length} child branch(es) but the total branch cap of ${MAX_TOTAL_BRANCHES} only allows ${toSpawn.length}. The remaining theses were dropped.`,
+            });
+          }
+          b.pendingBranchTheses = null;
+          for (let i = 0; i < toSpawn.length; i++) {
+            const childIndex = i + 2; // parent is implicit "1", siblings start at 2
+            const childId = `${b.id}.${childIndex}`;
+            newChildren.push(
+              spawnChildBranch(b, childId, toSpawn[i], turn),
+            );
+          }
+        }
+        if (newChildren.length > 0) {
+          const settledChildren = await Promise.allSettled(newChildren);
+          for (const r of settledChildren) {
+            if (r.status === "fulfilled") {
+              state.branches.push(r.value);
+            } else {
+              // Best-effort: log via the global failure log so the
+              // surviving branches at least know.
+              state.globalFailureLog.push({
+                branchId: "(child-spawn)",
+                turn,
+                toolName: "branch_theses",
+                claim: "child branch creation",
+                reason:
+                  r.reason instanceof Error ? r.reason.message : String(r.reason),
+              });
+            }
+          }
         }
       }
 
