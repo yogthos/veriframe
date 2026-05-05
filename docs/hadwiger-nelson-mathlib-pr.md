@@ -2,59 +2,94 @@
 
 ## What this is
 
-A refactored, Mathlib-style version of the
-$\chi(\mathbb{R}^2) \geq 4$ proof, ready for upstream submission to
-Mathlib. Source: `docs/Mathlib_HadwigerNelson_MoserSpindle.lean`.
+A Mathlib-grade Lean 4 formalization of the Moser spindle as a unit-distance
+graph in the Euclidean plane, ready for upstream submission to Mathlib.
+Source: `docs/Mathlib_HadwigerNelson_MoserSpindle.lean`.
 
-Compiles cleanly against Lean 4.29.1 + Mathlib (no warnings, no
-`sorry`, no errors).
+Compiles cleanly against Lean 4.29.1 + Mathlib (no warnings, no `sorry`,
+no errors).
+
+## What's already in Mathlib
+
+- **`SimpleGraph.UnitDistEmbedding G E`** — the abstract structure for
+  unit-distance embeddings into a metric space. Added by Jeremy Tan in
+  PR [#32684](https://github.com/leanprover-community/mathlib4/pull/32684)
+  (merged Dec 2025) at
+  `Mathlib/Combinatorics/SimpleGraph/UnitDistance/Basic.lean`.
+- **`Counterexamples/HeawoodUnitDistance.lean`** — Tan's example showing
+  the Heawood graph (14 vertices) embeds as a unit-distance graph in the
+  plane, refuting Chvátal's 1972 suspicion.
+- **No Hadwiger–Nelson lower-bound formalization exists in Mathlib**
+  (verified via `git grep` and Mathlib PR search for "Moser spindle",
+  "Hadwiger Nelson", "chromatic number plane").
+
+## Critical bugs found and fixed during review
+
+The first refactor (commit `f5e86b8`) had three issues that this version
+fixes:
+
+1. **Metric bug**: defined the unit-distance graph on `ℝ × ℝ` using a
+   custom squared-distance formula. Mathlib's `dist` on `ℝ × ℝ` is the
+   **sup metric**, not Euclidean — they disagree. Fixed by using
+   `EuclideanSpace ℝ (Fin 2)`, the same convention used by the Heawood
+   counterexample file.
+2. **Didn't use `UnitDistEmbedding`**: defined a custom
+   `planeUnitDistanceGraph : SimpleGraph (ℝ × ℝ)` instead of using
+   Mathlib's existing `SimpleGraph.UnitDistEmbedding` abstraction. Fixed
+   by constructing `SimpleGraph.MoserSpindle.unitDistEmbedding` as the
+   primary embedding artifact.
+3. **Embedding injectivity proof was too thin**: the original used a
+   "distance 1 implies non-equal" trick, which works for graph-hom
+   construction but `UnitDistEmbedding` requires a proper `V ↪ E`
+   injection. Fixed by proving injectivity via x-coordinate
+   distinctness — all 7 vertices have distinct first coordinates,
+   shown by case-split + `nlinarith` with `5 < √33 < 6`.
 
 ## Mathlib conventions applied
 
 ### File-level
 
 - **Apache 2.0 license header** with author attribution.
-- **Module-level `/-! ... -/` doc comment** explaining the Hadwiger–Nelson
-  conjecture, listing main declarations + main results, and citing the
-  three key references (Moser & Moser 1961, Soifer 2009, de Grey 2018).
+- **Module-level `/-! ... -/` doc comment** explaining the
+  Hadwiger–Nelson conjecture, listing main declarations + main results,
+  and citing Moser–Moser 1961, Soifer 2009, and de Grey 2018.
 - **Tags section** for searchability.
-- **Targeted `import`s** (only what's needed: `Coloring`, `Pow.Real`,
-  `FinCases`, `Linarith`, `NormNum`, `Positivity`, `Ring`).
+- **Targeted `import`s**: `InnerProductSpace.PiL2`, `Pow.Real`,
+  `Coloring`, `UnitDistance.Basic`, `FinCases`, `Linarith`, `NormNum`,
+  `Positivity`, `Ring` — same set as Heawood plus `UnitDistance.Basic`.
 
 ### Namespacing
 
-| Old name | New name | Visibility |
+| Namespace | Exposed declaration | Visibility |
 |---|---|---|
-| `spindleAdj` | `HadwigerNelson.MoserSpindle.adj` | public |
-| `isProperColoring` | `HadwigerNelson.MoserSpindle.isProperColoring` | public |
-| `no_3_coloring` | `HadwigerNelson.MoserSpindle.no_three_coloring` | public |
-| `moserSpindle` | `HadwigerNelson.MoserSpindle.graph` | public |
-| `moserSpindle_not_colorable_3` | `HadwigerNelson.MoserSpindle.not_colorable_three` | public |
-| `moserSpindle_chromaticNumber_ge_4` | `HadwigerNelson.MoserSpindle.chromaticNumber_ge_four` | public |
-| `f` | `HadwigerNelson.MoserSpindle.embed` | public |
-| `edge_i_j` (×11) | `HadwigerNelson.MoserSpindle.embed_edge_i_j` (×11) | **private** |
-| `distSq_symm` | `HadwigerNelson.MoserSpindle.distSq_symm` | private |
-| `f_edge_distSq` | `HadwigerNelson.MoserSpindle.embed_edge_distSq` | public |
-| `planeUnitDistanceGraph` | `HadwigerNelson.unitDistanceGraph` | public |
-| `chiR2_ge_4` | `HadwigerNelson.chromaticNumber_unitDistanceGraph_ge_four` | public |
+| `SimpleGraph.MoserSpindle` | `adj : Fin 7 → Fin 7 → Bool` | public |
+| `SimpleGraph.MoserSpindle` | `isProperColoring` | public |
+| `SimpleGraph.MoserSpindle` | `no_three_coloring` | public |
+| `SimpleGraph.MoserSpindle` | `graph : SimpleGraph (Fin 7)` | public |
+| `SimpleGraph.MoserSpindle` | `not_colorable_three` | public |
+| `SimpleGraph.MoserSpindle` | `chromaticNumber_ge_four` | public |
+| `SimpleGraph.MoserSpindle` | `embed : Fin 7 → Plane` | public |
+| `SimpleGraph.MoserSpindle` | `unitDistEmbedding` | public |
+| `SimpleGraph.MoserSpindle` | `dist_eq_one_iff` | private |
+| `SimpleGraph.MoserSpindle` | `dist_embed_i_j` (×11) | private |
+| `SimpleGraph.MoserSpindle` | `dist_embed_eq_one` | private |
+| `SimpleGraph.MoserSpindle` | `embedX`, `embedX_eq` | private |
+| `SimpleGraph.MoserSpindle` | `embed_injective` | private |
 
-The 11 per-edge unit-distance lemmas are marked `private` since they're
-implementation details of `embed_edge_distSq`. The combined
-`embed_edge_distSq` is the public-facing edge property.
+### What's NOT in this PR
 
-### Documentation
+- A definition of `unitDistanceGraph (E : Type*) [MetricSpace E]` (the
+  unit-distance graph on a metric space). Mathlib doesn't have this; the
+  closest is `UnitDistEmbedding`. Adding the graph definition + a
+  colorability transfer lemma deserves its own PR.
+- The conclusion $\chi(\mathbb{R}^2) \geq 4$. Stating this requires the
+  unit-distance graph definition above. Once that PR lands, this is a
+  one-line corollary from `chromaticNumber_ge_four` + the embedding +
+  the colorability transfer.
 
-Every public declaration has a `/-- ... -/` docstring:
-- The unit-distance graph definition explains what unit-distance means.
-- The Moser spindle definition references the Moser–Moser construction.
-- The embedding's docstring spells out the rotation angle ($\cos = 5/6$,
-  $\sin = \sqrt{11}/6$).
-- The main theorem's docstring sketches the proof strategy (pull back
-  the coloring along the embedding).
-
-A separate `/-! #### ... -/` block above the per-edge lemmas explains the
-proof strategy (which sqrt lemmas are needed, why the two hardest edges
-need the `ring`-rewrite trick).
+This matches the Heawood Counterexample's scope: provide the
+graph + its embedding, leave the higher-level chromatic-number-of-the-plane
+claim as a follow-up.
 
 ## Notes on `native_decide`
 
@@ -62,58 +97,108 @@ The proof of `MoserSpindle.no_three_coloring` uses `native_decide` to
 exhaust all $3^7 = 2187$ candidate $3$-colorings. This is **the right
 tool** for the size; `decide` exhausts kernel recursion at this scale.
 
-Caveat: **`native_decide` does not work cleanly under the new Lean module
-system** (`module` / `public import`) due to native-code linking issues
-for `Pi.instFintype`. The PR uses **legacy `import`** style, which is
-still widely accepted in Mathlib and works correctly.
+`native_decide` is widely used in Mathlib (e.g., the Heawood file uses
+`decide +kernel` and `decide` for its various computations).
 
-When Mathlib's module-system compatibility for `native_decide` is
-resolved upstream, this file can be migrated.
+## File location for the PR
 
-## Next steps for upstream submission
+Following the Heawood pattern, the file goes in either:
 
-1. ✅ File compiles cleanly under Lean 4.29.1 + Mathlib.
-2. **Find the right place in the Mathlib file tree.** Suggested:
-   `Mathlib/Combinatorics/SimpleGraph/HadwigerNelson.lean` or
-   `Mathlib/Combinatorics/SimpleGraph/Coloring/HadwigerNelson.lean`.
-3. **Add a `Mathlib.lean` re-export entry** so the file is discoverable.
-4. **Run Mathlib CI locally** (or via the bot) to confirm no breakages.
-5. **Open a PR** with the body:
+* `Mathlib/Combinatorics/SimpleGraph/UnitDistance/MoserSpindle.lean`
+  (next to `Basic.lean`), or
+* `Counterexamples/MoserSpindleUnitDistance.lean`
+  (next to `HeawoodUnitDistance.lean`).
 
+The Moser spindle is *not* a counterexample — it's a positive result
+(an explicit small witness for $\chi(\mathbb{R}^2) \geq 4$). So the
+first location is more natural. The Mathlib reviewers will likely
+have a preference; either path is workable.
+
+## Draft PR title and body
+
+**Title**:
 ```
-feat(Combinatorics/SimpleGraph): formalize Hadwiger–Nelson chi(R^2) ≥ 4
+feat(Combinatorics/SimpleGraph/UnitDistance): the Moser spindle and chromaticNumber_ge_four
+```
 
-Adds a proof of chi(R^2) ≥ 4 (the textbook pre-de-Grey lower bound on
-the chromatic number of the plane) via the Moser spindle (Moser & Moser,
-1961). The proof uses native_decide to rule out a 3-coloring of the
-abstract 7-vertex spindle, then constructs an explicit unit-distance
-embedding f : Fin 7 → ℝ × ℝ and pulls back any 3-coloring of the plane
-to a 3-coloring of the spindle, contradiction.
+**Body**:
+```markdown
+This PR formalizes the **Moser spindle**, an explicit 7-vertex
+unit-distance graph in the Euclidean plane with chromatic number 4.
+The Moser spindle (Moser & Moser, 1961) is the classical witness for
+the lower bound χ(R²) ≥ 4 in the Hadwiger–Nelson problem: any unit-
+distance embedding into the plane combined with χ(spindle) ≥ 4 gives
+χ(R²) ≥ 4. The χ(R²) ≥ 4 conclusion itself requires a definition of
+the unit-distance graph on a metric space (not currently in Mathlib);
+that is left to a follow-up PR. This PR provides the spindle + the
+embedding + the abstract graph's chromatic-number lower bound.
 
-Mathlib does not currently have any Hadwiger–Nelson formalization.
-This is the foundation for future work toward de Grey's chi ≥ 5 (2018),
-Hadwiger's chi ≤ 7 upper bound (1945), and chromatic number bounds in
-higher dimensions.
+## Main contents
 
-References:
-- L. Moser & W. Moser, Solution to Problem 10, Canad. Math. Bull. 4 (1961)
-- A. Soifer, The Mathematical Coloring Book, Springer 2009
-- A. de Grey, The chromatic number of the plane is at least 5, 2018
+* `SimpleGraph.MoserSpindle.adj` : Boolean adjacency for the abstract
+  7-vertex Moser spindle (11 unordered edges).
+* `SimpleGraph.MoserSpindle.graph` : the abstract spindle as a
+  `SimpleGraph (Fin 7)`.
+* `SimpleGraph.MoserSpindle.not_colorable_three` : the spindle has no
+  proper 3-coloring (verified by `native_decide` over 3^7 = 2187
+  candidate functions).
+* `SimpleGraph.MoserSpindle.chromaticNumber_ge_four` : the spindle's
+  chromatic number is at least 4.
+* `SimpleGraph.MoserSpindle.embed` : the standard embedding into
+  `EuclideanSpace ℝ (Fin 2)` with rotation angle cos = 5/6,
+  sin = √11/6.
+* `SimpleGraph.MoserSpindle.unitDistEmbedding` : the embedding
+  assembled as a `SimpleGraph.UnitDistEmbedding` (using the
+  infrastructure from PR #32684).
+
+## Proof structure
+
+The 11 per-edge unit-distance proofs split by sqrt usage:
+- 5 edges in rhombus 1 use only `Real.sqrt 3`.
+- Edge {0,4} uses `Real.sqrt 11`.
+- 3 edges (0-5, 4-5, 4-6) use the multiplicative identity
+  `Real.sqrt 3 * Real.sqrt 11 = Real.sqrt 33`.
+- 2 hardest edges ({5,6} and {3,6}) require pre-simplifying Δx and Δy
+  via `ring` before `nlinarith` — straight `nlinarith` overflows on the
+  expanded polynomial.
+
+Injectivity is proved via x-coordinate distinctness (all 7 vertices
+have distinct first coordinates, using the bounds 5 < √33 < 6).
+
+## References
+
+- L. Moser & W. Moser, *Solution to Problem 10*, Canad. Math. Bull. 4 (1961)
+- A. Soifer, *The Mathematical Coloring Book*, Springer 2009
+- A. de Grey, *The chromatic number of the plane is at least 5*, 2018
 ```
 
 ## Provenance
 
 The proof was developed via the `reasoning-harness` LLM-driven
-verification framework, in a four-run sequence:
+verification framework in a four-run sequence (`hadwiger-nelson-chi`,
+`hadwiger-nelson-moser-lean`, `hadwiger-nelson-moser-embedding`,
+`hadwiger-nelson-moser-final`). The fourth run shipped a complete proof
+using `ℝ × ℝ` with custom squared-distance — which compiled but used the
+wrong metric (sup vs Euclidean) for an actual Hadwiger-Nelson statement.
 
-1. `hadwiger-nelson-chi` — failed, coordinate-first attempt got stuck.
-2. `hadwiger-nelson-moser-lean` — failed, SimpleGraph.Coloring decidability.
-3. `hadwiger-nelson-moser-embedding` — verified 9 of 11 edges, audit-blocked.
-4. `hadwiger-nelson-moser-final` — full ship of the verified pipeline.
+This file is the post-PR-prep cleanup that:
+- Switches to `EuclideanSpace ℝ (Fin 2)`.
+- Uses `SimpleGraph.UnitDistEmbedding`.
+- Adds proper injectivity proof.
+- Matches the Heawood file's style.
 
-Plus hand-verification interleaved between runs 3 and 4 to identify the
-missing tactic (`ring`-rewrite of $\Delta x, \Delta y$ before
-`nlinarith`) for the inter-rhombus edges $\{5,6\}$ and $\{3,6\}$.
+## Pre-PR checklist
 
-The harness's contribution was iteratively constructing the proof under
-audit-gate scrutiny; the mathematics is textbook.
+- [x] Compiles cleanly (Lean 4.29.1 + Mathlib).
+- [x] No `sorry`, no `admit`, no warnings.
+- [x] License header + author attribution.
+- [x] Module-level docstring with main declarations, main results, and references.
+- [x] All public declarations have docstrings.
+- [x] Per-edge implementation details marked `private`.
+- [x] Uses existing `UnitDistEmbedding` infrastructure (no duplicate definitions).
+- [x] Uses `EuclideanSpace ℝ (Fin 2)` (proper Euclidean metric).
+- [x] Tags section.
+- [x] Verified no existing Mathlib formalization conflicts.
+- [ ] Add file to `Mathlib.lean` re-exports (after deciding on file location).
+- [ ] Run Mathlib CI locally (or via Bors).
+- [ ] Open PR with the title + body above.
