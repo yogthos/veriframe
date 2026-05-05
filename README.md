@@ -1,53 +1,12 @@
 # reasoning-harness
 
-OpenAI-compatible HTTP server that wraps an LLM in a **claim-first verification loop** backed by three reasoning engines: **SWI-Prolog** (with CLP(FD)), **Z3 SMT**, and **Lean 4 + Mathlib**. The model commits to a one-sentence claim, the harness checks it, the model accumulates verified facts. The architecture follows the literature's settled findings on LLM-driven theorem proving and constraint solving (LeanDojo, Magnushammer, ReProver, ProB+Z3, Logic-LM).
+OpenAI-compatible HTTP server that wraps an LLM in a **claim-first verification loop** backed by three reasoning engines:
 
-Three classes of problem are first-class:
+- **SWI-Prolog** with `library(clpfd)` — relational and finite-domain CSPs (knights & knaves, zebra, sudoku).
+- **Z3 SMT** — numerical and theory-rich constraints (linear/nonlinear arithmetic, bitvectors, optimisation).
+- **Lean 4 + Mathlib** via a long-lived `leanprover-community/repl` subprocess — mathematical theorems, with proofs developed stepwise in tactic mode.
 
-- **Relational / finite-domain CSPs** (knights & knaves, zebra, sudoku) — SWI-Prolog with `library(clpfd)`.
-- **Numerical / theory-rich constraints** (linear/nonlinear arithmetic, bitvectors, optimisation) — Z3 4.15 via `execSync`.
-- **Mathematical theorems** (induction, ε-δ, real analysis, group theory, number theory) — Lean 4 + Mathlib via a long-lived `leanprover-community/repl` subprocess. Proofs run **stepwise**, the way a human writes one in tactic mode.
-
-## Tool surface
-
-The model picks tools per claim:
-
-```
-add_rule({name?, code})        — Prolog facts/rules; named = retractable, anonymous = permanent
-retract_rule({name})           — undo a tentative named rule
-commit({name})                 — lock a named rule in (no longer retractable)
-verify({claim, check})         — Prolog goal that succeeds iff the claim holds
-verify_smt({claim, smtlib})    — Z3 sat/unsat check
-verify_lean({claim, lean})     — one-shot Lean snippet against Mathlib
-lean_search({query, top_k?})   — retrieval over Mathlib's ~235k declarations
-proof_start({claim, theorem})  — open a stateful Lean proof session
-proof_step({tactic, claim?})   — apply ONE tactic; returns new goal state
-proof_state()                  — inspect current proof
-proof_undo({steps?})           — roll back N tactics (sub-second; REPL retains state)
-proof_close()                  — verify all goals discharged (optional — auto-finalised on close)
-proof_abandon()                — drop the active proof session
-assume({name, fact})           — open a hypothetical scope (for "if A then B" proofs)
-discharge({name})              — close the scope
-done({answer})                 — submit the final answer (with the verified Lean proof appended)
-give_up({reason})              — bail
-```
-
-A **stuck-detection heuristic** injects a "rethink the step / retract / decompose" hint after 3 consecutive failed verifies; auto-suggests Mathlib lemmas drawn from the *failed proof goal*, not the natural-language claim (per the ReProver / Magnushammer signal).
-
-## Validated benchmarks
-
-Six-for-six on math theorems with **GLM-5.1**:
-
-| problem | turns | time | tools used |
-|---|---|---|---|
-| AM-GM (∀ x y ≥ 0, 4xy ≤ (x+y)²) | 3 | 42s | 1× verify_lean (`nlinarith [sq_nonneg (x-y)]`) |
-| sum of evens is even | 6 | 55s | 1× verify_lean (`obtain`/`use`/`linarith`) |
-| Euclid (∞ many primes) | 5 | 43s | 2× lean_search + verify_lean |
-| 2^n > n by induction | 7 | 84s | proof_start + 5× proof_step |
-| √2 is irrational | 9 | 174s | 2× lean_search + 3× verify_lean |
-| Gauss `2·Σi = n(n+1)` | 17 | 94s | 8× lean_search + proof_start + 5× proof_step |
-
-The Gauss run especially illustrates the literature's premise-selection pattern: the model spent half its turns on `lean_search` narrowing in on `Finset.range_succ`, then proved the theorem in 4 tactics.
+Every claim the model wants to land has to round-trip through one of these engines. Verified facts accumulate; unverified ones don't ship.
 
 ## Install
 
@@ -71,31 +30,26 @@ cd tools/lean-workspace && lake update && cd ../..
 
 ### Z3
 
-Already on most macOS dev machines. If not:
-
 ```bash
-brew install z3
+brew install z3   # or your package manager of choice
 ```
 
-### LLM provider
+### Pick an LLM provider
 
-Pick one:
-
-- **Local (Qwen via node-llama-cpp)** — drop a GGUF into `models/`. Default config expects `models/Qwen3.6-35B-A3B-Q8_0.gguf`. Run with `./start.sh`.
-- **GLM-5.1 (Zhipu BigModel)** — export `ZHIPU_API_KEY`, then `./start-glm.sh`. GLM-5.1 is a thinking model; the provider merges `reasoning_content` + `content` into `<think>...</think>` framing so the agent's tool-call fence parser sees the fence wherever the model emits it.
-- **DeepSeek** — export `DEEPSEEK_API_KEY`, then `./start-deepseek.sh`. Default model is `deepseek-chat`; set `HARNESS_MODEL=deepseek-reasoner` for the thinking variant (same `reasoning_content` handling as GLM).
+- **Local (node-llama-cpp)** — drop a GGUF into `models/`. The default config expects `models/Qwen3.6-35B-A3B-Q8_0.gguf`. Run with `./start.sh`.
+- **GLM-5.1 (Zhipu BigModel)** — `export ZHIPU_API_KEY=…`, then `./start-glm.sh`. The provider merges `reasoning_content` + `content` into `<think>...</think>` framing so the tool-call fence parser sees the fence wherever the model emits it.
+- **DeepSeek** — `export DEEPSEEK_API_KEY=…`, then `./start-deepseek.sh`. Default model is `deepseek-chat`; set `HARNESS_MODEL=deepseek-reasoner` for the thinking variant.
 
 ## Run
 
 ```bash
 ./start-glm.sh   # GLM-5.1, default port 3001
-# or
-./start.sh       # local Qwen
+# or ./start-deepseek.sh / ./start.sh
 ```
 
-The server preloads the LLM (local) or validates the API key (GLM), then exposes the standard OpenAI shape at `/v1/chat/completions`. Lean's REPL is spawned lazily on the first proof tool call (~10-30s warm-up for `import Mathlib`); subsequent proof steps are sub-second.
+The server preloads the LLM (local) or validates the API key (remote), then exposes the standard OpenAI shape at `/v1/chat/completions`. Lean's REPL spawns lazily on the first proof tool call (~10–30s warm-up for `import Mathlib`); subsequent steps are sub-second.
 
-## Make a request
+### Send a request
 
 ```bash
 curl -sS -X POST http://localhost:3001/v1/chat/completions \
@@ -107,7 +61,17 @@ curl -sS -X POST http://localhost:3001/v1/chat/completions \
   }' | jq
 ```
 
-Or use the per-problem driver against the registry:
+The response body has `choices[].message.content` (the model's natural-language answer plus the verified Lean proof) and a non-standard `harness` field with the per-step trace.
+
+To bypass the harness and call the model directly, send `"raw": true`:
+
+```bash
+curl -sS -X POST http://localhost:3001/v1/chat/completions \
+  -H 'Content-Type: application/json' \
+  -d '{"messages": [{"role": "user", "content": "..."}], "raw": true}'
+```
+
+### Run a benchmark problem
 
 ```bash
 npx tsx scripts/agent-only.ts math-induction-pow2-gt-n
@@ -116,25 +80,48 @@ npx tsx scripts/agent-only.ts knights-3
 npx tsx scripts/agent-only.ts zebra-5x5
 ```
 
-The response body has `choices[].message.content` (the model's natural-language answer + the verified Lean proof) and a non-standard `harness` field with the per-step trace.
+The full registry lives in `scripts/problems.ts`.
 
-### Bypass the harness
+## Tool surface
 
-Send `"raw": true` to call the model directly:
+Tools the model can call inside the agent loop:
 
-```bash
-curl -sS -X POST http://localhost:3001/v1/chat/completions \
-  -H 'Content-Type: application/json' \
-  -d '{"messages": [{"role": "user", "content": "..."}], "raw": true}'
 ```
+add_rule({name?, code})        Prolog facts/rules; named = retractable, anonymous = permanent
+retract_rule({name})           undo a tentative named rule
+commit({name})                 lock a named rule in
+verify({claim, check})         Prolog goal that succeeds iff the claim holds
+verify_smt({claim, smtlib})    Z3 sat/unsat check
+verify_template({claim, template, slots})
+                               vetted SMT template; primary + cross-check encodings must agree
+verify_lean({claim, lean})     one-shot Lean snippet against Mathlib
+lean_define({code})            extend the branch's persistent Lean env (defs / axioms / lemmas)
+lean_search({query, top_k?})   retrieval over Mathlib's ~235k declarations
+proof_start({claim, theorem})  open a stateful Lean proof session
+proof_step({tactic, claim?})   apply ONE tactic; returns new goal state
+proof_state() / proof_undo({steps?}) / proof_close() / proof_abandon()
+assume({name, fact}) / discharge({name})
+                               open / close a hypothetical scope
+thesis({goal, subClaims, technique, nonFiniteJustification})
+                               commit the structural plan before attacking the goal
+audit({claim, proposedAnswer}) sub-LLM auditor; mandatory pre-`done` soundness gate
+review({claim, rationale, ...}) independent cross-check of a confirmed artifact
+done({answer}) / give_up({reason})
+```
+
+Shipping gates run **thesis → verify_\* → review (or verify_template, which has the cross-check baked in) → audit → done**. `done` is blocked unless the latest `audit` passed against a matching `proposedAnswer` and (for non-template confirmations) `review` ran.
+
+Bundled SMT templates: `sidon_set`, `no_3ap_subset`, `cap_set_f3n`, `schur_coloring` (see `src/harness/smt-templates.ts`).
+
+A stuck-detection heuristic injects a "rethink the step / retract / decompose" hint after 3 consecutive failed verifies and auto-suggests Mathlib lemmas drawn from the *failed proof goal* rather than the natural-language claim (the ReProver / Magnushammer signal).
 
 ## Configuration
 
 | Variable | Default | Notes |
 |---|---|---|
-| `HARNESS_PROVIDER` | auto-detect | `local` / `glm` / `deepseek`. Auto-picks `glm` if `ZHIPU_API_KEY` is set, else `deepseek` if `DEEPSEEK_API_KEY` is set, else `local`. |
+| `HARNESS_PROVIDER` | auto-detect | `local` / `glm` / `deepseek`. Picks `glm` if `ZHIPU_API_KEY` is set, else `deepseek` if `DEEPSEEK_API_KEY` is set, else `local`. |
 | `HARNESS_MODEL_PATH` | — | GGUF path (local provider only) |
-| `HARNESS_MODEL` | per-provider default | Model name for the wire payload (`local-model` / `glm-5.1` / `deepseek-chat`) |
+| `HARNESS_MODEL` | per-provider default | Wire model name (`local-model` / `glm-5.1` / `deepseek-chat`) |
 | `ZHIPU_API_KEY` | — | Required when `HARNESS_PROVIDER=glm` |
 | `DEEPSEEK_API_KEY` | — | Required when `HARNESS_PROVIDER=deepseek` |
 | `HARNESS_PORT` | `3000` | HTTP port |
@@ -142,9 +129,9 @@ curl -sS -X POST http://localhost:3001/v1/chat/completions \
 | `HARNESS_TIMEOUT_MS` | `300000` | Per-LLM-call wall clock |
 | `HARNESS_LEAN_WORKSPACE` | `tools/lean-workspace` | Override the Lean workspace path |
 | `HARNESS_LEAN_REPL_BIN` | `tools/lean-repl/.lake/build/bin/repl` | Override the Lean REPL binary path |
-| `HARNESS_LEAN_TIMEOUT_MS` | `120000` | Per-Lean-call timeout (fallback for `lake env lean` path) |
+| `HARNESS_LEAN_TIMEOUT_MS` | `120000` | Per-Lean-call timeout (fallback `lake env lean` path) |
 
-Per-request fields (in the JSON body):
+Per-request fields:
 
 | Field | Default | Notes |
 |---|---|---|
@@ -154,51 +141,9 @@ Per-request fields (in the JSON body):
 ## Tests
 
 ```bash
-npm run test:run    # 69 tests across prolog / smt / lean / lean-search / lean-proof / agent helpers
+npm run test:run
 npm run typecheck
 ```
-
-## Project layout
-
-```
-src/
-  bin/server.ts            Entry — preload + HTTP listen
-  server.ts                OpenAI-compatible routes
-  config.ts                env → ServerConfig
-  harness/
-    agent.ts               REPL-style tool-call loop + verification
-    prolog.ts              SWI-Prolog wrapper (in-process WASM via prolog-wasm-full)
-    smt.ts                 Z3 wrapper (execSync to system binary)
-    lean.ts                One-shot Lean wrapper (lake env lean --json)
-    lean-search.ts         Mathlib premise-retrieval index (keyword)
-    lean-proof.ts          Stateful Lean proof sessions
-    lean-repl.ts           Long-lived leanprover-community/repl subprocess
-  llm/
-    local.ts               node-llama-cpp provider (Qwen / Mistral / Llama family)
-    glm.ts                 GLM (Zhipu BigModel) thin wrapper
-    deepseek.ts            DeepSeek thin wrapper
-    openai-compat.ts       Shared OpenAI-compatible HTTP factory (used by glm + deepseek)
-    types.ts               ChatMessage, LLMResponse, etc.
-scripts/
-  agent-only.ts            Run one benchmark problem against the harness
-  compare.ts               Direct-vs-harness side-by-side
-  problems.ts              Benchmark problem registry (puzzles + math theorems)
-tools/
-  lean-workspace/          Lean project pinning Mathlib v4.29.1
-  lean-repl/               leanprover-community/repl (built by setup-lean-repl.sh)
-  setup-lean-repl.sh       Idempotent setup script
-tests/                     Vitest unit + integration tests
-```
-
-## Architectural notes
-
-- **Claim-first verification.** Every `verify*` tool requires a one-sentence natural-language `claim` alongside the formal check. The model commits to the *idea* before writing the *check* — that's the lever that makes the rest work. Without it, the model defaults to "write a giant solver and hope" (well-documented failure mode in BiasBusters / Tool-Augmented LLMs).
-
-- **Premise retrieval is mandatory, not optional.** Mathlib has ~235k declarations; no LLM holds them by heart. `lean_search` is the literature's "settled science" for LLM theorem proving, and we wire it both as a model-callable tool and as an automatic suggestion when `verify_lean` fails (the search query is built from Lean's diagnostic, not the NL claim — the ReProver / Magnushammer signal).
-
-- **Stepwise proof state via long-lived REPL.** Each `proof_step` is sub-second after the one-time Mathlib import. The REPL retains all earlier `proofState` IDs by integer, so `proof_undo` is a no-execution rollback.
-
-- **Multi-engine, not all-purpose.** SWI-Prolog handles relational reasoning best; Z3 handles theory-heavy SMT best; Lean handles math-with-named-lemmas best. The architecture lets the model route per problem class — Logic-LM showed deterministic dispatch outperforms LLM-choice, but in practice GLM-5.1 picks correctly when the tools are well-described.
 
 ## License
 
