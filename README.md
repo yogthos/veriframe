@@ -205,19 +205,26 @@ stay silent otherwise.
 
 ## Known limitations
 
-Tracked in `bd list`. The one that constrains what the harness can do:
+Tracked in `bd list`. The three that used to be listed here were all fixed on
+2026-08-05, upstream in `jolt-lang/http-client`, and two of them turned out to be
+the same bug.
 
-**A hung provider call cannot be bounded from inside the process.** A timed
-`deref` does not preempt a thread parked in a blocking FFI read, so the
-scheduler's per-turn deadline is unenforceable in exactly the case it exists for,
-and because scheduling is a barrier the stall spreads to every branch. Keep
-concurrent provider calls under about six until this is fixed.
+A hung provider call could not be bounded because `connect-stream` applied the
+caller's read timeout only on the plaintext branch, so `:socket-timeout` did
+nothing on https and every provider call is https. And https broke both after
+loading `jolt.nrepl` and inside a `jolt build` binary because Chez resolves
+foreign symbols most-recent-loaded-first: on macOS the process image links
+LibreSSL, so anything that loaded the process's own symbols took `SSL_*` away
+from OpenSSL, and the mismatched `SSL_CTX` layouts faulted. `jolt.http.tls` now
+loads its own libraries immediately before its bindings resolve. A built binary
+now completes a handshake, starts nREPL, and runs the full loop.
 
-The other two are TLS-related. Loading `jolt.nrepl` before any TLS handshake
-breaks https for the process, which is worked around by warming TLS at startup.
-And a `jolt build` binary cannot complete a TLS handshake at all, so it is
-usable for the engine paths and against a local plain-http provider but not
-against a hosted one.
+What remains is narrower. `:conn-timeout` is still ignored, because setting
+`O_NONBLOCK` needs variadic `fcntl` and Apple arm64 passes variadic arguments on
+the stack, so a fixed-arity binding corrupts them silently; `connect` is at least
+bounded by the kernel's SYN retry limit, unlike `recv`. And `SO_RCVTIMEO` bounds
+inactivity rather than total duration, so a provider that trickles slowly could
+still outlast the turn deadline. That is filed but has not been observed.
 
 ## License
 

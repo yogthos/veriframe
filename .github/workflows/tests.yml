@@ -113,14 +113,23 @@ jobs:
       - name: Build
         run: jolt build -m veriframe.core -o veriframe
 
+      # Two assertions. That it starts and serves, and that its TLS still works:
+      # a built image used to resolve SSL_* to whatever the process linked rather
+      # than the OpenSSL under :jolt/native, which faulted instead of erroring.
+      # The boot-time provider warm-up drives a real handshake, and without a key
+      # it fails on auth AFTER the handshake — so the thing to assert is the
+      # absence of the fault, which needs no secret.
       - name: Binary starts and serves
         run: |
-          HARNESS_PORT=3010 HARNESS_DB=ci.sqlite3 ./veriframe &
+          HARNESS_PORT=3010 HARNESS_DB=ci.sqlite3 ./veriframe >boot.log 2>&1 &
           for i in $(seq 1 30); do
             curl -sf http://127.0.0.1:3010/health >/dev/null && break
             sleep 2
           done
           curl -sf http://127.0.0.1:3010/health | tee /dev/stderr | grep -q '"status":"ok"'
+          cat boot.log
+          ! grep -q 'invalid memory reference' boot.log
+          grep -q 'nREPL server started' boot.log
 
   lean:
     name: full suite with Lean 4 and Mathlib

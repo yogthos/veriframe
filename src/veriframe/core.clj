@@ -15,23 +15,30 @@
   Redefining a namespace other than veriframe.system takes effect immediately;
   the server holds the handler var, not the function it currently contains.
 
-  ## Why nREPL is loaded lazily, and what it costs
+  ## nREPL load order, previously load bearing, now not
 
-  Loading jolt.nrepl into a process that has not yet completed a TLS handshake
-  leaves jolt.http-client unable to complete one afterwards: every https call
-  throws an opaque Chez condition, while plain http keeps working. A prior
-  SUCCESSFUL https call immunizes the process; a failed one, a plain-http call,
-  and constructing an SSL_CTX by hand all do not. So the order is load bearing
-  — warm the TLS path against the provider, and only then load and start nREPL.
-  `veriframe.smoke/nrepl-load-order-check` is the regression guard.
+  Loading jolt.nrepl before any TLS handshake used to leave jolt.http-client
+  unable to complete one for the rest of the process, so this namespace warmed
+  TLS against the provider first and only then loaded nREPL through a runtime
+  `require`. That is fixed upstream: jolt.nrepl calls (ffi/load-library) at ns
+  load to bind sockets, which loads the running process's own symbols, and on
+  macOS the process image transitively links LibreSSL — so the SSL_* symbols
+  came from a mix of LibreSSL and OpenSSL and the first call through it faulted.
+  jolt.http.tls now loads libcrypto and libssl itself immediately before its
+  bindings resolve, so whoever loads first no longer decides.
 
-  This conflicts with `jolt build`, which embeds what it can reach statically
-  and therefore cannot embed a namespace only reached by a runtime `require`.
-  The interpreted path is the one that has to work, so it wins: nREPL loads
-  lazily and simply does not start in a built binary. Nothing is lost there
-  that matters, because a built binary cannot make https calls at all — see
-  PLAN.md, Phase 7. Both are reported upstream against jolt-lang/jolt."
+  nREPL is therefore a plain static require again, which also puts it in a
+  `jolt build` binary — the runtime require was the reason it never started
+  there. `veriframe.smoke/nrepl-load-order-check` stays as the regression guard.
+
+  `warm-tls!` survives on its own merit: it validates at boot that the provider
+  is reachable and the key works, which the TypeScript harness also does. It is
+  no longer ordering-critical."
   (:require [clojure.tools.logging :as log]
+            ;; Statically required, both so the ordering bug stays fixed in the
+            ;; open rather than by accident and so `jolt build` reaches it.
+            [jolt.nrepl]
+            [nrepl.middleware]
             [veriframe.llm.client :as llm]
             ;; Statically required so the build reaches the whole server and
             ;; engine subtree; core is the only place that can, since server
@@ -44,8 +51,8 @@
 
   Two jobs in one call. It validates that the provider is reachable and the
   key works, which the TypeScript harness also does at boot. And it completes
-  a TLS handshake before jolt.nrepl loads, which is what keeps https working
-  for the rest of the process.
+  a TLS handshake early, which used to be what kept https working for the rest
+  of the process and is now merely a warm cache.
 
   Never throws. A harness whose provider is down should still come up: the
   engines need no network, and so does most development."
@@ -77,21 +84,16 @@
   thread. SIGINT is blocked on this thread first so ^C lands here rather than
   on an accept loop parked in a foreign recv.
 
-  Loaded at call time rather than in the ns form; see the namespace docstring
-  for why the load has to happen after the TLS warm-up, and what that costs a
-  built binary."
+  jolt.nrepl is required statically in the ns form; see the namespace docstring
+  for why it no longer has to wait for a TLS handshake."
   [port]
   (jolt.host/block-sigint)
   (try
-    (require 'jolt.nrepl 'nrepl.middleware)
-    (let [start (resolve 'jolt.nrepl/start)
-          stop (start port ['nrepl.middleware/default-middleware])]
+    (let [stop (jolt.nrepl/start port ['nrepl.middleware/default-middleware])]
       (jolt.host/add-shutdown-hook stop)
       stop)
     (catch Throwable e
-      ;; Expected in a built binary: no source roots, so the runtime require
-      ;; finds nothing. Not fatal — the harness serves without an editor
-      ;; attached.
+      ;; Not fatal — the harness serves without an editor attached.
       (log/warn "nREPL not started:" (ex-message e))
       nil)))
 
