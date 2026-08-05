@@ -31,6 +31,7 @@
             [veriframe.agent.loop :as branch-loop]
             [veriframe.agent.state :as state]
             [veriframe.engine.lean-repl :as lean-repl]
+            [veriframe.engine.octave :as octave]
             [veriframe.engine.prolog :as prolog]
             [veriframe.store.interventions :as interventions]
             [veriframe.store.journal :as journal]
@@ -233,7 +234,11 @@
 
 (defn- dispose-lean! [branches]
   (doseq [b branches :when (:lean b)]
-    (try (lean-repl/dispose! (:lean b)) (catch Throwable _ nil))))
+    (try (lean-repl/dispose! (:lean b)) (catch Throwable _ nil)))
+  ;; Octave leaves a workspace directory rather than a process, so this is disk
+  ;; rather than memory, but it still wants clearing.
+  (doseq [b branches :when (:octave b)]
+    (try (octave/dispose! (:octave b)) (catch Throwable _ nil))))
 
 (defn- dispose-branch-engines!
   "Release one branch's engine sessions. Safe to call twice: dispose! on an
@@ -241,6 +246,7 @@
   everything in case a branch never reached this path."
   [b]
   (when (:lean b) (try (lean-repl/dispose! (:lean b)) (catch Throwable _ nil)))
+  (when (:octave b) (try (octave/dispose! (:octave b)) (catch Throwable _ nil)))
   (when (:prolog b) (try (prolog/dispose! (:prolog b)) (catch Throwable _ nil))))
 
 (defn run!

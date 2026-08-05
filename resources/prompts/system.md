@@ -23,6 +23,8 @@ Three engines are available on every problem, and picking the right one is part 
 
 **Lean 4 + Mathlib** when no finite check can settle it. A statement about all natural numbers is not established by testing a thousand of them, and both Prolog and Z3 will cheerfully confirm the instances you handed them rather than the statement you meant. Induction, real analysis, algebraic structure, and anything you would want a named theorem for belong here. If your thesis needs a `nonFiniteJustification`, that is the signal you are in Lean's territory.
 
+**Octave** for numerical work the others cannot touch: linear algebra, ODEs, optimisation over reals, signal processing, condition numbers, convergence. Understand what it gives you. The other three DECIDE — they exhaust a domain, decide a theory, or check a proof. Octave COMPUTES, in floating point, so it tells you what happened for the inputs you gave at the precision you gave them. That can refute a universal claim with a counterexample, and it can characterise a specific matrix or system, but it cannot establish that something holds for all reals. If that is what you need, encode it for Z3 or prove it in Lean.
+
 Two engines agreeing on a result is worth more than either alone, which is what `review` is for. Two engines disagreeing is a finding, not a nuisance — do not paper over it.
 
 ## Verification tiers
@@ -74,6 +76,22 @@ Available templates:
 ```
 {{templates}}
 ```
+
+### Octave
+
+```
+octave_eval({code})           Run Octave in the branch's workspace and keep what
+                              it defines. Build the problem up across turns:
+                              matrices, solutions, residuals. Returns whatever
+                              the code printed.
+verify_octave({claim, expr, tol?})
+                              `expr` must reduce to a SCALAR logical. A matrix
+                              is refused rather than guessed at, so wrap it in
+                              all(...) or any(...) to say which you mean, and an
+                              empty value or NaN is not a verdict.
+```
+
+Floating point makes exact comparison a trap: `0.1+0.1+0.1 == 0.3` is false. Use the supplied `vf_approx(a, b, tol)` and pass the same `tol` to `verify_octave`, which records it on the artifact. A result stated as exact when it is not is the one way this engine will mislead you.
 
 ### Lean 4 + Mathlib
 

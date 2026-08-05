@@ -18,6 +18,7 @@
             [clojure.test :refer [deftest testing is are]]
             [veriframe.engine.lint :as lint]
             [veriframe.engine.proc :as proc]
+            [veriframe.engine.octave :as octave]
             [veriframe.engine.prolog :as pl]
             [veriframe.engine.smt :as smt]
             [veriframe.engine.smt-templates :as tpl]))
@@ -420,3 +421,67 @@ sidon(S) :- sums(S, Sums), sort(Sums, Sorted), length(Sums, N), length(Sorted, N
     (is (= 0 (:exit r)))
     (is (str/includes? (:out r) "hello"))
     (is (not (:timeout r)))))
+
+;; --- Octave -----------------------------------------------------------------
+;; Skipped rather than failed when octave is absent, like the Lean tests: it is
+;; a fourth engine and the other three must stay testable without it.
+
+(defn- with-octave [f]
+  (if (octave/available?)
+    (let [s (octave/create-session nil)]
+      (try (f s) (finally (octave/dispose! s))))
+    (println "  (skipping Octave tests: octave not on PATH)")))
+
+(deftest octave-workspace-persists-across-calls
+  ;; The workspace is a .mat file reloaded per invocation, and the first
+  ;; implementation lost it: user code was eval'd inside a helper function, so
+  ;; every variable became that function's local and vanished on return. A
+  ;; branch could not build a problem up across turns, which is the whole point
+  ;; of a workspace.
+  (with-octave
+    (fn [s]
+      (is (:ok (octave/eval-code! s "A = [4 1; 1 3]; L = chol(A);")))
+      (let [r (octave/check s "all(diag(L) > 0)")]
+        (is (:ok r) (str "L should still exist on a later call: " (:error r)))
+        (is (true? (:verdict r)))))))
+
+(deftest octave-refuses-anything-that-is-not-a-verdict
+  ;; Coercing these is how a claim about every element silently becomes a claim
+  ;; about one, or how "no answer" becomes "false".
+  (with-octave
+    (fn [s]
+      (octave/eval-code! s "M = [1 2; 3 4];")
+      (are [expr] (not (:ok (octave/check s expr)))
+        "diag(M)"          ; a matrix, not a scalar
+        "[]"               ; empty is not false
+        "0/0"              ; NaN is not a verdict
+        "nosuchvariable")  ; and neither is an error
+      (is (true? (:verdict (octave/check s "det(M) != 0")))))))
+
+(deftest octave-records-whether-a-verdict-was-exact
+  ;; The distinction this engine turns on. A result true within a tolerance has
+  ;; established something weaker than one true by exact arithmetic, and the
+  ;; harness should not have to guess which it was handed.
+  (with-octave
+    (fn [s]
+      (let [exact (octave/check s "1 + 1 == 2")]
+        (is (true? (:verdict exact)))
+        (is (true? (:exact exact))))
+      (let [approx (octave/check s "vf_approx(0.1+0.1+0.1, 0.3, 1e-9)" 1e-9)]
+        (is (true? (:verdict approx)))
+        (is (false? (:exact approx)))
+        (is (= 1e-9 (:tol approx))))
+      ;; The trap the helper exists for: exact comparison of inexact arithmetic
+      ;; is false, and a model reading that as a refutation would be wrong.
+      (is (false? (:verdict (octave/check s "0.1+0.1+0.1 == 0.3")))))))
+
+(deftest octave-a-false-check-is-a-result-not-an-error
+  ;; Same distinction the Prolog engine draws: "your claim is false" and "your
+  ;; code is broken" are different messages to send back to a model.
+  (with-octave
+    (fn [s]
+      (let [r (octave/check s "2 > 3")]
+        (is (:ok r) "a false claim evaluated successfully")
+        (is (false? (:verdict r))))
+      (is (not (:ok (octave/check s "chol([1 2; 2 1])")))
+          "a genuine error is not a false verdict"))))

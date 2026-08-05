@@ -35,6 +35,7 @@
             [veriframe.engine.lean-repl :as lean-repl]
             [veriframe.engine.lean-search :as lean-search]
             [veriframe.engine.lint :as lint]
+            [veriframe.engine.octave :as octave]
             [veriframe.engine.prolog :as prolog]
             [veriframe.engine.smt :as smt]
             [veriframe.engine.smt-templates :as templates]
@@ -709,3 +710,77 @@
 
 (defmethod run-tool "proof_abandon" [{:keys [branch]}]
   (ok (dissoc branch :proof) "Proof abandoned."))
+
+;; --- Octave -----------------------------------------------------------------
+;; Lazy per branch, like Lean: most problems are not numerical and a workspace
+;; costs a directory and a process per call.
+
+(defn- octave-session!
+  "The branch's Octave workspace, created on first use. Returns [session branch]."
+  [{:keys [branch config]}]
+  (if-let [s (:octave branch)]
+    [s branch]
+    (let [s (octave/create-session (get-in config [:engines :octave]))]
+      [s (assoc branch :octave s)])))
+
+(defmethod run-tool "octave_eval" [{:keys [branch] :as ctx}]
+  (if-let [m (missing ctx :code)]
+    (fail branch m)
+    (try
+      (let [[s branch] (octave-session! ctx)
+            r (octave/eval-code! s (arg ctx :code))]
+        (if (:ok r)
+          (ok branch (str "Ran it. Workspace updated."
+                          (when-not (str/blank? (str (:output r)))
+                            (str "\n\n" (:output r))))
+              :progress? true)
+          (fail branch (str "Octave rejected it:\n" (:error r)))))
+      (catch Throwable e
+        (fail branch (str "Octave is unavailable: " (ex-message e)))))))
+
+(defn- octave-claim-text
+  "How the claim is recorded. An approximate result says so IN the claim, so
+  that anything reading artifacts later — the audit, the answer rendering, a
+  human — sees the tolerance rather than having to know to look for it."
+  [claim tol exact?]
+  (if exact? claim (str claim " (numerically, within " tol ")")))
+
+(defmethod run-tool "verify_octave" [{:keys [branch] :as ctx}]
+  (if-let [m (missing ctx :claim :expr)]
+    (fail branch m)
+    (try
+      (let [[s branch] (octave-session! ctx)
+            claim (arg ctx :claim)
+            tol (or (arg ctx :tol) 0)
+            r (octave/check s (arg ctx :expr) tol)]
+        (cond
+          (not (:ok r))
+          (fail branch (str "The expression did not evaluate to a verdict: " (:error r)
+                            "\nThat is an encoding problem, not evidence about the claim.")
+                :failure {:claim claim :reason (:error r)})
+
+          (:verdict r)
+          (let [exact? (:exact r)]
+            {:branch branch :category :success :progress? true
+             :result (str "Octave evaluated it to true. Claim CONFIRMED"
+                          (if exact?
+                            " by exact arithmetic."
+                            (str " numerically, within " tol "."))
+                          (when-not exact?
+                            (str "\n\nThis is evidence about a computation, not a proof about"
+                                 " the reals: it holds for these inputs at this precision."
+                                 " A claim about ALL reals needs Z3 or Lean.")))
+             :artifact {:kind :octave
+                        :claim (octave-claim-text claim tol exact?)
+                        :code (arg ctx :expr)
+                        :claim-status :confirmed :tier :fast}})
+
+          :else
+          (fail branch (str "Octave evaluated it to FALSE, so the claim is not supported.")
+                :failure {:claim claim :reason "the Octave check evaluated to false"}
+                :artifact {:kind :octave
+                           :claim (octave-claim-text claim tol (:exact r))
+                           :code (arg ctx :expr)
+                           :claim-status :refuted :tier :fast})))
+      (catch Throwable e
+        (fail branch (str "Octave is unavailable: " (ex-message e)))))))

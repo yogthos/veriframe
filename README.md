@@ -2,12 +2,16 @@
 
 An OpenAI-compatible HTTP server that wraps a model in a claim-first verification
 loop, written in [Jolt](https://github.com/jolt-lang/jolt) (Clojure on Chez
-Scheme). Three engines back it:
+Scheme). Four engines back it:
 
 - **SWI-Prolog** with `library(clpfd)` for relational and finite-domain problems.
 - **Z3** for arithmetic and theory-rich constraints.
 - **Lean 4 + Mathlib** through a long-lived `leanprover-community/repl`
   subprocess, with proofs developed a tactic at a time.
+- **GNU Octave** for numerical work: linear algebra, condition numbers,
+  optimisation over reals. It computes rather than decides, so a result carries
+  the tolerance it was established at and says whether the arithmetic was
+  exact.
 
 Nothing the model asserts ships unless an engine confirmed it, and the harness
 checks that what the engine confirmed is actually what the answer claims.
@@ -18,11 +22,11 @@ measurements, and every bug found along the way.
 
 ## Install
 
-Needs `jolt`, `z3`, and `swipl`. Lean is optional and only the theorem-proving
-paths use it.
+Needs `jolt`, `z3`, and `swipl`. Octave is optional and only the numerical
+tools use it; Lean is optional and only the theorem-proving paths use it.
 
 ```bash
-brew install jolt-lang/jolt/jolt z3 swi-prolog     # or your package manager
+brew install jolt-lang/jolt/jolt z3 swi-prolog octave   # or your package manager
 ```
 
 Point it at a provider. Any OpenAI-compatible endpoint works, including a local
@@ -176,7 +180,7 @@ constants, so a run records a digest of the set it used and a pass-rate change
 localizes to one file.
 
 ```bash
-jolt -M:test      # 72 tests, offline and deterministic
+jolt -M:test      # 80 tests, offline and deterministic
 jolt smoke        # platform probes, one per stated risk in PLAN.md
 jolt build -m veriframe.core -o veriframe
 ```
@@ -217,6 +221,8 @@ stay silent otherwise.
 | `HARNESS_MAX_RESPONSE_MS` | `600000` | total bound on one response; kept below the turn deadline |
 | `HARNESS_TURN_DEADLINE_MS` | `900000` | sized to the worst legitimate turn, not the typical one |
 | `HARNESS_Z3_TIMEOUT_MS` | `120000` | |
+| `HARNESS_OCTAVE_BIN` | `octave` | |
+| `HARNESS_OCTAVE_TIMEOUT_MS` | `120000` | per invocation |
 | `HARNESS_SWIPL_TIMEOUT_MS` | `120000` | |
 | `HARNESS_LEAN_TIMEOUT_MS` | `300000` | per Lean command, not the import |
 | `HARNESS_LEAN_IMPORT_TIMEOUT_MS` | `1200000` | `import Mathlib` alone; measured at ~378s idle |

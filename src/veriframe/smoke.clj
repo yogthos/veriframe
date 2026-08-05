@@ -23,6 +23,7 @@
             [jolt.process :as p]
             [veriframe.config :as config]
             [veriframe.engine.lean-repl :as lean-repl]
+            [veriframe.engine.octave :as octave]
             [veriframe.store.db :as db]
             [veriframe.system :as system]))
 
@@ -83,6 +84,22 @@
     (if (every? deref fs)
       [:pass (str n " concurrent sessions agreed")]
       [:fail "at least one concurrent session returned the wrong answer"])))
+
+(defn- octave-check [cfg]
+  (if-not (octave/available? (:bin cfg))
+    [:skip "octave not on PATH"]
+    (let [s (octave/create-session cfg)]
+      (try
+        ;; A real computation and a real verdict, not a --version check. The
+        ;; failure this guards is the workspace not surviving between calls,
+        ;; which a one-shot probe cannot see.
+        (octave/eval-code! s "A = [4 1; 1 3]; L = chol(A);")
+        (let [r (octave/check s "all(diag(L) > 0)")]
+          (if (true? (:verdict r))
+            [:pass "workspace persisted, verdict returned"]
+            [:fail (str "check did not confirm: " (pr-str r))]))
+        (catch Throwable e [:fail (ex-message e)])
+        (finally (octave/dispose! s))))))
 
 (defn- lean-check
   "Actually import Mathlib and elaborate a theorem.
@@ -252,6 +269,7 @@
     (probe "z3" (z3-check (get-in engines [:z3 :bin])))
     (probe "swipl + clpfd" (swipl-check (get-in engines [:swipl :bin])))
     (probe "swipl x5 concurrent" (swipl-concurrency (get-in engines [:swipl :bin]) 5))
+    (probe "octave" (octave-check (:octave engines)))
     (probe "lean repl" (lean-check (:lean engines)))
 
     (println "\nstorage")

@@ -95,6 +95,12 @@
                   :swipl      {:bin (or (env "HARNESS_SWIPL_BIN") "swipl")
                                :timeout-ms (or (env-long "HARNESS_SWIPL_TIMEOUT_MS")
                                                120000)}
+                  ;; Numerical engine. One octave invocation per call (~0.8s),
+                  ;; because Octave's fgetl(stdin) block-buffers on a pipe and a
+                  ;; persistent session deadlocks on its first request.
+                  :octave     {:bin (or (env "HARNESS_OCTAVE_BIN") "octave")
+                               :timeout-ms (or (env-long "HARNESS_OCTAVE_TIMEOUT_MS")
+                                               120000)}
                   :lean       {:workspace (or (env "HARNESS_LEAN_WORKSPACE")
                                               "tools/lean-workspace")
                                :repl-bin  (or (env "HARNESS_LEAN_REPL_BIN")

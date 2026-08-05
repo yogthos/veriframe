@@ -233,3 +233,38 @@
   (testing "no header means fall back to the ladder"
     (is (nil? (client/retry-after-ms {})))
     (is (nil? (client/retry-after-ms {"retry-after" "not-a-number"})))))
+
+;; --- a call with no fence ---------------------------------------------------
+
+(deftest an-unfenced-trailing-call-is-accepted
+  ;; Measured at 23 of 34 turns in one run: the model emitted exactly the right
+  ;; JSON, omitted the fence, and the harness threw it away and asked it to try
+  ;; again, which it did the same way. A whole run lost to punctuation.
+  (let [r (fence/parse-tool-call
+           "I'll check positive definiteness.\n\n{\"name\": \"verify_octave\", \"args\": {\"claim\": \"A is PD\", \"expr\": \"all(eig(A) > 0)\"}}")]
+    (is (= "verify_octave" (:name r)))
+    (is (= "A is PD" (get-in r [:args :claim])))
+    (is (:unfenced? r) "the signal is recorded rather than silently normalised")
+    (is (= 0 (:fences r)))))
+
+(deftest a-fence-still-wins-over-trailing-json
+  ;; The fallback must not change how a well-formed response is read. A model
+  ;; that fences its call and then prints data after it gets the fenced call.
+  (let [r (fence/parse-tool-call
+           "```tool-call\n{\"name\": \"verify\", \"args\": {\"claim\": \"real\"}}\n```\n\n{\"name\": \"decoy\", \"args\": {}}")]
+    (is (= "verify" (:name r)))
+    (is (not (:unfenced? r)))))
+
+(deftest trailing-json-that-is-not-a-call-is-not-a-call
+  ;; Reporting this as a malformed call would send the model looking for a
+  ;; mistake it did not make. It has no tool call, which is a different thing.
+  (is (nil? (fence/parse-tool-call "Here is the matrix:\n\n{\"rows\": 3, \"cols\": 3}")))
+  (is (nil? (fence/parse-tool-call "no json at all here")))
+  (is (nil? (fence/parse-tool-call "{\"name\": \"\", \"args\": {}}"))))
+
+(deftest an-unfenced-call-still-gets-control-char-repair
+  (let [r (fence/parse-tool-call
+           "{\"name\": \"verify_lean\", \"args\": {\"lean\": \"theorem t : True := by\ntrivial\"}}")]
+    (is (= "verify_lean" (:name r)))
+    (is (:unfenced? r))
+    (is (:auto-repaired? r))))
