@@ -19,7 +19,15 @@
 % That distinction matters: "your claim is false" and "your encoding is
 % broken" are different messages to send back to a model.
 
+% clpfd FIRST and on its own directive. It DEFINES #= / #< / ins, and a term is
+% read in full before it runs, so anything using those operators in the same
+% term is unparseable.
 :- use_module(library(clpfd)).
+% Recent SWI prints "Library was moved: library(http/json) --> library(json)"
+% and loads it anyway through the compatibility alias. Do not "fix" this to
+% library(json): that name does not exist on the SWI in Ubuntu's repos (9.0.4),
+% which is what CI installs, so the rename would break the older version to
+% silence a warning on the newer one.
 :- use_module(library(http/json)).
 :- use_module(library(time)).
 :- use_module(library(lists)).

@@ -29,14 +29,34 @@ jobs:
           echo "$HOME/.local/bin" >> $GITHUB_PATH
 
       - name: Install Z3 and SWI-Prolog
-        # The smoke job checks clpfd explicitly rather than trusting a version
-        # number, because a swipl without it passes a naive check and then
-        # fails every real query.
+        # `swi-prolog`, not `swi-prolog-core`. The core package omits the
+        # bundled library packs, and resources/prolog/session.pl needs
+        # library(http/json) to frame its replies and library(time) for a real
+        # call_with_time_limit/2. Without them the session never loads, every
+        # Prolog engine call returns nil, and 22 tests fail a long way from the
+        # cause. Which is exactly what happened: this workflow failed on every
+        # run from the day it was written.
         run: |
           sudo apt-get update
-          sudo apt-get install -y z3 swi-prolog-core
+          sudo apt-get install -y z3 swi-prolog
           z3 --version
           swipl --version
+
+      - name: SWI-Prolog has the libraries session.pl needs
+        # Load the real file rather than probing for libraries by name, so this
+        # cannot drift from what the engine actually consults. Fails here, at
+        # the install, instead of as a wall of unrelated test failures.
+        # No pipe into tee: a pipeline reports the LAST command's status, so
+        # tee succeeding would mask swipl failing and the check would pass
+        # while proving nothing.
+        run: |
+          swipl -g "consult('resources/prolog/session.pl'), halt(0)" -t "halt(1)"
+          # TWO -g flags, not one goal. clpfd DEFINES #= when it loads, and a
+          # term is read in full before it runs, so putting the use_module and
+          # the #= in one goal makes #= an unparseable operator. session.pl
+          # loads clpfd first for the same reason.
+          swipl -g "use_module(library(clpfd))" \
+                -g "X #= 2+3, format('clpfd ok: ~w~n',[X]), halt(0)" -t "halt(1)"
 
       - name: Cache jolt gitlibs
         uses: actions/cache@v4
@@ -69,7 +89,7 @@ jobs:
       - name: Install Z3 and SWI-Prolog
         run: |
           sudo apt-get update
-          sudo apt-get install -y z3 swi-prolog-core
+          sudo apt-get install -y z3 swi-prolog
 
       - name: Cache jolt gitlibs
         uses: actions/cache@v4
@@ -151,7 +171,7 @@ jobs:
       - name: Install Z3 and SWI-Prolog
         run: |
           sudo apt-get update
-          sudo apt-get install -y z3 swi-prolog-core
+          sudo apt-get install -y z3 swi-prolog
 
       - name: Install elan
         run: |
