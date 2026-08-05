@@ -256,3 +256,13 @@ earlier history carries forward cleanly.
 
 The three engines shipping today are separate processes, which needs no such
 change on its own.
+
+Every source file carries the notice. The one exception is
+`vendor/ring_chez/adapter.clj`, which is vendored from
+`jolt-lang/ring-chez-adapter` and is not ours to license.
+
+**This is not yet distributable.** Every `jolt-lang` dependency declares no
+license at all, including the one vendored into this repository, and without a
+grant the default is all rights reserved. That is tracked and needs upstream to
+act; until it does, run it and develop against it, but do not cut a release or
+publish a binary.

@@ -1,3 +1,12 @@
+;; NOT COVERED BY THIS PROJECT'S LICENCE, and deliberately carries no veriframe
+;; copyright notice. Vendored from jolt-lang/ring-chez-adapter @07f14d9, which
+;; declares no licence at all: there is no LICENSE file in the repository and
+;; GitHub reports none. Without a grant the default is all rights reserved, so
+;; redistributing it inside a GPLv3 program is not something this file can
+;; assert is permitted. See veriframe-clj's licensing bead.
+;;
+;; The VERIFRAME-marked change below is the only local modification.
+
 (ns ring-chez.adapter
   "A Ring adapter for jolt: a minimal HTTP/1.1 server over BSD sockets, bound
   directly through jolt.ffi (no jolt built-in, no JVM). Synchronous Ring 1.x
