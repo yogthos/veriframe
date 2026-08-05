@@ -59,6 +59,14 @@ Everything except the theorem-proving tools works without any of this;
 `/health` reports which engines it can see, and Lean problems in the benchmark
 skip rather than fail when the toolchain is absent.
 
+`import Mathlib` takes about six minutes, so the harness pays it at startup
+rather than inside a branch turn: `/health` reports `lean.warm_sessions` and
+`lean.warming` alongside `engines.lean`, because installed and ready are
+different things and conflating them is how every Lean call failed while the
+health check stayed green. Warming does not block startup, and a branch that
+asks before it finishes waits for the import already running rather than
+starting a second one. Set `HARNESS_WARM_LEAN=0` to turn it off.
+
 ## Use it
 
 The standard OpenAI shape:
@@ -201,6 +209,13 @@ stay silent otherwise.
 | `HARNESS_BEAM_WIDTH` | `5` | treat as unjustified; see PLAN.md |
 | `HARNESS_MAX_TOKENS` | `16384` | a correctness parameter, not a cost knob |
 | `HARNESS_TIMEOUT_MS` | `300000` | per provider call |
+| `HARNESS_TURN_DEADLINE_MS` | `900000` | sized to the worst legitimate turn, not the typical one |
+| `HARNESS_Z3_TIMEOUT_MS` | `120000` | |
+| `HARNESS_SWIPL_TIMEOUT_MS` | `120000` | |
+| `HARNESS_LEAN_TIMEOUT_MS` | `300000` | per Lean command, not the import |
+| `HARNESS_LEAN_IMPORT_TIMEOUT_MS` | `1200000` | `import Mathlib` alone; measured at ~378s idle |
+| `HARNESS_WARM_LEAN` | `1` | `0` disables warming Lean at startup |
+| `HARNESS_LEAN_WARM_SESSIONS` | `1` | warmed sessions to prepare at boot |
 | `DEEPSEEK_API_KEY` / `ZHIPU_API_KEY` / `OPENAI_API_KEY` | — | whichever provider |
 
 ## Known limitations

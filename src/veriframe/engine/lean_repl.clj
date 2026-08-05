@@ -22,7 +22,16 @@
             [clojure.tools.logging :as log]))
 
 ;; import Mathlib is the slow case; a tactic step after it is sub-second.
+;; Per-command: elaborating a declaration or applying a tactic. Seconds in the
+;; normal case; generous here because a Mathlib-heavy `simp` or `decide` can run
+;; long, and killing a tactic that was about to succeed costs the branch a turn.
 (def default-timeout-ms 300000)
+
+;; The one-time `import Mathlib`, which is a different animal — 377927ms
+;; measured on a warm cache with an idle machine. The ceiling is well above that
+;; because the cost scales with what else is running: a beam warms one session
+;; per branch, and they contend.
+(def default-import-timeout-ms 1200000)
 
 (defn available?
   "Whether the toolchain is present. Phase 5 is the only thing that needs it,
@@ -54,6 +63,7 @@
      :reader (java.io.BufferedReader.
               (java.io.InputStreamReader. (:out proc) "UTF-8"))
      :timeout-ms (or timeout-ms default-timeout-ms)
+     :import-timeout-ms (or (:import-timeout-ms cfg) default-import-timeout-ms)
      :busy (atom false)
      :alive (atom true)
      ;; The env id `import Mathlib` produced. Every later command builds on it.
@@ -91,8 +101,14 @@
 
   Killing is also the only honest option: the abandoned request will eventually
   write a reply nobody read, so every later reply on this session would be
-  misframed by one. The session is unrecoverable, not merely busy."
-  [session cmd]
+  misframed by one. The session is unrecoverable, not merely busy.
+
+  `timeout-override-ms` exists for one caller: importing Mathlib takes minutes
+  while every other command takes seconds, and a single knob cannot serve both.
+  Sized to the import, a wedged tactic goes undetected for minutes; sized to a
+  tactic, the import cannot finish. See mathlib-env."
+  ([session cmd] (send-command session cmd nil))
+  ([session cmd timeout-override-ms]
   (cond
     (not (alive? session))
     {:ok false :error "The Lean REPL session is dead."}
@@ -106,7 +122,8 @@
 
     :else
     (try
-      (let [{:keys [out-stream reader timeout-ms]} session]
+      (let [{:keys [out-stream reader]} session
+            timeout-ms (or timeout-override-ms (:timeout-ms session))]
         (try
           (.write out-stream (.getBytes (str (json/write-str cmd) "\n\n") "UTF-8"))
           (.flush out-stream)
@@ -128,17 +145,25 @@
           (catch Throwable e
             (reset! (:alive session) false)
             {:ok false :error (str "Lean REPL I/O failed: " (ex-message e))})))
-      (finally (reset! (:busy session) false)))))
+      (finally (reset! (:busy session) false))))))
 
 (defn mathlib-env
   "The environment id with Mathlib imported, importing it on first use. Every
-  command and proof in this session is based on it."
+  command and proof in this session is based on it.
+
+  Measured at 377927ms on a warm olean cache with nothing else running, which is
+  why this gets its own timeout rather than the per-command one. Under the old
+  shared 300000ms ceiling the import was killed just short of finishing and
+  every Lean tool call failed — for as long as the tools were undocumented and
+  unreachable, nothing ever ran this far to notice."
   [session]
   (or @(:mathlib-env session)
-      (let [_ (log/info "importing Mathlib into the Lean REPL (slow, once)")
-            r (send-command session {:cmd "import Mathlib"})]
+      (let [t0 (System/currentTimeMillis)
+            _ (log/info "importing Mathlib into the Lean REPL (slow, once)")
+            r (send-command session {:cmd "import Mathlib"} (:import-timeout-ms session))]
         (if (and (:ok r) (:env r))
-          (reset! (:mathlib-env session) (:env r))
+          (do (log/info "Mathlib imported in" (- (System/currentTimeMillis) t0) "ms")
+              (reset! (:mathlib-env session) (:env r)))
           (throw (ex-info (str "Could not import Mathlib: " (or (:error r) (pr-str r)))
                           {:reply r}))))))
 

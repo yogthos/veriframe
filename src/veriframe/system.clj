@@ -17,6 +17,7 @@
             [jolt.time]
             [ring-chez.adapter :as adapter]
             [veriframe.config :as config]
+            [veriframe.engine.lean-pool :as lean-pool]
             [veriframe.llm.registry :as registry]
             [veriframe.store.db :as db]))
 
@@ -62,6 +63,12 @@
                "provider" (get-in cfg [:llm :provider])
                "model" (get-in cfg [:llm :model])
                "db" (get-in cfg [:db :path]))
+     ;; After the server is listening and the system is registered, because
+     ;; warming is slow and must not hold up /health. It returns immediately;
+     ;; the imports run on background threads.
+     (when (get-in cfg [:warmup :lean?])
+       (lean-pool/warm! (get-in cfg [:engines :lean])
+                        (get-in cfg [:warmup :sessions])))
      :started)))
 
 (defn stop!
@@ -71,6 +78,10 @@
   []
   (when-let [s @system]
     (doseq [[label f] [["http server" #(adapter/stop-server (:server s))]
+                       ;; Before the database, because a warmed Lean session is
+                       ;; a subprocess holding gigabytes; leaking one per restart
+                       ;; is how a dev session ends up with six orphaned repls.
+                       ["warm Lean sessions" lean-pool/shutdown!]
                        ["database" #(db/close (:conn s))]]]
       (try (f) (catch Throwable e (log/warn "stopping" label "failed:" (ex-message e)))))
     (reset! system nil)

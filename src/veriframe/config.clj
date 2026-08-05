@@ -66,18 +66,36 @@
                   :max-tokens  (or (env-long "HARNESS_MAX_TOKENS") 16384)
                   :temperature 0.7
                   :timeout-ms  (or (env-long "HARNESS_TIMEOUT_MS") 300000)}
+       ;; Engine timeouts are sized so that killing a call means it was stuck,
+       ;; not merely slow. A false kill costs the branch a turn AND records a
+       ;; failure other branches will avoid retrying, so the expensive mistake
+       ;; is cutting a call short, not waiting too long.
        :engines  {:z3         {:bin (or (env "HARNESS_Z3_BIN") "z3")
-                               :timeout-ms 30000}
+                               :timeout-ms (or (env-long "HARNESS_Z3_TIMEOUT_MS")
+                                               120000)}
                   :swipl      {:bin (or (env "HARNESS_SWIPL_BIN") "swipl")
-                               :timeout-ms 30000}
-                  ;; Lean arrives in Phase 5; the paths are declared now so
-                  ;; config has one shape whether or not the toolchain exists.
+                               :timeout-ms (or (env-long "HARNESS_SWIPL_TIMEOUT_MS")
+                                               120000)}
                   :lean       {:workspace (or (env "HARNESS_LEAN_WORKSPACE")
                                               "tools/lean-workspace")
                                :repl-bin  (or (env "HARNESS_LEAN_REPL_BIN")
                                               "tools/lean-repl/.lake/build/bin/repl")
+                               ;; Per command, not per import — see below.
                                :timeout-ms (or (env-long "HARNESS_LEAN_TIMEOUT_MS")
-                                               300000)}}
+                                               300000)
+                               ;; `import Mathlib` alone, measured at 377927ms on
+                               ;; an idle machine with a warm cache. Sharing one
+                               ;; knob with the per-command timeout is what made
+                               ;; every Lean call fail: sized to a tactic the
+                               ;; import cannot finish, sized to the import a
+                               ;; wedged tactic goes unnoticed for minutes.
+                               :import-timeout-ms
+                               (or (env-long "HARNESS_LEAN_IMPORT_TIMEOUT_MS")
+                                   1200000)}}
+       ;; Warming pays the Mathlib import at boot instead of inside a branch
+       ;; turn. Off when the toolchain is absent, which is the common case.
+       :warmup   {:lean?    (not= "0" (or (env "HARNESS_WARM_LEAN") "1"))
+                  :sessions (or (env-long "HARNESS_LEAN_WARM_SESSIONS") 1)}
        :run      {:max-turns  (or (env-long "HARNESS_MAX_TURNS") 80)
                   :beam-width (or (env-long "HARNESS_BEAM_WIDTH") 5)}}
       overrides))))

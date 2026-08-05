@@ -15,6 +15,7 @@
             [veriframe.api.openai :as openai]
             [veriframe.api.runs :as api-runs]
             [veriframe.config :as config]
+            [veriframe.engine.lean-pool :as lean-pool]
             [veriframe.engine.lean-repl :as lean-repl]
             [veriframe.engine.proc :as proc]
             [veriframe.store.db :as db]
@@ -50,9 +51,16 @@
     (json-response
      {:status "ok"
       :schema_version (db/schema-version (system/conn))
+      ;; `lean` is installed-ness, which is not readiness: a Lean call is not
+      ;; usable until Mathlib is imported, and that takes minutes. Reporting one
+      ;; boolean conflated the two and read as green while every Lean call was
+      ;; failing, so the warm counts are published next to it.
       :engines {:z3 (proc/available? (get-in cfg [:engines :z3 :bin]))
                 :swipl (proc/available? (get-in cfg [:engines :swipl :bin]))
                 :lean (lean-repl/available? (get-in cfg [:engines :lean]))}
+      :lean {:installed (lean-repl/available? (get-in cfg [:engines :lean]))
+             :warm_sessions (lean-pool/warmed-count)
+             :warming (lean-pool/pending-count)}
       :active_runs (count @control/active)
       :config (config/redacted (select-keys cfg [:llm :run :db]))})))
 

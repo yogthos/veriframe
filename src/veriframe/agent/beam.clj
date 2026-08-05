@@ -129,8 +129,18 @@
 
   This is the RAX-manager principle applied to a branch: the stop path must not
   depend on the component's cooperation. A branch that blows the deadline
-  forfeits the turn and the beam moves on."
-  420000)
+  forfeits the turn and the beam moves on.
+
+  Sized to the worst LEGITIMATE turn rather than to the typical one, because
+  forfeiting a turn that was about to succeed is expensive twice over: the
+  branch loses the turn and the failure is logged for other branches to avoid.
+  The worst legitimate turn is a provider call at its 300000ms socket timeout
+  followed by a Lean tactic at its own 300000ms, so the old 420000ms could not
+  fit one without a false kill. That is separate from what made the first Lean
+  turn hopeless — a 377927ms Mathlib import inside a 420000ms budget — which is
+  fixed by warming at startup rather than by this number."
+  (or (some-> (System/getenv "HARNESS_TURN_DEADLINE_MS") parse-long)
+      900000))
 
 (defn- drain-directives!
   "Apply pending human directives at the boundary, and record what happened to

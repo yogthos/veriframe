@@ -7,6 +7,7 @@
             [veriframe.engine-test]
             [veriframe.agent-test]
             [veriframe.llm-test]
+            [veriframe.pool-test]
             [veriframe.prompt-test]
             [veriframe.store-test]))
 
@@ -14,6 +15,7 @@
   '[veriframe.store-test
     veriframe.llm-test
     veriframe.agent-test
+    veriframe.pool-test
     veriframe.prompt-test
     veriframe.engine-test])
 

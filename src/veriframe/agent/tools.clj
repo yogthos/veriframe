@@ -22,6 +22,7 @@
   (:require [clojure.string :as str]
             [veriframe.agent.state :as state]
             [veriframe.agent.verdict :as verdict]
+            [veriframe.engine.lean-pool :as lean-pool]
             [veriframe.engine.lean-repl :as lean-repl]
             [veriframe.engine.lean-search :as lean-search]
             [veriframe.engine.lint :as lint]
@@ -513,19 +514,30 @@
 
 ;; --- Lean -------------------------------------------------------------------
 ;;
-;; The Lean session is created LAZILY, on the first Lean tool call. Importing
-;; Mathlib costs tens of seconds, and a beam of five branches that each paid
-;; that at startup would spend minutes before the first question was asked —
-;; on problems where most branches never touch Lean at all.
+;; The Lean session is acquired LAZILY, on the first Lean tool call, because
+;; most problems never touch Lean and a session that imported Mathlib holds a
+;; lot of memory.
+;;
+;; Lazy does not have to mean cold, though, which is what it used to mean: the
+;; import measured 377927ms against a 420000ms turn deadline, so the first Lean
+;; call spent essentially the whole turn importing and then blew the deadline.
+;; veriframe.engine.lean-pool warms sessions at startup, so this usually hands
+;; back one that is already at the Mathlib environment. The fallback of building
+;; one here stays, so an empty or failed pool costs latency and not the tool.
 
 (defn- lean-session!
-  "The branch's Lean session, spawning it if this is the first Lean call.
-  Returns [session branch]."
+  "The branch's Lean session: a warmed one if the pool has it, otherwise a fresh
+  import. Returns [session branch].
+
+  Waits briefly on a slot whose import is still running rather than starting a
+  second import alongside it — two concurrent imports are slower than one, so
+  racing the pool would be worse than either warming or not warming."
   [{:keys [branch config]}]
   (if-let [s (:lean branch)]
     [s branch]
-    (let [s (lean-repl/create-session (get-in config [:engines :lean]))]
-      (lean-repl/mathlib-env s)
+    (let [s (or (lean-pool/checkout! (get-in config [:warmup :checkout-wait-ms] 60000))
+                (doto (lean-repl/create-session (get-in config [:engines :lean]))
+                  (lean-repl/mathlib-env)))]
       [s (assoc branch :lean s)])))
 
 (defn- lean-error-text [errors]

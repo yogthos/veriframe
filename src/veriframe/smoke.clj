@@ -13,6 +13,7 @@
             [jolt.http-client :as http]
             [jolt.process :as p]
             [veriframe.config :as config]
+            [veriframe.engine.lean-repl :as lean-repl]
             [veriframe.store.db :as db]
             [veriframe.system :as system]))
 
@@ -74,10 +75,30 @@
       [:pass (str n " concurrent sessions agreed")]
       [:fail "at least one concurrent session returned the wrong answer"])))
 
-(defn- lean-check [{:keys [repl-bin]}]
-  (if (.exists (java.io.File. repl-bin))
-    [:pass repl-bin]
-    [:skip (str "no repl at " repl-bin " — Phase 5 only")]))
+(defn- lean-check
+  "Actually import Mathlib and elaborate a theorem.
+
+  This used to be (.exists (File. repl-bin)), so `pass lean repl` meant a file
+  was on disk and nothing more. It stayed green through the entire period when
+  every Lean call was failing, because the import blew a timeout it never
+  measured. A probe that cannot fail the way the engine fails is not a probe.
+
+  Slow — minutes — which is the honest cost of checking the thing that breaks."
+  [cfg]
+  (if-not (lean-repl/available? cfg)
+    [:skip (str "no repl at " (:repl-bin cfg) " — run tools/setup-lean.sh")]
+    (let [t0 (System/currentTimeMillis)
+          s (lean-repl/create-session cfg)]
+      (try
+        (lean-repl/mathlib-env s)
+        (let [ms (- (System/currentTimeMillis) t0)
+              r (lean-repl/run-command s "theorem smoke (n : Nat) : n + 0 = n := by simp")]
+          (if (:ok r)
+            [:pass (str "Mathlib imported in " ms "ms, theorem elaborated")]
+            [:fail (str "Mathlib imported but the theorem failed: " (pr-str (:errors r)))]))
+        (catch Throwable e
+          [:fail (str "after " (- (System/currentTimeMillis) t0) "ms: " (ex-message e))])
+        (finally (lean-repl/dispose! s))))))
 
 ;; --- storage ----------------------------------------------------------------
 
