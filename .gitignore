@@ -1,21 +1,24 @@
-node_modules/
-dist/
-*.tsbuildinfo
-
-# Local GGUF models — large, not for VCS
-models/
-*.gguf
-
-# Lean build artifacts + multi-GB mathlib cache. The workspace's
-# lakefile.toml + lean-toolchain are tracked; users regenerate
-# .lake locally with `lake update`.
-tools/lean-workspace/.lake/
-tools/lean-workspace/build/
-
-# Generated index caches (Mathlib lemma index, future embedding
-# indices). ~80MB and rebuildable from the lake source on first run.
+.nrepl-port
+*.sqlite3
 .cache/
+target/
 
-# leanprover-community/repl is fetched + built locally via
-# tools/setup-lean-repl.sh — we don't track its source in this repo.
+# AOT build output: a 20MB self-contained binary plus its intermediates.
+/veriframe
+veriframe.build/
+
+# Lean toolchain, fetched by tools/setup-lean.sh. Mathlib's prebuilt oleans run
+# to several GB and the repl binary is ~190MB; both are reproducible from the
+# script and neither belongs in git.
+tools/lean-workspace/.lake/
+tools/lean-workspace/lake-manifest.json
 tools/lean-repl/
+
+# Papers read while designing this. PLAN.md says what came from each.
+2*v[0-9]/
+rax-results-*/
+
+# Beads / Dolt files (added by bd init)
+.dolt/
+*.db
+.beads-credential-key

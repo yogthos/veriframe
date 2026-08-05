@@ -1,0 +1,91 @@
+;; Gate thresholds and budgets, as data rather than constants in code.
+;;
+;; This is the AHE component-observability idea applied cheaply: every
+;; threshold is a file a run records the digest of, so a later evolution loop
+;; has somewhere to write and every pass-rate change localizes to one file.
+;;
+;; Each budget declares its KIND, which is the distinction dirge PR 739 found
+;; made the thresholds legible:
+;;
+;;   :cost-ceiling  bounds sub-LLM spend. Never scaled up for a struggling run
+;;                  — that means spending more on the run already in trouble.
+;;   :re-fire-guard compensates for a predicate that cannot tell "happened"
+;;                  from "happened and I already reacted". Safe to scale.
+;;   :threshold     a real decision boundary.
+;;
+;; `capability-tunable?` is false wherever the capability tier has no standing
+;; to move the number. The tier observes tool-call mechanics only, so it may
+;; tune argument-hygiene budgets and may never relax a verification or
+;; progress guard (dirge PR 740).
+
+{:cull-threshold
+ {:value 3 :kind :threshold :capability-tunable? false
+  :doc "Consecutive failed verifications before a branch is culled."}
+
+ :cull-recent-window
+ {:value 5 :kind :threshold :capability-tunable? false
+  :doc "A confirmed artifact this recently protects a branch from culling."}
+
+ :stuck-threshold
+ {:value 3 :kind :threshold :capability-tunable? false
+  :doc "Consecutive unproductive verifications before the stuck hint fires."}
+
+ :progress-stall-threshold
+ {:value 4 :kind :threshold :capability-tunable? false
+  :doc "Turns with no progress event before the stall nudge fires. Arms only
+        after the first progress event; see prologue-cap for the other case."}
+
+ :prologue-cap
+ {:value 8 :kind :threshold :capability-tunable? false
+  :doc "Turns a branch may take having produced nothing at all. The stall
+        counter arms on a progress event, so a run that produced nothing never
+        armed it and the monitor was structurally blind to the one case it most
+        needed to report (dirge PR 739, dirge-t5dh)."}
+
+ :max-stall-nudges
+ {:value 2 :kind :re-fire-guard :capability-tunable? true
+  :doc "How often the stall nudge may re-fire on one branch."}
+
+ :max-stuck-hints
+ {:value 3 :kind :re-fire-guard :capability-tunable? true
+  :doc "How often the stuck hint may re-fire on one branch."}
+
+ :max-milestone-nudges
+ {:value 1 :kind :re-fire-guard :capability-tunable? false
+  :doc "The milestone fires once per branch, on the first confirmation."}
+
+ :max-tier-escalations
+ {:value 2 :kind :re-fire-guard :capability-tunable? false
+  :doc "How often the fast-green-only escalation may fire."}
+
+ :max-done-blocks
+ {:value 3 :kind :cost-ceiling :capability-tunable? false
+  :doc "How often `done` may be refused before the branch is told to give up.
+        A cost ceiling because each refusal spends another model turn."}
+
+ :fast-verify-edit-threshold
+ {:value 3 :kind :threshold :capability-tunable? false
+  :doc "Artifacts produced with nothing from the slow tier run before the
+        mid-run tier nudge fires."}
+
+ :turn-budget-notices
+ {:value [0.6 0.85] :kind :threshold :capability-tunable? false
+  :doc "Fractions of the turn cap at which the model is told where it stands.
+        The cap was enforced but invisible to the model (dirge PR 738)."}
+
+ :max-safe-state-aborts
+ {:value 2 :kind :re-fire-guard :capability-tunable? false
+  :doc "How often the safe-state rung may fire on one branch. Not
+        capability-tunable: this rung spends a hard-capped abort and, in a
+        non-advisory mode, rebuilds an engine process."}
+
+ :max-total-branches
+ {:value 15 :kind :cost-ceiling :capability-tunable? false
+  :doc "Total branches per run including forked children. A cost ceiling:
+        every branch is a concurrent provider call per turn plus its own
+        engine process."}
+
+ :prediction-window
+ {:value 3 :kind :threshold :capability-tunable? false
+  :doc "Turns a gate's declared prediction has to come true in before it
+        settles as unmet."}}

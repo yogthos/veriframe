@@ -1,0 +1,7 @@
+{
+  "database": "dolt",
+  "backend": "dolt",
+  "dolt_mode": "embedded",
+  "dolt_database": "veriframe_clj",
+  "project_id": "f72427fa-8e6c-4b5e-ad6a-fb99facd2022"
+}
