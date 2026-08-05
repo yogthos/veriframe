@@ -59,13 +59,18 @@ Everything except the theorem-proving tools works without any of this;
 `/health` reports which engines it can see, and Lean problems in the benchmark
 skip rather than fail when the toolchain is absent.
 
-`import Mathlib` takes about six minutes, so the harness pays it at startup
-rather than inside a branch turn: `/health` reports `lean.warm_sessions` and
-`lean.warming` alongside `engines.lean`, because installed and ready are
-different things and conflating them is how every Lean call failed while the
-health check stayed green. Warming does not block startup, and a branch that
-asks before it finishes waits for the import already running rather than
-starting a second one. Set `HARNESS_WARM_LEAN=0` to turn it off.
+`import Mathlib` costs anywhere from ten seconds to six minutes depending on
+whether the oleans are in the page cache and whether the machine has room to
+keep them there. They run to about 7GB, so a 16GB laptop re-faults most of them
+on every import and lands at the slow end, while CI with a freshly written cache
+lands at the fast one. The harness pays that at startup rather than inside a
+branch turn, and `/health` reports `lean.warm_sessions` and `lean.warming`
+alongside `engines.lean`, because installed and ready are different things and
+conflating them is how every Lean call failed while the health check stayed
+green. Warming does not block startup, and a branch that asks before it finishes
+waits for the import already running rather than starting a second one. Set
+`HARNESS_WARM_LEAN=0` to turn it off, which is reasonable if your oleans stay
+cached.
 
 ## Use it
 
