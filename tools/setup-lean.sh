@@ -6,6 +6,21 @@ set -euo pipefail
 export PATH="$HOME/.elan/bin:$PATH"
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 
+if ! command -v lake >/dev/null 2>&1; then
+  cat >&2 <<'MSG'
+ERROR: `lake` is not on PATH, so elan (Lean's toolchain manager) is not
+installed. Install it and re-run this script:
+
+  curl https://raw.githubusercontent.com/leanprover/elan/master/elan-init.sh -sSf \
+    | sh -s -- -y --default-toolchain none
+  source "$HOME/.elan/env"
+
+Do not install a Lean release directly. The workspace pins its own toolchain in
+tools/lean-workspace/lean-toolchain and elan fetches that version on demand.
+MSG
+  exit 1
+fi
+
 echo "==> resolving Mathlib in tools/lean-workspace"
 cd "$ROOT/tools/lean-workspace"
 lake update -R

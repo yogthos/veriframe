@@ -33,12 +33,31 @@ export DEEPSEEK_API_KEY=…        # or ZHIPU_API_KEY, OPENAI_API_KEY
 jolt serve                        # http on 3000, nREPL on 7888
 ```
 
-For the Lean engine, fetch Mathlib and build the REPL. This pulls several GB of
-prebuilt oleans and takes a while the first time.
+### Lean, if you want the theorem-proving engine
+
+Install `elan`, Lean's toolchain manager. Do not install a Lean release
+directly: the workspace pins its own toolchain and `elan` fetches that version
+on demand.
+
+```bash
+curl https://raw.githubusercontent.com/leanprover/elan/master/elan-init.sh -sSf \
+  | sh -s -- -y --default-toolchain none
+source "$HOME/.elan/env"
+```
+
+Then fetch Mathlib and build the REPL the harness talks to:
 
 ```bash
 ./tools/setup-lean.sh
 ```
+
+That pulls Mathlib's prebuilt oleans, which run to several GB, and builds
+`leanprover-community/repl` against the matching toolchain. Expect ten to
+twenty minutes on a cold run. It is idempotent, so re-running it is cheap.
+
+Everything except the theorem-proving tools works without any of this;
+`/health` reports which engines it can see, and Lean problems in the benchmark
+skip rather than fail when the toolchain is absent.
 
 ## Use it
 
