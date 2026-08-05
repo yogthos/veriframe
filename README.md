@@ -221,4 +221,11 @@ against a hosted one.
 
 ## License
 
-Apache-2.0
+GPLv3, changed from Apache-2.0 ahead of the numerical engine (veriframe-clj-15u),
+which embeds GNU Octave's C++ interpreter in-process. Octave is GPLv3, so
+linking it makes the combined work GPLv3 and the license moved first rather than
+after the code was written. Apache-2.0 is one-way compatible with GPLv3, so the
+earlier history carries forward cleanly.
+
+The three engines shipping today are separate processes, which needs no such
+change on its own.
