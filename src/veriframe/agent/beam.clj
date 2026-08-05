@@ -235,6 +235,14 @@
   (doseq [b branches :when (:lean b)]
     (try (lean-repl/dispose! (:lean b)) (catch Throwable _ nil))))
 
+(defn- dispose-branch-engines!
+  "Release one branch's engine sessions. Safe to call twice: dispose! on an
+  already-dead session is a no-op, and the run-end teardown still sweeps
+  everything in case a branch never reached this path."
+  [b]
+  (when (:lean b) (try (lean-repl/dispose! (:lean b)) (catch Throwable _ nil)))
+  (when (:prolog b) (try (prolog/dispose! (:prolog b)) (catch Throwable _ nil))))
+
 (defn run!
   "Run a beam to completion.
 
@@ -320,7 +328,15 @@
                             :when (and (not (state/active? b))
                                        (not (:final-answer b)))]
                       (runs/close-branch! conn run-id (:id b) (:status b)
-                                          (:inactive-reason b)))
+                                          (:inactive-reason b))
+                      ;; Release the engines as the branch goes inactive rather
+                      ;; than at run end. A Lean session holds ~0.83GB, so a
+                      ;; branch culled at turn 10 of 80 was sitting on that for
+                      ;; the other 70 turns. The run-end `finally` still covers
+                      ;; everything, including the branches still alive; this
+                      ;; only stops a dead branch holding memory it can no
+                      ;; longer use.
+                      (dispose-branch-engines! b))
                   inactive (filterv (complement state/active?) branches)
                   all-now (into (vec inactive) culled)
                   [children updated]
