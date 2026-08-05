@@ -253,24 +253,4 @@ the kernel's SYN retry limit, unlike `recv`.
 
 ## License
 
-EPL-2.0, matching `jolt` and Clojure convention. Every source file carries the
-notice.
-
-This went to GPLv3 briefly, so the reasoning is worth recording. The numerical
-engine was going to embed GNU Octave's C++ interpreter in-process, Octave is
-GPLv3, and linking it would make the combined work GPLv3, so the license moved
-first. Checking what the dependencies were actually licensed under showed that
-could not work: `jolt` is EPL-2.0 without the secondary-license option
-exercised, and `data.json`, `tools.logging` and `jolt-lang/logging` are all
-EPL-1.0 by inheritance from Clojure code. The FSF lists EPL as GPL-incompatible
-in both versions. So a GPLv3 harness could not legally link the platform it runs
-on, and the only thing forcing GPLv3 was in-process Octave.
-
-Octave becomes a subprocess instead, like z3 and swipl already are. Separate
-programs communicating over pipes are not a combined work, so its GPL does not
-reach across that boundary and the conflict disappears.
-
-Along the way six `jolt-lang` libraries turned out to have no license at all,
-which meant all rights reserved and no permission to redistribute them. They are
-EPL-2.0 now. `clj-http-lite` is MIT, declared in its `pom.xml` and README rather
-than a `LICENSE` file, which is why GitHub reports it as unlicensed.
+EPL-2.0, matching `jolt` and Clojure convention.
