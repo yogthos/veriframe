@@ -16,25 +16,63 @@
   leaving an orphan holding a pipe."
   (:require [jolt.process :as p]))
 
+(def ^:private sigterm-grace-ms
+  "How long a process gets to die of SIGTERM before it is sent SIGKILL."
+  2000)
+
+(defn- reap!
+  "Kill `proc` and do not return until it is actually gone.
+
+  SIGTERM first, then SIGKILL if it is still alive. `destroy-tree` sends only
+  SIGTERM, and the whole point of a timeout is that the process is already not
+  behaving, so treating its cooperation as optional is the only honest
+  approach. Same principle the rest of the loop follows: a stop path that
+  depends on the component agreeing to stop is not a stop path."
+  [proc]
+  (let [^java.lang.Process p (:proc proc)]
+    (try (p/destroy-tree proc) (catch Throwable _ nil))
+    (try
+      (when-not (.waitFor p sigterm-grace-ms java.util.concurrent.TimeUnit/MILLISECONDS)
+        (.destroyForcibly p)
+        (.waitFor p sigterm-grace-ms java.util.concurrent.TimeUnit/MILLISECONDS))
+      (catch Throwable _ nil))))
+
 (defn run
   "Run `args` with `input` on stdin, capturing stdout and stderr.
 
   Returns {:exit :out :err} or {:timeout true :ms n} if it did not finish
   inside `timeout-ms`. Never throws on a non-zero exit: z3 exits non-zero
   after `(get-model)` on an unsat formula even though the verdict itself was
-  emitted cleanly, so the caller reads the output and decides."
+  emitted cleanly, so the caller reads the output and decides.
+
+  The wait is `.waitFor` with an explicit timeout rather than a timed `deref`,
+  which does not work. jolt's `clojure.core/deref` forwards no opts to a record
+  implementing IBlockingDeref, so (deref proc ms ::timeout) silently calls the
+  blocking one-arity and waits for however long the process takes. It fails
+  quietly, in the direction of doing nothing: the timeout branch below was
+  simply unreachable, every engine call was unbounded, and the processes this
+  believed it was killing accumulated. Twenty-eight orphaned z3 processes were
+  found on one dev machine, the oldest at seventeen hours, slowing everything
+  else enough to make an unrelated Mathlib import look sixteen times more
+  expensive than it is. Fixed upstream too, but this does not depend on that."
   [{:keys [input timeout-ms]} & args]
   ;; babashka.process/process takes the command vector FIRST and the options
   ;; map second. Passing them the other way round (which is what `sh` accepts)
   ;; stringifies the vector into an argv[0] of "[z3".
   (let [proc (p/process (vec args) {:in (or input "") :out :string :err :string})
-        done (deref proc (or timeout-ms 30000) ::timeout)]
-    (if (= ::timeout done)
-      (do (try (p/destroy-tree proc) (catch Throwable _ nil))
-          {:timeout true :ms timeout-ms})
-      {:exit (:exit done)
-       :out (or (:out done) "")
-       :err (or (:err done) "")})))
+        ^java.lang.Process p (:proc proc)
+        ms (or timeout-ms 30000)
+        finished? (try
+                    (.waitFor p ms java.util.concurrent.TimeUnit/MILLISECONDS)
+                    (catch Throwable _ false))]
+    (if-not finished?
+      (do (reap! proc) {:timeout true :ms ms})
+      ;; Exited, so this deref returns immediately and only collects the
+      ;; already-complete stdout/stderr.
+      (let [done @proc]
+        {:exit (:exit done)
+         :out (or (:out done) "")
+         :err (or (:err done) "")}))))
 
 (defn available?
   "Whether `bin` can be executed at all. Used by the smoke probes and to give

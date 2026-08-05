@@ -17,6 +17,7 @@
   (:require [clojure.string :as str]
             [clojure.test :refer [deftest testing is are]]
             [veriframe.engine.lint :as lint]
+            [veriframe.engine.proc :as proc]
             [veriframe.engine.prolog :as pl]
             [veriframe.engine.smt :as smt]
             [veriframe.engine.smt-templates :as tpl]))
@@ -369,3 +370,53 @@ sidon(S) :- sums(S, Sums), sort(Sums, Sorted), length(Sums, N), length(Sorted, N
           answered (filter :ok results)]
       (is (every? #(= "42" (get-in (first (:answers %)) [:bindings :X])) answered)
           "a caller that got an answer got ITS answer"))))
+
+;; --- subprocess bounding ----------------------------------------------------
+
+(deftest a-slow-subprocess-is-killed-at-its-timeout
+  ;; This was unreachable for the life of the project. jolt's clojure.core/deref
+  ;; forwards no opts to a record implementing IBlockingDeref, so the timed
+  ;; (deref proc ms ::timeout) silently became the blocking one-arity and waited
+  ;; for the process however long it took. The timeout branch never ran, every
+  ;; engine call was unbounded, and the processes proc/run believed it was
+  ;; killing accumulated -- 28 orphaned z3 processes on one machine, oldest at
+  ;; seventeen hours.
+  ;;
+  ;; `sleep` rather than z3 so this is deterministic and needs no toolchain.
+  (let [t0 (System/currentTimeMillis)
+        r (proc/run {:timeout-ms 1000} "sleep" "30")
+        elapsed (- (System/currentTimeMillis) t0)]
+    (is (:timeout r) "a process past its budget must report a timeout")
+    (is (< elapsed 15000)
+        (str "must not wait for the process to finish on its own; took " elapsed "ms"))))
+
+(deftest a-killed-subprocess-does-not-survive
+  ;; The other half. Reporting a timeout while leaving the process running is
+  ;; how the orphans accumulated in the first place, so assert it is gone rather
+  ;; than assuming destroy worked. destroy-tree sends only SIGTERM; proc/run
+  ;; escalates to SIGKILL because a process being killed for ignoring its
+  ;; deadline is exactly the one that may ignore a polite signal.
+  (let [before (:out (proc/run {:timeout-ms 5000} "sh" "-c" "pgrep -x sleep | wc -l"))
+        t0 (System/currentTimeMillis)
+        _ (dotimes [_ 3] (proc/run {:timeout-ms 500} "sleep" "45"))
+        elapsed (- (System/currentTimeMillis) t0)]
+    (Thread/sleep 1500)
+    (let [after (:out (proc/run {:timeout-ms 5000} "sh" "-c" "pgrep -x sleep | wc -l"))]
+      (is (= (str/trim (str before)) (str/trim (str after)))
+          (str "three killed `sleep 45` processes leaked; before=" before " after=" after))
+      ;; Asserted explicitly because the count alone does not catch the original
+      ;; bug: with the broken timed deref, proc/run blocked until each `sleep`
+      ;; ended by itself, so nothing leaked here and the check passed after
+      ;; sitting for 135 seconds. The leak in production came from the branch
+      ;; being abandoned at its deadline while proc/run was still blocked, which
+      ;; left the process with no one to reap it. Time is what distinguishes
+      ;; killed from waited-for.
+      (is (< elapsed 20000)
+          (str "three 500ms timeouts should take about two seconds, not the full"
+               " runtime of the processes; took " elapsed "ms")))))
+
+(deftest a-fast-subprocess-still-returns-its-output
+  (let [r (proc/run {:input "hello\n" :timeout-ms 5000} "cat")]
+    (is (= 0 (:exit r)))
+    (is (str/includes? (:out r) "hello"))
+    (is (not (:timeout r)))))
