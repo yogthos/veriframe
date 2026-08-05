@@ -83,6 +83,27 @@
   [response]
   (mapv (comp str/trim second) (re-seq fence-re (or response ""))))
 
+;; A trailing JSON object, for a response that ends in a well-formed call and
+;; simply omits the fence. Anchored to the END of the response and required to
+;; balance from a `{` that starts a line, so a JSON example quoted mid-argument
+;; cannot be mistaken for the call.
+(def ^:private trailing-object-re #"(?s)(?:^|\n)\s*(\{.*\})\s*\z")
+
+(defn- trailing-call
+  "The response's final top-level JSON object, but only if it is plausibly a
+  tool call: it must parse and carry a non-blank `name`.
+
+  Deliberately silent otherwise. A response ending in some other JSON should
+  still be reported as having no tool call, rather than as a malformed one,
+  because telling a model its call is broken when it never made one sends it
+  looking in the wrong place."
+  [response]
+  (when-let [candidate (some-> (re-find trailing-object-re (or response ""))
+                               second str/trim)]
+    (let [{:keys [ok value]} (read-json (repair-control-chars candidate))]
+      (when (and ok (map? value) (string? (:name value)) (not (str/blank? (:name value))))
+        candidate))))
+
 (defn parse-tool-call
   "Parse a model response into a tool call.
 
@@ -97,10 +118,25 @@
   `:fences > 1` is exactly the sort of tool-call mechanics the capability tier
   is built from."
   [response]
-  (let [bodies (extract-fences response)]
+  (let [fenced (extract-fences response)
+        ;; A response that ends in a well-formed call but omits the fence is
+        ;; accepted, and recorded as :unfenced? so it stays visible rather than
+        ;; being quietly normalised. Measured at 23 of 34 turns in one run: the
+        ;; model emitted exactly the right JSON and the harness discarded it
+        ;; over formatting, then told it to try again, which it did the same
+        ;; way. That is a whole run lost to punctuation.
+        ;;
+        ;; Narrow on purpose. It applies only when NO fence was found, only to
+        ;; the very end of the response, and only if the object carries a
+        ;; `name` — the same validation a fenced body gets. A drafted example
+        ;; followed by a real fenced call is unaffected, because the fence wins.
+        bodies (if (seq fenced)
+                 fenced
+                 (when-let [t (trailing-call response)] [t]))
+        unfenced? (and (empty? fenced) (seq bodies))]
     (when (seq bodies)
       (let [body (peek bodies)
-            n (count bodies)
+            n (count fenced)
             repaired (repair-control-chars body)
             ;; Computed from the TEXT, not from which parse path succeeded.
             ;; clojure.data.json accepts raw newlines and tabs inside string
@@ -111,7 +147,9 @@
             ;; the model emitted unescaped control characters, which is true
             ;; whichever parser tolerated it.
             needed-repair? (not= repaired body)
-            base (cond-> {:fences n} needed-repair? (assoc :auto-repaired? true))
+            base (cond-> {:fences n}
+                   needed-repair? (assoc :auto-repaired? true)
+                   unfenced? (assoc :unfenced? true))
             first-try (read-json body)]
         (if (:ok first-try)
           (let [parsed (:value first-try)]

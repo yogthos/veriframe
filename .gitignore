@@ -22,3 +22,6 @@ rax-results-*/
 .dolt/
 *.db
 .beads-credential-key
+
+# Octave dumps its workspace here if a session exits without saving.
+octave-workspace

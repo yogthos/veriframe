@@ -227,7 +227,8 @@
   (is (= #{"add_rule" "retract_rule" "verify" "verify_smt" "verify_template"
            "thesis" "branch_theses" "review" "audit" "done" "give_up"
            "verify_lean" "lean_search" "proof_start" "proof_step"
-           "proof_state" "proof_abandon"}
+           "proof_state" "proof_abandon"
+           "octave_eval" "verify_octave"}
          (set (tools/tool-names))))
   (is (some? (get-method tools/run-tool :default))
       "an unknown tool name must land somewhere that names the alternatives"))

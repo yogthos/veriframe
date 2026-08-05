@@ -26,6 +26,7 @@
             [veriframe.config :as config]
             [veriframe.engine.lean-pool :as lean-pool]
             [veriframe.engine.lean-repl :as lean-repl]
+            [veriframe.engine.octave :as octave]
             [veriframe.engine.proc :as proc]
             [veriframe.store.db :as db]
             [veriframe.system :as system]))
@@ -66,6 +67,7 @@
       ;; failing, so the warm counts are published next to it.
       :engines {:z3 (proc/available? (get-in cfg [:engines :z3 :bin]))
                 :swipl (proc/available? (get-in cfg [:engines :swipl :bin]))
+                :octave (octave/available? (get-in cfg [:engines :octave :bin]))
                 :lean (lean-repl/available? (get-in cfg [:engines :lean]))}
       :lean {:installed (lean-repl/available? (get-in cfg [:engines :lean]))
              :warm_sessions (lean-pool/warmed-count)
