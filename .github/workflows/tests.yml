@@ -2,9 +2,10 @@ name: tests
 
 on:
   push:
-    branches: [main, prolog-layer]
+    branches: [main, clojure]
   pull_request:
-    branches: [main, prolog-layer]
+    branches: [main, clojure]
+  workflow_dispatch:
 
 # Cancel in-progress runs on the same ref when a new commit lands.
 concurrency:
@@ -13,60 +14,140 @@ concurrency:
 
 jobs:
   fast:
-    name: typecheck + fast tests (no Lean / Mathlib)
+    name: engines + control layer (no Lean)
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
 
-      - uses: actions/setup-node@v4
-        with:
-          node-version: "20"
-          cache: npm
+      # Building jolt from source needs Chez and a C toolchain; the release
+      # binary is self-contained, so the install script is the cheap path.
+      - name: Install jolt
+        run: |
+          curl -sL https://raw.githubusercontent.com/jolt-lang/jolt/main/install \
+            | bash -s -- --dir "$HOME/.local/bin"
+          echo "$HOME/.local/bin" >> $GITHUB_PATH
 
-      - name: Install Node deps
-        run: npm ci
-
-      - name: Install Z3
+      - name: Install Z3 and SWI-Prolog
+        # The smoke job checks clpfd explicitly rather than trusting a version
+        # number, because a swipl without it passes a naive check and then
+        # fails every real query.
         run: |
           sudo apt-get update
-          sudo apt-get install -y z3
+          sudo apt-get install -y z3 swi-prolog-core
           z3 --version
+          swipl --version
 
-      - name: Typecheck
-        run: npm run typecheck
+      - name: Cache jolt gitlibs
+        uses: actions/cache@v4
+        with:
+          path: ~/.jolt/gitlibs
+          key: jolt-gitlibs-${{ hashFiles('deps.edn') }}
 
-      - name: Run fast tests (prolog + smt + agent helpers)
-        # Skip Lean-stack tests here — those need elan + Mathlib and
-        # are run by the `lean` job below. lean-search reads the
-        # Mathlib source, also gated to the lean job.
-        run: npx vitest run tests/prolog.test.ts tests/smt.test.ts tests/agent-helpers.test.ts
+      - name: Fetch dependencies
+        run: jolt -P
 
-  lean:
-    name: full suite (with Lean 4 + Mathlib)
+      - name: Test suite
+        # Offline and deterministic: engines, linters, templates, the arbiter,
+        # gate config, verdict parsing, the journal. No provider calls.
+        run: jolt -M:test
+
+  smoke:
+    name: platform probes
     runs-on: ubuntu-latest
-    timeout-minutes: 30
-    # Only run the heavy Lean stack if the fast job passes.
+    timeout-minutes: 20
     needs: fast
     steps:
       - uses: actions/checkout@v4
 
-      - uses: actions/setup-node@v4
-        with:
-          node-version: "20"
-          cache: npm
+      - name: Install jolt
+        run: |
+          curl -sL https://raw.githubusercontent.com/jolt-lang/jolt/main/install \
+            | bash -s -- --dir "$HOME/.local/bin"
+          echo "$HOME/.local/bin" >> $GITHUB_PATH
 
-      - name: Install Node deps
-        run: npm ci
-
-      - name: Install Z3
+      - name: Install Z3 and SWI-Prolog
         run: |
           sudo apt-get update
-          sudo apt-get install -y z3
+          sudo apt-get install -y z3 swi-prolog-core
 
-      - name: Install elan (Lean version manager)
+      - name: Cache jolt gitlibs
+        uses: actions/cache@v4
+        with:
+          path: ~/.jolt/gitlibs
+          key: jolt-gitlibs-${{ hashFiles('deps.edn') }}
+
+      - name: Probes
+        # Every probe corresponds to a stated risk in PLAN.md: concurrent swipl
+        # sessions, FTS5 through the FFI binding, serialized store access,
+        # HTTPS surviving the nREPL load, and /health answering while a handler
+        # is busy. The provider probes skip without a key rather than failing,
+        # so a fork with no secret still gets a useful run.
+        env:
+          DEEPSEEK_API_KEY: ${{ secrets.DEEPSEEK_API_KEY }}
+        run: jolt smoke
+
+  build:
+    name: standalone binary
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    needs: fast
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install jolt
         run: |
-          curl https://raw.githubusercontent.com/leanprover/elan/master/elan-init.sh -sSf | sh -s -- -y --default-toolchain none
+          curl -sL https://raw.githubusercontent.com/jolt-lang/jolt/main/install \
+            | bash -s -- --dir "$HOME/.local/bin"
+          echo "$HOME/.local/bin" >> $GITHUB_PATH
+
+      - name: Cache jolt gitlibs
+        uses: actions/cache@v4
+        with:
+          path: ~/.jolt/gitlibs
+          key: jolt-gitlibs-${{ hashFiles('deps.edn') }}
+
+      # `jolt build` embeds only what it can reach statically, so this job
+      # guards against a dynamic require silently dropping a subtree from the
+      # image — which happened once and only surfaced at startup.
+      - name: Build
+        run: jolt build -m veriframe.core -o veriframe
+
+      - name: Binary starts and serves
+        run: |
+          HARNESS_PORT=3010 HARNESS_DB=ci.sqlite3 ./veriframe &
+          for i in $(seq 1 30); do
+            curl -sf http://127.0.0.1:3010/health >/dev/null && break
+            sleep 2
+          done
+          curl -sf http://127.0.0.1:3010/health | tee /dev/stderr | grep -q '"status":"ok"'
+
+  lean:
+    name: full suite with Lean 4 and Mathlib
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    needs: fast
+    # Mathlib runs to several GB even from the olean cache, so this does not
+    # gate a pull request. It runs on main and on demand.
+    if: github.event_name != 'pull_request'
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install jolt
+        run: |
+          curl -sL https://raw.githubusercontent.com/jolt-lang/jolt/main/install \
+            | bash -s -- --dir "$HOME/.local/bin"
+          echo "$HOME/.local/bin" >> $GITHUB_PATH
+
+      - name: Install Z3 and SWI-Prolog
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y z3 swi-prolog-core
+
+      - name: Install elan
+        run: |
+          curl https://raw.githubusercontent.com/leanprover/elan/master/elan-init.sh -sSf \
+            | sh -s -- -y --default-toolchain none
           echo "$HOME/.elan/bin" >> $GITHUB_PATH
 
       - name: Cache Lean toolchain
@@ -75,38 +156,44 @@ jobs:
           path: ~/.elan/toolchains
           key: elan-${{ hashFiles('tools/lean-workspace/lean-toolchain') }}
 
-      - name: Cache lake packages (Mathlib source)
+      - name: Cache Mathlib packages and oleans
         uses: actions/cache@v4
         with:
           path: |
-            tools/lean-workspace/.lake/packages
+            tools/lean-workspace/.lake
             tools/lean-workspace/lake-manifest.json
-          key: lake-packages-${{ hashFiles('tools/lean-workspace/lakefile.toml', 'tools/lean-workspace/lean-toolchain') }}
+          key: lake-${{ hashFiles('tools/lean-workspace/lakefile.toml', 'tools/lean-workspace/lean-toolchain') }}
 
-      - name: Cache mathlib build artifacts (oleans)
-        # Built oleans are big (~7GB) — separate cache so we can
-        # invalidate just the build when the manifest moves.
-        uses: actions/cache@v4
-        with:
-          path: tools/lean-workspace/.lake/build
-          key: lake-build-${{ hashFiles('tools/lean-workspace/lake-manifest.json', 'tools/lean-workspace/lean-toolchain') }}
-
-      - name: Lake update + olean cache fetch
-        run: |
-          cd tools/lean-workspace
-          lake update
-          # `lake update` may have already fetched the olean cache via
-          # mathlib's auto-cache-get; this is idempotent.
-          lake exe cache get || true
-
-      - name: Cache lean-repl build
+      - name: Cache the repl build
         uses: actions/cache@v4
         with:
           path: tools/lean-repl
-          key: lean-repl-${{ hashFiles('tools/setup-lean-repl.sh') }}
+          key: lean-repl-${{ hashFiles('tools/setup-lean.sh') }}
 
-      - name: Build lean-repl (idempotent)
-        run: ./tools/setup-lean-repl.sh
+      - name: Fetch Mathlib and build the repl
+        run: ./tools/setup-lean.sh
 
-      - name: Run full test suite
-        run: npm run test:run
+      - name: Cache jolt gitlibs
+        uses: actions/cache@v4
+        with:
+          path: ~/.jolt/gitlibs
+          key: jolt-gitlibs-${{ hashFiles('deps.edn') }}
+
+      - name: Test suite
+        run: jolt -M:test
+
+      - name: Lean reachable from the harness
+        # The three details that cost time to find: the repl must be spawned
+        # through `lake env` from the workspace, `lake` needs an absolute path
+        # because a child resolves its executable against the parent's PATH,
+        # and the repl has to be pinned to the commit whose toolchain matches
+        # the workspace rather than handed an override.
+        run: |
+          jolt -e "(require '[veriframe.engine.lean-repl :as lr] '[veriframe.config :as c])
+                   (let [cfg (get-in (c/load-config) [:engines :lean])
+                         s (lr/create-session cfg)]
+                     (try
+                       (assert (some? (lr/mathlib-env s)))
+                       (assert (:ok (lr/run-command s \"theorem ci (n : Nat) : n + 0 = n := by simp\")))
+                       (println :lean-ok)
+                       (finally (lr/dispose! s))))"

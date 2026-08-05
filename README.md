@@ -1,149 +1,204 @@
-# reasoning-harness
+# veriframe
 
-OpenAI-compatible HTTP server that wraps an LLM in a **claim-first verification loop** backed by three reasoning engines:
+An OpenAI-compatible HTTP server that wraps a model in a claim-first verification
+loop, written in [Jolt](https://github.com/jolt-lang/jolt) (Clojure on Chez
+Scheme). Three engines back it:
 
-- **SWI-Prolog** with `library(clpfd)` — relational and finite-domain CSPs (knights & knaves, zebra, sudoku).
-- **Z3 SMT** — numerical and theory-rich constraints (linear/nonlinear arithmetic, bitvectors, optimisation).
-- **Lean 4 + Mathlib** via a long-lived `leanprover-community/repl` subprocess — mathematical theorems, with proofs developed stepwise in tactic mode.
+- **SWI-Prolog** with `library(clpfd)` for relational and finite-domain problems.
+- **Z3** for arithmetic and theory-rich constraints.
+- **Lean 4 + Mathlib** through a long-lived `leanprover-community/repl`
+  subprocess, with proofs developed a tactic at a time.
 
-Every claim the model wants to land has to round-trip through one of these engines. Verified facts accumulate; unverified ones don't ship.
+Nothing the model asserts ships unless an engine confirmed it, and the harness
+checks that what the engine confirmed is actually what the answer claims.
+
+This is a port of an earlier TypeScript version, and deliberately not a
+transliteration: the control layer was rebuilt. `PLAN.md` has the reasoning, the
+measurements, and every bug found along the way.
 
 ## Install
 
+Needs `jolt`, `z3`, and `swipl`. Lean is optional and only the theorem-proving
+paths use it.
+
 ```bash
-npm install
+brew install jolt-lang/jolt/jolt z3 swi-prolog     # or your package manager
 ```
 
-### Lean toolchain (required for theorem proving)
+Point it at a provider. Any OpenAI-compatible endpoint works, including a local
+`llama-server` or Ollama.
 
 ```bash
-# 1. Install elan (Lean's version manager)
-curl https://raw.githubusercontent.com/leanprover/elan/master/elan-init.sh -sSf | sh
-source $HOME/.elan/env
-
-# 2. Fetch + build Mathlib in the workspace (~10GB, one-time)
-cd tools/lean-workspace && lake update && cd ../..
-
-# 3. Fetch + build leanprover-community/repl (one-time, ~30s)
-./tools/setup-lean-repl.sh
+export DEEPSEEK_API_KEY=…        # or ZHIPU_API_KEY, OPENAI_API_KEY
+jolt serve                        # http on 3000, nREPL on 7888
 ```
 
-### Z3
+For the Lean engine, fetch Mathlib and build the REPL. This pulls several GB of
+prebuilt oleans and takes a while the first time.
 
 ```bash
-brew install z3   # or your package manager of choice
+./tools/setup-lean.sh
 ```
 
-### Pick an LLM provider
+## Use it
 
-- **Local (node-llama-cpp)** — drop a GGUF into `models/`. The default config expects `models/Qwen3.6-35B-A3B-Q8_0.gguf`. Run with `./start.sh`.
-- **GLM-5.1 (Zhipu BigModel)** — `export ZHIPU_API_KEY=…`, then `./start-glm.sh`. The provider merges `reasoning_content` + `content` into `<think>...</think>` framing so the tool-call fence parser sees the fence wherever the model emits it.
-- **DeepSeek** — `export DEEPSEEK_API_KEY=…`, then `./start-deepseek.sh`. Default model is `deepseek-chat`; set `HARNESS_MODEL=deepseek-reasoner` for the thinking variant.
-
-## Run
+The standard OpenAI shape:
 
 ```bash
-./start-glm.sh   # GLM-5.1, default port 3001
-# or ./start-deepseek.sh / ./start.sh
-```
-
-The server preloads the LLM (local) or validates the API key (remote), then exposes the standard OpenAI shape at `/v1/chat/completions`. Lean's REPL spawns lazily on the first proof tool call (~10–30s warm-up for `import Mathlib`); subsequent steps are sub-second.
-
-### Send a request
-
-```bash
-curl -sS -X POST http://localhost:3001/v1/chat/completions \
+curl -sS -X POST http://localhost:3000/v1/chat/completions \
   -H 'Content-Type: application/json' \
-  -d '{
-    "model": "glm-5.1",
-    "messages": [{"role": "user", "content": "Prove that 2^n > n for all natural numbers n."}],
-    "mode": "agent"
-  }' | jq
+  -d '{"messages": [{"role": "user", "content": "Prove that for every natural number n, n < 2^n."}]}'
 ```
 
-The response body has `choices[].message.content` (the model's natural-language answer plus the verified Lean proof) and a non-standard `harness` field with the per-step trace.
+`choices[].message.content` carries the answer plus the artifacts that earned
+it. A non-standard `harness` field carries the run id, per-branch status, and
+metrics. Send `"raw": true` to bypass the loop and forward straight to the
+provider, which is the control arm worth having.
 
-To bypass the harness and call the model directly, send `"raw": true`:
+Runs also have a life of their own, so you can watch and steer one:
 
 ```bash
-curl -sS -X POST http://localhost:3001/v1/chat/completions \
-  -H 'Content-Type: application/json' \
-  -d '{"messages": [{"role": "user", "content": "..."}], "raw": true}'
+# start one without blocking
+curl -sS -X POST localhost:3000/v1/runs -d '{"problem": "…", "beam_width": 3}'
+
+# tail it by cursor; feed `next` back in
+curl -sS "localhost:3000/v1/runs/$ID/journal?since=0"
+
+# tell a branch something; it applies at that branch's next turn boundary
+curl -sS -X POST "localhost:3000/v1/runs/$ID/interventions" \
+  -d '{"branch_id": "B1", "kind": "message", "payload": "Ship what you have."}'
+
+curl -sS -X POST "localhost:3000/v1/runs/$ID/abort"
 ```
 
-### Run a benchmark problem
+`GET /v1/harness/gates` returns the gate table and every threshold, which is the
+quickest way to see what the loop will do to you and why.
+
+## How the loop works
+
+A run is a beam: several branches attack the same problem in parallel, each with
+its own Prolog session, Lean environment, and message history. The only thing
+they share is a failure log, and that sharing is the point — an approach one
+branch disproved is not retried by another. It is FTS5-ranked rather than
+broadcast whole, so a branch sees the failures most like what it just tried.
+
+Shipping is gated. `thesis` → a `verify_*` that confirms → `review` (or
+`verify_template`, whose cross-check is built in) → `audit` → `done`. `done` is
+refused unless the latest audit passed against the exact answer being shipped,
+something was independently cross-checked, and every substantive claim in the
+answer appears in an artifact an engine confirmed. Those checks are mechanical.
+
+Four things about it are worth knowing before reading the code.
+
+**One steer per boundary.** Several gates can hold at once; an arbiter picks
+exactly one in strict priority and records what it outranked. A human directive
+sits above every machine gate.
+
+**Every gate declares a prediction**, which a later turn settles from the journal
+with no model in the path. A gate whose predictions never settle is not steering
+anything, and that is measurable rather than arguable. `stuck` currently fires
+and is obeyed zero times, which is a real finding rather than a bug.
+
+**A confirmation is not the same as progress.** An engine saying yes to "clpfd
+is available" is not progress on a puzzle, and a guard that credits every
+confirmation cannot see a branch verifying its own tooling.
+
+**SAT over free variables is not a witness**, and neither is a Prolog goal that
+succeeds with its variables unbound. Both land in an `existential` bucket that
+cannot substantiate a concrete answer.
+
+## Durable runs
+
+Everything is appended to SQLite as it happens rather than assembled at the end,
+so a crashed or aborted run stays fully inspectable and the read API serves a
+live run and a finished one with the same query. That is what lets a UI be a
+client rather than a special case.
 
 ```bash
-npx tsx scripts/agent-only.ts math-induction-pow2-gt-n
-npx tsx scripts/agent-only.ts math-gauss-sum
-npx tsx scripts/agent-only.ts knights-3
-npx tsx scripts/agent-only.ts zebra-5x5
+sqlite3 veriframe.sqlite3 "SELECT turn, tool_name, category FROM turns ORDER BY id"
+sqlite3 veriframe.sqlite3 "SELECT gate, count(*), sum(outcome='met') FROM gate_firings GROUP BY gate"
 ```
 
-The full registry lives in `scripts/problems.ts`.
+## Development
 
-## Tool surface
+Leave the process running and work against it. The slow parts are exactly the
+ones you never want to restart: a `swipl` session, a Lean REPL that spends
+thirty seconds importing Mathlib, and a provider call that takes minutes.
 
-Tools the model can call inside the agent loop:
-
-```
-add_rule({name?, code})        Prolog facts/rules; named = retractable, anonymous = permanent
-retract_rule({name})           undo a tentative named rule
-commit({name})                 lock a named rule in
-verify({claim, check})         Prolog goal that succeeds iff the claim holds
-verify_smt({claim, smtlib})    Z3 sat/unsat check
-verify_template({claim, template, slots})
-                               vetted SMT template; primary + cross-check encodings must agree
-verify_lean({claim, lean})     one-shot Lean snippet against Mathlib
-lean_define({code})            extend the branch's persistent Lean env (defs / axioms / lemmas)
-lean_search({query, top_k?})   retrieval over Mathlib's ~235k declarations
-proof_start({claim, theorem})  open a stateful Lean proof session
-proof_step({tactic, claim?})   apply ONE tactic; returns new goal state
-proof_state() / proof_undo({steps?}) / proof_close() / proof_abandon()
-assume({name, fact}) / discharge({name})
-                               open / close a hypothetical scope
-thesis({goal, subClaims, technique, nonFiniteJustification})
-                               commit the structural plan before attacking the goal
-audit({claim, proposedAnswer}) sub-LLM auditor; mandatory pre-`done` soundness gate
-review({claim, rationale, ...}) independent cross-check of a confirmed artifact
-done({answer}) / give_up({reason})
+```bash
+jolt dev          # serve with the dev + test trees on the path
 ```
 
-Shipping gates run **thesis → verify_\* → review (or verify_template, which has the cross-check baked in) → audit → done**. `done` is blocked unless the latest `audit` passed against a matching `proposedAnswer` and (for non-template confirmations) `review` ran.
+Then attach an editor to the port in `.nrepl-port`. Everything except
+`veriframe.system` is redefinable in place — the server holds the handler var,
+not the function it currently contains, and a tool is a multimethod method the
+next branch turn picks up.
 
-Bundled SMT templates: `sidon_set`, `no_3ap_subset`, `cap_set_f3n`, `schur_coloring` (see `src/harness/smt-templates.ts`).
+```clojure
+(veriframe.test-runner/run)              ; the suite, in-process
+(veriframe.agent.gates/reload-config!)   ; re-read resources/gates.edn
+```
 
-A stuck-detection heuristic injects a "rethink the step / retract / decompose" hint after 3 consecutive failed verifies and auto-suggests Mathlib lemmas drawn from the *failed proof goal* rather than the natural-language claim (the ReProver / Magnushammer signal).
+Prompts and gate thresholds live in `resources/` as files rather than as
+constants, so a run records a digest of the set it used and a pass-rate change
+localizes to one file.
+
+```bash
+jolt -M:test      # 52 tests, offline and deterministic
+jolt smoke        # platform probes, one per stated risk in PLAN.md
+jolt build -m veriframe.core -o veriframe
+```
+
+## Benchmarks
+
+```clojure
+(veriframe.bench.runner/run-suite)                 ; the registry
+(veriframe.bench.beam/sweep-widths problem)        ; does the beam earn its width
+(veriframe.bench.fence-capture/replay)             ; parser vs stored real output
+```
+
+Problems come in two kinds. A difficulty problem asks whether the harness is any
+good. A probe asks whether one mechanism works, and names the gate it targets
+plus what the harness must *not* do — a probe that expected a gate and did not
+get one is reported as INERT rather than as a pass, because a silent guard and a
+working guard look identical from outside.
+
+Read `PLAN.md` before trusting a number from any of these. The short version:
+run-to-run variance is around 2x, so nothing sized under that is a result, and
+what survives at n=1 is structural — did the mechanism fire when it should and
+stay silent otherwise.
 
 ## Configuration
 
 | Variable | Default | Notes |
 |---|---|---|
-| `HARNESS_PROVIDER` | auto-detect | `local` / `glm` / `deepseek`. Picks `glm` if `ZHIPU_API_KEY` is set, else `deepseek` if `DEEPSEEK_API_KEY` is set, else `local`. |
-| `HARNESS_MODEL_PATH` | — | GGUF path (local provider only) |
-| `HARNESS_MODEL` | per-provider default | Wire model name (`local-model` / `glm-5.1` / `deepseek-chat`) |
-| `ZHIPU_API_KEY` | — | Required when `HARNESS_PROVIDER=glm` |
-| `DEEPSEEK_API_KEY` | — | Required when `HARNESS_PROVIDER=deepseek` |
-| `HARNESS_PORT` | `3000` | HTTP port |
-| `HARNESS_MAX_TOKENS` | `4096` (`16384` for GLM) | Per-LLM-call output cap |
-| `HARNESS_TIMEOUT_MS` | `300000` | Per-LLM-call wall clock |
-| `HARNESS_LEAN_WORKSPACE` | `tools/lean-workspace` | Override the Lean workspace path |
-| `HARNESS_LEAN_REPL_BIN` | `tools/lean-repl/.lake/build/bin/repl` | Override the Lean REPL binary path |
-| `HARNESS_LEAN_TIMEOUT_MS` | `120000` | Per-Lean-call timeout (fallback `lake env lean` path) |
+| `HARNESS_PROVIDER` | auto-detect | `deepseek`, `glm`, `openai`, `ollama`, `local` |
+| `HARNESS_MODEL` | per provider | wire model name |
+| `HARNESS_BASE_URL` | per provider | point at any OpenAI-compatible endpoint |
+| `HARNESS_PORT` | `3000` | |
+| `HARNESS_NREPL_PORT` | `7888` | |
+| `HARNESS_DB` | `veriframe.sqlite3` | |
+| `HARNESS_MAX_TURNS` | `80` | per branch |
+| `HARNESS_BEAM_WIDTH` | `5` | treat as unjustified; see PLAN.md |
+| `HARNESS_MAX_TOKENS` | `16384` | a correctness parameter, not a cost knob |
+| `HARNESS_TIMEOUT_MS` | `300000` | per provider call |
+| `DEEPSEEK_API_KEY` / `ZHIPU_API_KEY` / `OPENAI_API_KEY` | — | whichever provider |
 
-Per-request fields:
+## Known limitations
 
-| Field | Default | Notes |
-|---|---|---|
-| `mode` | `agent` | `agent` runs the verification loop; `raw: true` bypasses |
-| `max_turns` | `80` | Hard cap on tool-call turns before the run is failed |
+Tracked in `bd list`. The one that constrains what the harness can do:
 
-## Tests
+**A hung provider call cannot be bounded from inside the process.** A timed
+`deref` does not preempt a thread parked in a blocking FFI read, so the
+scheduler's per-turn deadline is unenforceable in exactly the case it exists for,
+and because scheduling is a barrier the stall spreads to every branch. Keep
+concurrent provider calls under about six until this is fixed.
 
-```bash
-npm run test:run
-npm run typecheck
-```
+The other two are TLS-related. Loading `jolt.nrepl` before any TLS handshake
+breaks https for the process, which is worked around by warming TLS at startup.
+And a `jolt build` binary cannot complete a TLS handshake at all, so it is
+usable for the engine paths and against a local plain-http provider but not
+against a hosted one.
 
 ## License
 
