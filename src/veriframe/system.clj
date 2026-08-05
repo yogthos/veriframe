@@ -24,6 +24,7 @@
             ;; installs the java.time.* host shim tools.logging's timestamp
             ;; formatter resolves against; must load before the first log call
             [jolt.time]
+            [jolt.http.platform :as platform]
             [ring-chez.adapter :as adapter]
             [veriframe.config :as config]
             [veriframe.engine.lean-pool :as lean-pool]
@@ -65,6 +66,10 @@
    (when (started?)
      (throw (ex-info "system already started; call stop! first" {})))
    (let [cfg (config/load-config overrides)
+         ;; Process-wide, and set here rather than in core so that every entry
+         ;; point gets it: the tests, the benchmark runner and a REPL session
+         ;; all bring the system up through start! without going through -main.
+         _ (platform/set-max-response-ms! (get-in cfg [:llm :max-response-ms]))
          c (db/open! (get-in cfg [:db :path]))
          server (adapter/run-server handler {:port (get-in cfg [:http :port])})]
      (reset! system {:config cfg :conn c :server server})

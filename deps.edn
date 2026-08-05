@@ -5,7 +5,7 @@
  :deps {;; provider calls (clj-http-lite over jolt.ffi sockets + OpenSSL + libz)
         jolt-lang/http-client
         {:git/url "https://github.com/jolt-lang/http-client"
-         :git/sha "cc45d7ebfa561fb5f833925977e3cf82196ed3ad"}
+         :git/sha "0d5686256f26a85b05c3292c193e057795f146b2"}
 
         ;; durable sessions: jdbc.core over the system libsqlite3 via jolt.ffi
         jolt-lang/db

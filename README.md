@@ -176,7 +176,7 @@ constants, so a run records a digest of the set it used and a pass-rate change
 localizes to one file.
 
 ```bash
-jolt -M:test      # 52 tests, offline and deterministic
+jolt -M:test      # 72 tests, offline and deterministic
 jolt smoke        # platform probes, one per stated risk in PLAN.md
 jolt build -m veriframe.core -o veriframe
 ```
@@ -213,7 +213,8 @@ stay silent otherwise.
 | `HARNESS_MAX_TURNS` | `80` | per branch |
 | `HARNESS_BEAM_WIDTH` | `5` | treat as unjustified; see PLAN.md |
 | `HARNESS_MAX_TOKENS` | `16384` | a correctness parameter, not a cost knob |
-| `HARNESS_TIMEOUT_MS` | `300000` | per provider call |
+| `HARNESS_TIMEOUT_MS` | `300000` | per-read inactivity bound on a provider call |
+| `HARNESS_MAX_RESPONSE_MS` | `600000` | total bound on one response; kept below the turn deadline |
 | `HARNESS_TURN_DEADLINE_MS` | `900000` | sized to the worst legitimate turn, not the typical one |
 | `HARNESS_Z3_TIMEOUT_MS` | `120000` | |
 | `HARNESS_SWIPL_TIMEOUT_MS` | `120000` | |
@@ -239,12 +240,16 @@ from OpenSSL, and the mismatched `SSL_CTX` layouts faulted. `jolt.http.tls` now
 loads its own libraries immediately before its bindings resolve. A built binary
 now completes a handshake, starts nREPL, and runs the full loop.
 
-What remains is narrower. `:conn-timeout` is still ignored, because setting
-`O_NONBLOCK` needs variadic `fcntl` and Apple arm64 passes variadic arguments on
-the stack, so a fixed-arity binding corrupts them silently; `connect` is at least
-bounded by the kernel's SYN retry limit, unlike `recv`. And `SO_RCVTIMEO` bounds
-inactivity rather than total duration, so a provider that trickles slowly could
-still outlast the turn deadline. That is filed but has not been observed.
+A provider call is now bounded from both ends. `SO_RCVTIMEO` covers silence,
+and a total deadline in the read loop covers a peer that trickles a byte at a
+time and would otherwise reset that timer forever. The total is deliberately
+below the turn deadline, so the HTTP layer gives up first and unwinds the thread
+rather than the scheduler abandoning a branch that stays parked in a read.
+
+What remains is `:conn-timeout`, which is still ignored: setting `O_NONBLOCK`
+needs variadic `fcntl`, and Apple arm64 passes variadic arguments on the stack,
+so a fixed-arity binding corrupts them silently. `connect` is at least bounded by
+the kernel's SYN retry limit, unlike `recv`.
 
 ## License
 

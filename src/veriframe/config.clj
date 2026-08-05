@@ -74,7 +74,17 @@
                   :model       (or (env "HARNESS_MODEL") (:model defaults))
                   :max-tokens  (or (env-long "HARNESS_MAX_TOKENS") 16384)
                   :temperature 0.7
-                  :timeout-ms  (or (env-long "HARNESS_TIMEOUT_MS") 300000)}
+                  ;; Per-read inactivity bound (SO_RCVTIMEO on the socket).
+                  :timeout-ms  (or (env-long "HARNESS_TIMEOUT_MS") 300000)
+                  ;; Total wall-clock bound on one response, across all reads.
+                  ;; A peer that trickles a byte every few seconds resets the
+                  ;; per-read timer forever, so :timeout-ms alone does not bound
+                  ;; the call. Deliberately BELOW the turn deadline (900000) so
+                  ;; the HTTP layer gives up first, with a typed exception that
+                  ;; unwinds the thread and closes the socket. If the scheduler's
+                  ;; deadline fires first it only abandons the branch's turn --
+                  ;; the thread stays parked in the read and leaks.
+                  :max-response-ms (or (env-long "HARNESS_MAX_RESPONSE_MS") 600000)}
        ;; Engine timeouts are sized so that killing a call means it was stuck,
        ;; not merely slow. A false kill costs the branch a turn AND records a
        ;; failure other branches will avoid retrying, so the expensive mistake
