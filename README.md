@@ -1,150 +1,276 @@
-# reasoning-harness
+# veriframe
 
-OpenAI-compatible HTTP server that wraps an LLM in a **claim-first verification loop** backed by three reasoning engines:
+An OpenAI-compatible HTTP server that wraps a model in a claim-first verification
+loop, written in [Jolt](https://github.com/jolt-lang/jolt) (Clojure on Chez
+Scheme). Three engines back it:
 
-- **SWI-Prolog** with `library(clpfd)` — relational and finite-domain CSPs (knights & knaves, zebra, sudoku).
-- **Z3 SMT** — numerical and theory-rich constraints (linear/nonlinear arithmetic, bitvectors, optimisation).
-- **Lean 4 + Mathlib** via a long-lived `leanprover-community/repl` subprocess — mathematical theorems, with proofs developed stepwise in tactic mode.
+- **SWI-Prolog** with `library(clpfd)` for relational and finite-domain problems.
+- **Z3** for arithmetic and theory-rich constraints.
+- **Lean 4 + Mathlib** through a long-lived `leanprover-community/repl`
+  subprocess, with proofs developed a tactic at a time.
 
-Every claim the model wants to land has to round-trip through one of these engines. Verified facts accumulate; unverified ones don't ship.
+Nothing the model asserts ships unless an engine confirmed it, and the harness
+checks that what the engine confirmed is actually what the answer claims.
+
+This is a port of an earlier TypeScript version, and deliberately not a
+transliteration: the control layer was rebuilt. `PLAN.md` has the reasoning, the
+measurements, and every bug found along the way.
 
 ## Install
 
+Needs `jolt`, `z3`, and `swipl`. Lean is optional and only the theorem-proving
+paths use it.
+
 ```bash
-npm install
+brew install jolt-lang/jolt/jolt z3 swi-prolog     # or your package manager
 ```
 
-### Lean toolchain (required for theorem proving)
+Point it at a provider. Any OpenAI-compatible endpoint works, including a local
+`llama-server` or Ollama.
 
 ```bash
-# 1. Install elan (Lean's version manager)
-curl https://raw.githubusercontent.com/leanprover/elan/master/elan-init.sh -sSf | sh
-source $HOME/.elan/env
-
-# 2. Fetch + build Mathlib in the workspace (~10GB, one-time)
-cd tools/lean-workspace && lake update && cd ../..
-
-# 3. Fetch + build leanprover-community/repl (one-time, ~30s)
-./tools/setup-lean-repl.sh
+export DEEPSEEK_API_KEY=…        # or ZHIPU_API_KEY, OPENAI_API_KEY
+jolt serve                        # http on 3000, nREPL on 7888
 ```
 
-### Z3
+### Lean, if you want the theorem-proving engine
+
+Install `elan`, Lean's toolchain manager. Do not install a Lean release
+directly: the workspace pins its own toolchain and `elan` fetches that version
+on demand.
 
 ```bash
-brew install z3   # or your package manager of choice
+curl https://raw.githubusercontent.com/leanprover/elan/master/elan-init.sh -sSf \
+  | sh -s -- -y --default-toolchain none
+source "$HOME/.elan/env"
 ```
 
-### Pick an LLM provider
-
-- **Local (node-llama-cpp)** — drop a GGUF into `models/`. The default config expects `models/Qwen3.6-35B-A3B-Q8_0.gguf`. Run with `./start.sh`.
-- **GLM-5.1 (Zhipu BigModel)** — `export ZHIPU_API_KEY=…`, then `./start-glm.sh`. The provider merges `reasoning_content` + `content` into `<think>...</think>` framing so the tool-call fence parser sees the fence wherever the model emits it.
-- **DeepSeek** — `export DEEPSEEK_API_KEY=…`, then `./start-deepseek.sh`. Default model is `deepseek-chat`; set `HARNESS_MODEL=deepseek-reasoner` for the thinking variant.
-
-## Run
+Then fetch Mathlib and build the REPL the harness talks to:
 
 ```bash
-./start-glm.sh   # GLM-5.1, default port 3001
-# or ./start-deepseek.sh / ./start.sh
+./tools/setup-lean.sh
 ```
 
-The server preloads the LLM (local) or validates the API key (remote), then exposes the standard OpenAI shape at `/v1/chat/completions`. Lean's REPL spawns lazily on the first proof tool call (~10–30s warm-up for `import Mathlib`); subsequent steps are sub-second.
+That pulls Mathlib's prebuilt oleans, which run to several GB, and builds
+`leanprover-community/repl` against the matching toolchain. Expect ten to
+twenty minutes on a cold run. It is idempotent, so re-running it is cheap.
 
-### Send a request
+Everything except the theorem-proving tools works without any of this;
+`/health` reports which engines it can see, and Lean problems in the benchmark
+skip rather than fail when the toolchain is absent.
+
+`import Mathlib` costs anywhere from ten seconds to six minutes depending on
+whether the oleans are in the page cache and whether the machine has room to
+keep them there. They run to about 7GB, so a 16GB laptop re-faults most of them
+on every import and lands at the slow end, while CI with a freshly written cache
+lands at the fast one. The harness pays that at startup rather than inside a
+branch turn, and `/health` reports `lean.warm_sessions` and `lean.warming`
+alongside `engines.lean`, because installed and ready are different things and
+conflating them is how every Lean call failed while the health check stayed
+green. Warming does not block startup, and a branch that asks before it finishes
+waits for the import already running rather than starting a second one. Set
+`HARNESS_WARM_LEAN=0` to turn it off, which is reasonable if your oleans stay
+cached.
+
+## Use it
+
+The standard OpenAI shape:
 
 ```bash
-curl -sS -X POST http://localhost:3001/v1/chat/completions \
+curl -sS -X POST http://localhost:3000/v1/chat/completions \
   -H 'Content-Type: application/json' \
-  -d '{
-    "model": "glm-5.1",
-    "messages": [{"role": "user", "content": "Prove that 2^n > n for all natural numbers n."}],
-    "mode": "agent"
-  }' | jq
+  -d '{"messages": [{"role": "user", "content": "Prove that for every natural number n, n < 2^n."}]}'
 ```
 
-The response body has `choices[].message.content` (the model's natural-language answer plus the verified Lean proof) and a non-standard `harness` field with the per-step trace.
+`choices[].message.content` carries the answer plus the artifacts that earned
+it. A non-standard `harness` field carries the run id, per-branch status, and
+metrics. Send `"raw": true` to bypass the loop and forward straight to the
+provider, which is the control arm worth having.
 
-To bypass the harness and call the model directly, send `"raw": true`:
+Runs also have a life of their own, so you can watch and steer one:
 
 ```bash
-curl -sS -X POST http://localhost:3001/v1/chat/completions \
-  -H 'Content-Type: application/json' \
-  -d '{"messages": [{"role": "user", "content": "..."}], "raw": true}'
+# start one without blocking
+curl -sS -X POST localhost:3000/v1/runs -d '{"problem": "…", "beam_width": 3}'
+
+# tail it by cursor; feed `next` back in
+curl -sS "localhost:3000/v1/runs/$ID/journal?since=0"
+
+# tell a branch something; it applies at that branch's next turn boundary
+curl -sS -X POST "localhost:3000/v1/runs/$ID/interventions" \
+  -d '{"branch_id": "B1", "kind": "message", "payload": "Ship what you have."}'
+
+curl -sS -X POST "localhost:3000/v1/runs/$ID/abort"
 ```
 
-### Run a benchmark problem
+`GET /v1/harness/gates` returns the gate table and every threshold, which is the
+quickest way to see what the loop will do to you and why.
+
+## How the loop works
+
+A run is a beam: several branches attack the same problem in parallel, each with
+its own Prolog session, Lean environment, and message history. The only thing
+they share is a failure log, and that sharing is the point — an approach one
+branch disproved is not retried by another. It is FTS5-ranked rather than
+broadcast whole, so a branch sees the failures most like what it just tried.
+
+Shipping is gated. `thesis` → a `verify_*` that confirms → `review` (or
+`verify_template`, whose cross-check is built in) → `audit` → `done`. `done` is
+refused unless the latest audit passed against the exact answer being shipped,
+something was independently cross-checked, and every substantive claim in the
+answer appears in an artifact an engine confirmed. Those checks are mechanical.
+
+Four things about it are worth knowing before reading the code.
+
+**One steer per boundary.** Several gates can hold at once; an arbiter picks
+exactly one in strict priority and records what it outranked. A human directive
+sits above every machine gate.
+
+**Every gate declares a prediction**, which a later turn settles from the journal
+with no model in the path. A gate whose predictions never settle is not steering
+anything, and that is measurable rather than arguable. `stuck` currently fires
+and is obeyed zero times, which is a real finding rather than a bug.
+
+**A confirmation is not the same as progress.** An engine saying yes to "clpfd
+is available" is not progress on a puzzle, and a guard that credits every
+confirmation cannot see a branch verifying its own tooling.
+
+**SAT over free variables is not a witness**, and neither is a Prolog goal that
+succeeds with its variables unbound. Both land in an `existential` bucket that
+cannot substantiate a concrete answer.
+
+## Durable runs
+
+Everything is appended to SQLite as it happens rather than assembled at the end,
+so a crashed or aborted run stays fully inspectable and the read API serves a
+live run and a finished one with the same query. That is what lets a UI be a
+client rather than a special case.
 
 ```bash
-npx tsx scripts/agent-only.ts math-induction-pow2-gt-n
-npx tsx scripts/agent-only.ts math-gauss-sum
-npx tsx scripts/agent-only.ts knights-3
-npx tsx scripts/agent-only.ts zebra-5x5
+sqlite3 veriframe.sqlite3 "SELECT turn, tool_name, category FROM turns ORDER BY id"
+sqlite3 veriframe.sqlite3 "SELECT gate, count(*), sum(outcome='met') FROM gate_firings GROUP BY gate"
 ```
 
-The full registry lives in `scripts/problems.ts`.
+## Development
 
-## Tool surface
+Leave the process running and work against it. The slow parts are exactly the
+ones you never want to restart: a `swipl` session, a Lean REPL that spends
+thirty seconds importing Mathlib, and a provider call that takes minutes.
 
-Tools the model can call inside the agent loop:
-
-```
-add_rule({name?, code})        Prolog facts/rules; named = retractable, anonymous = permanent
-retract_rule({name})           undo a tentative named rule
-commit({name})                 lock a named rule in
-verify({claim, check})         Prolog goal that succeeds iff the claim holds
-verify_smt({claim, smtlib})    Z3 sat/unsat check
-verify_template({claim, template, slots})
-                               vetted SMT template; primary + cross-check encodings must agree
-verify_lean({claim, lean})     one-shot Lean snippet against Mathlib
-lean_define({code})            extend the branch's persistent Lean env (defs / axioms / lemmas)
-lean_search({query, top_k?})   retrieval over Mathlib's ~235k declarations
-proof_start({claim, theorem})  open a stateful Lean proof session
-proof_step({tactic, claim?})   apply ONE tactic; returns new goal state
-proof_state() / proof_undo({steps?}) / proof_close() / proof_abandon()
-assume({name, fact}) / discharge({name})
-                               open / close a hypothetical scope
-thesis({goal, subClaims, technique, nonFiniteJustification})
-                               commit the structural plan before attacking the goal
-audit({claim, proposedAnswer}) sub-LLM auditor; mandatory pre-`done` soundness gate
-review({claim, rationale, ...}) independent cross-check of a confirmed artifact
-done({answer}) / give_up({reason})
+```bash
+jolt dev          # serve with the dev + test trees on the path
 ```
 
-Shipping gates run **thesis → verify_\* → review (or verify_template, which has the cross-check baked in) → audit → done**. `done` is blocked unless the latest `audit` passed against a matching `proposedAnswer` and (for non-template confirmations) `review` ran.
+Then attach an editor to the port in `.nrepl-port`. Everything except
+`veriframe.system` is redefinable in place — the server holds the handler var,
+not the function it currently contains, and a tool is a multimethod method the
+next branch turn picks up.
 
-Bundled SMT templates: `sidon_set`, `no_3ap_subset`, `cap_set_f3n`, `schur_coloring` (see `src/harness/smt-templates.ts`).
+```clojure
+(veriframe.test-runner/run)              ; the suite, in-process
+(veriframe.agent.gates/reload-config!)   ; re-read resources/gates.edn
+```
 
-A stuck-detection heuristic injects a "rethink the step / retract / decompose" hint after 3 consecutive failed verifies and auto-suggests Mathlib lemmas drawn from the *failed proof goal* rather than the natural-language claim (the ReProver / Magnushammer signal).
+Prompts and gate thresholds live in `resources/` as files rather than as
+constants, so a run records a digest of the set it used and a pass-rate change
+localizes to one file.
+
+```bash
+jolt -M:test      # 72 tests, offline and deterministic
+jolt smoke        # platform probes, one per stated risk in PLAN.md
+jolt build -m veriframe.core -o veriframe
+```
+
+## Benchmarks
+
+```clojure
+(veriframe.bench.runner/run-suite)                 ; the registry
+(veriframe.bench.beam/sweep-widths problem)        ; does the beam earn its width
+(veriframe.bench.fence-capture/replay)             ; parser vs stored real output
+```
+
+Problems come in two kinds. A difficulty problem asks whether the harness is any
+good. A probe asks whether one mechanism works, and names the gate it targets
+plus what the harness must *not* do — a probe that expected a gate and did not
+get one is reported as INERT rather than as a pass, because a silent guard and a
+working guard look identical from outside.
+
+Read `PLAN.md` before trusting a number from any of these. The short version:
+run-to-run variance is around 2x, so nothing sized under that is a result, and
+what survives at n=1 is structural — did the mechanism fire when it should and
+stay silent otherwise.
 
 ## Configuration
 
 | Variable | Default | Notes |
 |---|---|---|
-| `HARNESS_PROVIDER` | auto-detect | `local` / `glm` / `deepseek`. Picks `glm` if `ZHIPU_API_KEY` is set, else `deepseek` if `DEEPSEEK_API_KEY` is set, else `local`. |
-| `HARNESS_MODEL_PATH` | — | GGUF path (local provider only) |
-| `HARNESS_MODEL` | per-provider default | Wire model name (`local-model` / `glm-5.1` / `deepseek-chat`) |
-| `ZHIPU_API_KEY` | — | Required when `HARNESS_PROVIDER=glm` |
-| `DEEPSEEK_API_KEY` | — | Required when `HARNESS_PROVIDER=deepseek` |
-| `HARNESS_PORT` | `3000` | HTTP port |
-| `HARNESS_MAX_TOKENS` | `4096` (`16384` for GLM) | Per-LLM-call output cap |
-| `HARNESS_TIMEOUT_MS` | `300000` | Per-LLM-call wall clock |
-| `HARNESS_LEAN_WORKSPACE` | `tools/lean-workspace` | Override the Lean workspace path |
-| `HARNESS_LEAN_REPL_BIN` | `tools/lean-repl/.lake/build/bin/repl` | Override the Lean REPL binary path |
-| `HARNESS_LEAN_TIMEOUT_MS` | `120000` | Per-Lean-call timeout (fallback `lake env lean` path) |
+| `HARNESS_PROVIDER` | auto-detect | `deepseek`, `glm`, `openai`, `ollama`, `local` |
+| `HARNESS_MODEL` | per provider | wire model name |
+| `HARNESS_BASE_URL` | per provider | point at any OpenAI-compatible endpoint |
+| `HARNESS_PORT` | `3000` | |
+| `HARNESS_NREPL_PORT` | `7888` | |
+| `HARNESS_DB` | `veriframe.sqlite3` | |
+| `HARNESS_MAX_TURNS` | `80` | per branch |
+| `HARNESS_BEAM_WIDTH` | `5` | treat as unjustified; see PLAN.md |
+| `HARNESS_MAX_TOKENS` | `16384` | a correctness parameter, not a cost knob |
+| `HARNESS_TIMEOUT_MS` | `300000` | per-read inactivity bound on a provider call |
+| `HARNESS_MAX_RESPONSE_MS` | `600000` | total bound on one response; kept below the turn deadline |
+| `HARNESS_TURN_DEADLINE_MS` | `900000` | sized to the worst legitimate turn, not the typical one |
+| `HARNESS_Z3_TIMEOUT_MS` | `120000` | |
+| `HARNESS_SWIPL_TIMEOUT_MS` | `120000` | |
+| `HARNESS_LEAN_TIMEOUT_MS` | `300000` | per Lean command, not the import |
+| `HARNESS_LEAN_IMPORT_TIMEOUT_MS` | `1200000` | `import Mathlib` alone; measured at ~378s idle |
+| `HARNESS_WARM_LEAN` | `1` | `0` disables warming Lean at startup |
+| `HARNESS_LEAN_WARM_SESSIONS` | `1` | warmed sessions to prepare at boot |
+| `DEEPSEEK_API_KEY` / `ZHIPU_API_KEY` / `OPENAI_API_KEY` | — | whichever provider |
 
-Per-request fields:
+## Known limitations
 
-| Field | Default | Notes |
-|---|---|---|
-| `mode` | `agent` | `agent` runs the verification loop; `raw: true` bypasses |
-| `max_turns` | `80` | Hard cap on tool-call turns before the run is failed |
+Tracked in `bd list`. The three that used to be listed here were all fixed on
+2026-08-05, upstream in `jolt-lang/http-client`, and two of them turned out to be
+the same bug.
 
-## Tests
+A hung provider call could not be bounded because `connect-stream` applied the
+caller's read timeout only on the plaintext branch, so `:socket-timeout` did
+nothing on https and every provider call is https. And https broke both after
+loading `jolt.nrepl` and inside a `jolt build` binary because Chez resolves
+foreign symbols most-recent-loaded-first: on macOS the process image links
+LibreSSL, so anything that loaded the process's own symbols took `SSL_*` away
+from OpenSSL, and the mismatched `SSL_CTX` layouts faulted. `jolt.http.tls` now
+loads its own libraries immediately before its bindings resolve. A built binary
+now completes a handshake, starts nREPL, and runs the full loop.
 
-```bash
-npm run test:run
-npm run typecheck
-```
+A provider call is now bounded from both ends. `SO_RCVTIMEO` covers silence,
+and a total deadline in the read loop covers a peer that trickles a byte at a
+time and would otherwise reset that timer forever. The total is deliberately
+below the turn deadline, so the HTTP layer gives up first and unwinds the thread
+rather than the scheduler abandoning a branch that stays parked in a read.
+
+What remains is `:conn-timeout`, which is still ignored: setting `O_NONBLOCK`
+needs variadic `fcntl`, and Apple arm64 passes variadic arguments on the stack,
+so a fixed-arity binding corrupts them silently. `connect` is at least bounded by
+the kernel's SYN retry limit, unlike `recv`.
 
 ## License
 
-Apache-2.0
+EPL-2.0, matching `jolt` and Clojure convention. Every source file carries the
+notice.
+
+This went to GPLv3 briefly, so the reasoning is worth recording. The numerical
+engine was going to embed GNU Octave's C++ interpreter in-process, Octave is
+GPLv3, and linking it would make the combined work GPLv3, so the license moved
+first. Checking what the dependencies were actually licensed under showed that
+could not work: `jolt` is EPL-2.0 without the secondary-license option
+exercised, and `data.json`, `tools.logging` and `jolt-lang/logging` are all
+EPL-1.0 by inheritance from Clojure code. The FSF lists EPL as GPL-incompatible
+in both versions. So a GPLv3 harness could not legally link the platform it runs
+on, and the only thing forcing GPLv3 was in-process Octave.
+
+Octave becomes a subprocess instead, like z3 and swipl already are. Separate
+programs communicating over pipes are not a combined work, so its GPL does not
+reach across that boundary and the conflict disappears.
+
+Along the way six `jolt-lang` libraries turned out to have no license at all,
+which meant all rights reserved and no permission to redistribute them. They are
+EPL-2.0 now. `clj-http-lite` is MIT, declared in its `pom.xml` and README rather
+than a `LICENSE` file, which is why GitHub reports it as unlicensed.

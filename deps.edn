@@ -1,0 +1,65 @@
+{:paths ["src" "vendor" "resources"]
+
+ ;; Git deps are fetched into ~/.jolt/gitlibs by jolt. Full SHAs only —
+ ;; `git fetch` can't resolve short ones.
+ :deps {;; provider calls (clj-http-lite over jolt.ffi sockets + OpenSSL + libz)
+        jolt-lang/http-client
+        {:git/url "https://github.com/jolt-lang/http-client"
+         :git/sha "0d5686256f26a85b05c3292c193e057795f146b2"}
+
+        ;; durable sessions: jdbc.core over the system libsqlite3 via jolt.ffi
+        jolt-lang/db
+        {:git/url "https://github.com/jolt-lang/db"
+         :git/sha "c3ed5b333b5feed615d49c118493a00edc537739"}
+
+        ;; nREPL middleware (sessions, interruptible eval, completion, lookup) so
+        ;; an editor can drive the running harness. See core/start-nrepl!.
+        jolt-lang/nrepl
+        {:git/url "https://github.com/jolt-lang/nrepl"
+         :git/sha "10bf63fd19f66b39587f4a5756d0644231b2d4c1"}
+
+        ;; OpenSSL/SecureRandom shims. http-client pulls this in too; jolt.deps
+        ;; reconciles the duplicate libssl/libcrypto natives to a single load.
+        jolt-lang/jolt-crypto
+        {:git/url "https://github.com/jolt-lang/jolt-crypto"
+         :git/sha "1ab72aa5f73be7ec41f01086953ffb43ecd3d84e"}
+
+        org.clojure/data.json
+        {:git/url "https://github.com/clojure/data.json"
+         :git/sha "94463ffb54482427fd9b31f264b06bff6dcfd557"}
+
+        ;; clojure.tools.logging ported to jolt (stderr backend, :info+ default)
+        org.clojure/tools.logging
+        {:git/url "https://github.com/jolt-lang/logging"
+         :git/sha "ec6747e55583118d881faf4ab41e68d7e587ce4c"}
+
+        ;; java.time host shim. tools.logging formats timestamps with
+        ;; DateTimeFormatter, which core does not provide (RFC 0008), so
+        ;; logging anything without this dep throws at the first log call.
+        jolt-lang/time
+        {:git/url "https://github.com/jolt-lang/time"
+         :git/sha "da271ca302487c2c5130a0450b4ad4c78d63e656"}}
+
+ ;; The vendored HTTP server (vendor/ring_chez/adapter.clj) binds BSD sockets
+ ;; through the running process's own libc symbols, so they must be loaded
+ ;; before that namespace is required.
+ :jolt/native [{:name "libc (POSIX sockets)" :process true}]
+
+ :nrepl/middleware [nrepl.middleware/default-middleware]
+
+ :aliases {:test {:extra-paths ["test"]
+                  :main-opts ["-m" "veriframe.test-runner"]}
+           ;; command-line nREPL client, plus the test tree, so the live
+           ;; process can run the suite over nREPL without paying startup:
+           ;;   (require 'veriframe.test-runner :reload-all)
+           ;;   (veriframe.test-runner/run)
+           :dev  {:extra-paths ["dev" "test"]}}
+
+ :tasks {serve {:doc "start the harness (HTTP + nREPL) and park"
+                :main-opts ["-m" "veriframe.core"]}
+         ;; A shell-string task, because a :tasks :main-opts entry cannot carry
+         ;; an -A alias — main-opts are only ever main-opts.
+         dev   "jolt -A:dev -m veriframe.core"
+         smoke {:doc "Phase 0 platform probes: z3, swipl, sqlite, https, server"
+                :main-opts ["-m" "veriframe.smoke"]}
+         test  "jolt -M:test"}}
