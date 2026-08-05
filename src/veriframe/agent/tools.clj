@@ -292,7 +292,12 @@
                        {:role "user" :content prompt}]
                       {:temperature 0.0})
           parsed (verdict/parse (:content r))]
-      (assoc parsed :text (:content r)))
+      ;; The reasoning stream is stripped HERE, not at the call sites, because
+      ;; every caller quotes :text back into the branch's message history and a
+      ;; branch that reads reviewer-voice reasoning answers its next turn as a
+      ;; reviewer instead of calling a tool. Keeping the raw text in the map
+      ;; would leave that trap set for the next caller added.
+      (assoc parsed :text (verdict/strip-reasoning (:content r))))
     (catch Throwable e
       {:verdict :unparseable :reason (str "the judge call failed: " (ex-message e))})))
 
@@ -393,14 +398,46 @@
     "therefore" "hence" "conclusion" "shows" "show" "proved" "proven"
     "verified" "confirms" "confirmed" "follows" "given" "which" "where"
     "unique" "uniquely" "only" "exactly" "such" "these" "those" "each"
-    "every" "must" "also" "both" "same" "case" "cases" "holds" "true" "false"})
+    "every" "must" "also" "both" "same" "case" "cases" "holds" "true" "false"
+
+    ;; Provenance vocabulary: how the answer was checked, not what it claims.
+    ;; These can never appear in an artifact, because an artifact's claim and
+    ;; code are about the problem and say nothing about the engine that ran
+    ;; them. Leaving them in made the gate refuse answers for asserting the
+    ;; word "mathlib", which pushed the model toward stripping every
+    ;; explanatory sentence to get past it — the opposite of what a
+    ;; verification harness wants its answers to look like. Observed costing
+    ;; three turns on one run.
+    "lean" "mathlib" "prolog" "clpfd" "swipl" "z3" "smt" "smtlib" "octave"
+    "engine" "engines" "harness" "kernel" "kernel-checked" "machine-checked"
+    "theorem" "theorems" "lemma" "lemmas" "proof" "proofs" "tactic" "tactics"
+    "statement" "statements" "universal" "universally" "induction" "inductive"
+    "base" "step" "successor" "encoding" "encodings" "formalisation"
+    "formalization" "independent" "independently" "cross-check" "cross-checked"
+    ;; Generic mathematical prose. "equals" and "numbers" carry no specific
+    ;; content — the specific part is the number or name they connect.
+    "number" "numbers" "equal" "equals" "integer" "integers" "natural"
+    "naturals" "first" "sums" "pairwise" "distinct" "positive"})
+
+;; A tool name followed by its version. Stripped BEFORE tokenizing, because the
+;; version is a bare number and numbers are the part of this gate that must not
+;; be relaxed — "Lean 4" would otherwise assert the number 4 and get refused for
+;; it. Narrow on purpose: only a number directly after a known engine name.
+(def ^:private tool-version-re
+  #"(?i)\b(lean|mathlib|z3|swipl|swi-prolog|prolog|octave|python)[\s-]*[0-9]+(\.[0-9]+)*")
 
 (defn answer-tokens
   "Substantive tokens from a proposed answer: numbers and words that are not
   stopwords. Numbers matter most — an answer naming a size, a bound, or a
   witness has to have that number in the evidence."
   [text]
-  (->> (str/split (str/lower-case (or text "")) #"[^a-z0-9_.-]+")
+  (->> (str/split (str/lower-case (str/replace (or text "") tool-version-re " "))
+                  #"[^a-z0-9_.-]+")
+       ;; `.` and `-` stay INSIDE the split class so 3.5 and cross-check survive
+       ;; as one token, which means a sentence-final period rides along with the
+       ;; last word. "successor." then matches no stopword and gets reported as
+       ;; an unsupported assertion. Trim the edges, keep the interior.
+       (map #(str/replace % #"^[.-]+|[.-]+$" ""))
        (remove str/blank?)
        (remove stopwords)
        (filter #(or (re-matches #"[0-9]+(\.[0-9]+)?" %) (>= (count %) 4)))

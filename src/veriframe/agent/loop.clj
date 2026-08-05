@@ -143,12 +143,20 @@
                       :else
                       (str "[harness] Your tool-call block did not parse: "
                            (:parse-error parsed)))]
+            ;; The response matters most on THIS path. A turn that produced no
+            ;; usable call records nothing else about what the model did, and
+            ;; without the text there is no way to tell a model that rambled
+            ;; from one that emitted the wrong fence from one that answered in
+            ;; prose. Nine of twenty turns in a Lean run landed here and the
+            ;; question was unanswerable.
             (journal/record-turn! conn run-id
                                   {:branch-id (:id branch) :turn turn
                                    :tool-name (or (:name parsed) "__no_call__")
                                    :result msg :category "failure"
                                    :parse-error (:parse-error parsed)
-                                   :auto-repaired (:auto-repaired? parsed)})
+                                   :auto-repaired (:auto-repaired? parsed)
+                                   :assistant-text content
+                                   :reasoning-text (:reasoning response)})
             (-> branch
                 (state/record-outcome {:category :failure :progress? false})
                 (state/add-message "user" msg)))
@@ -176,7 +184,9 @@
                                    :tool-name tool :args (:args parsed)
                                    :result (truncate (:result result))
                                    :category (name (:category result))
-                                   :auto-repaired (:auto-repaired? parsed)})
+                                   :auto-repaired (:auto-repaired? parsed)
+                                   :assistant-text content
+                                   :reasoning-text (:reasoning response)})
             (when-let [a (:artifact result)]
               (journal/record-artifact! conn run-id
                                         (assoc a :branch-id (:id branch) :turn turn)))

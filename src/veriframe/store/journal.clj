@@ -50,15 +50,17 @@
   progress guards read. It is recorded rather than derived later because the
   tool that produced it knows, and a reconstruction would be guessing."
   [conn run-id {:keys [branch-id turn tool-name args result category
-                       parse-error auto-repaired]}]
+                       parse-error auto-repaired assistant-text reasoning-text]}]
   (db/with-writer
     (db/execute! conn
                    ["INSERT INTO turns (run_id, branch_id, turn, tool_name, args, result,
-                                        category, parse_error, auto_repaired, created_at)
-                     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
+                                        category, parse_error, auto_repaired,
+                                        assistant_text, reasoning_text, created_at)
+                     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
                     run-id branch-id turn (str tool-name) (js (or args {}))
                     (str result) (some-> category name) parse-error
-                    (if auto-repaired 1 0) (db/now)]))
+                    (if auto-repaired 1 0)
+                    assistant-text reasoning-text (db/now)]))
   (emit! conn run-id :turn {:branch-id branch-id :turn turn
                             :data {:tool tool-name :category category}}))
 

@@ -53,6 +53,22 @@
   writing prose says \"no\" constantly in passing."
   (validate-answer-set! {:pass #{"PASS"} :fail #{"FAIL"}}))
 
+(defn strip-reasoning
+  "Drop a <think>…</think> block, and an unclosed <think> to the end.
+
+  Used for two different jobs, which is why it is public. Matching a verdict
+  needs it because a judge that thinks out loud restates the wrong answer while
+  reasoning toward the right one. Quoting a judge back to a branch needs it for
+  a different reason: the branch's next turn is a fresh model call over a
+  history that would otherwise contain reviewer-voice reasoning, and the model
+  imitates it — it answers the NEXT turn as a reviewer, in prose, with no tool
+  call at all. Observed as nine wasted turns in a twenty-turn run."
+  [text]
+  (-> (or text "")
+      (str/replace #"(?s)<think>.*?</think>" "")
+      (str/replace #"(?s)<think>.*\z" "")
+      str/trim))
+
 (defn- token-re [token]
   (re-pattern (str "(?i)(?<![A-Za-z])" (java.util.regex.Pattern/quote token) "(?![A-Za-z])")))
 
@@ -100,12 +116,7 @@
   ([text] (parse text pass-fail))
   ([text answer-set]
    (let [raw (or text "")
-         ;; Drop <think>…</think>, and an unclosed <think> to the end, since a
-         ;; truncated reasoning stream has no answer in it at all.
-         text (-> raw
-                  (str/replace #"(?s)<think>.*?</think>" "")
-                  (str/replace #"(?s)<think>.*\z" "")
-                  str/trim)
+         text (strip-reasoning raw)
          markers (marker-hits text answer-set)
          bares (bare-hits text answer-set)
          distinct-markers (distinct markers)

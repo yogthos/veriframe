@@ -479,3 +479,55 @@
           (is (not (str/blank? msg))
               (str (:gate g) " produced an empty message")))
         (is (string? ((:prediction g) ctx)))))))
+
+;; --- what the judge says back to the branch ---------------------------------
+
+(deftest judge-reasoning-never-reaches-the-branch
+  ;; A review or audit result is appended to the branch's message history, so
+  ;; whatever it contains is in context for every later turn. When the judge's
+  ;; <think> block went in verbatim, the branch's next model call read
+  ;; reviewer-voice reasoning and imitated it: it answered as a reviewer, in
+  ;; prose, with no tool call. Nine of twenty turns in a Lean run were lost that
+  ;; way, and each one also carried the full reasoning stream forward.
+  (let [raw (str "<think>We need answer as reviewer. Need decide pass/fail. "
+                 "Maybe FAIL. Actually the encodings differ.</think>\n"
+                 "PASS — the cross-check uses a different formulation.\n\nVERDICT: PASS")
+        clean (verdict/strip-reasoning raw)]
+    (is (not (str/includes? clean "<think>")))
+    (is (not (str/includes? clean "Need decide pass/fail")))
+    (is (str/includes? clean "different formulation")
+        "the judge's actual justification must survive; it is why the branch is being told")))
+
+(deftest strip-reasoning-handles-an-unclosed-block
+  ;; A judge that hits the token cap mid-thought emits <think> with no closing
+  ;; tag. Leaving that in would put the whole truncated stream into context.
+  (is (= "" (verdict/strip-reasoning "<think>thinking and then the cap hit")))
+  (is (= "answer" (verdict/strip-reasoning "<think>a</think>\nanswer")))
+  (is (= "plain" (verdict/strip-reasoning "plain"))))
+
+(deftest provenance-words-are-not-treated-as-claims
+  ;; The gate is aimed at fabricated specifics: a number or a name in the
+  ;; answer that no artifact supports. Words describing HOW something was
+  ;; checked can never appear in an artifact, because an artifact's claim and
+  ;; code are about the problem. Flagging them refused a correct answer three
+  ;; times in one run and pushed the model toward stripping its explanation.
+  (let [artifacts [{:claim "for every n, sum of first n odds = n^2"
+                    :code "theorem t (n : Nat) : ..." :witness nil}]]
+    (is (empty? (tools/uncovered-tokens
+                 "For every n, the sum of the first n odd numbers equals n^2. This
+                  universal statement is kernel-checked by two Lean 4 + Mathlib
+                  theorems, proved by induction on the successor."
+                 artifacts))
+        "provenance prose must not be read as unsupported assertion"))
+
+  (testing "the guard still catches a fabricated number"
+    (is (= ["24"] (tools/uncovered-tokens "the answer is 24"
+                                          [{:claim "the answer is 23" :code "" :witness nil}])))))
+
+(deftest a-tool-version-is-not-a-numeric-claim
+  ;; "Lean 4" asserts the number 4 under a naive tokenizer, and numbers are the
+  ;; part of this gate that must not be relaxed. Stripped as a name-plus-version
+  ;; phrase rather than by exempting the digit.
+  (is (empty? (tools/answer-tokens "verified with Lean 4 and Mathlib")))
+  (is (= ["4"] (tools/answer-tokens "the answer is 4"))
+      "a bare number is still a claim"))

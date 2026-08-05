@@ -165,6 +165,24 @@
 
    "CREATE INDEX IF NOT EXISTS idx_events_cursor ON events(run_id, id)"])
 
+(def ^:private v2
+  ;; What the model actually said.
+  ;;
+  ;; v1 stored the tool call and the result but not the prose around it, so a
+  ;; turn that produced no tool call at all recorded only that fact. Nine of
+  ;; twenty turns in a Lean run came back "__no_call__" and there was no way to
+  ;; ask why, because the one artefact that would answer it was the one thing
+  ;; not kept. A harness whose whole thesis is that decisions must be
+  ;; inspectable after the fact should not throw away the decision.
+  ;;
+  ;; Nullable, because the provider-error path has no response to record.
+  ["ALTER TABLE turns ADD COLUMN assistant_text TEXT"
+   ;; The reasoning block, split out rather than left inline. Reasoning models
+   ;; put most of their output here and it dwarfs the answer, so a UI wants to
+   ;; fold it and a query that greps the response should not have to wade
+   ;; through it. Empty for models that do not emit one.
+   "ALTER TABLE turns ADD COLUMN reasoning_text TEXT"])
+
 (def migrations
   "Ordered. Index 0 is migration 1; PRAGMA user_version holds the count applied."
-  [v1])
+  [v1 v2])

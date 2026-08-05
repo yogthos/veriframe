@@ -18,7 +18,9 @@
   (:require [clojure.test :refer [deftest testing is]]
             [jdbc.core :as jdbc]
             [veriframe.store.db :as db]
-            [veriframe.store.migrations :as migrations]))
+            [veriframe.store.journal :as journal]
+            [veriframe.store.migrations :as migrations]
+            [veriframe.store.runs :as runs]))
 
 (defmacro with-db [[binding] & body]
   `(let [~binding (db/open! ":memory:")]
@@ -72,3 +74,35 @@
                                    "monochromatic"]))))
     (is (empty? (jdbc/fetch c ["SELECT claim FROM failures_fts WHERE failures_fts MATCH ?"
                                "lean"])))))
+
+(deftest a-turn-keeps-what-the-model-said
+  ;; v1 stored the tool call and the result but not the prose, so a turn that
+  ;; produced no tool call recorded only that fact. Nine of twenty turns in a
+  ;; Lean run came back __no_call__ and the question "why" had no answer in the
+  ;; data, because the one artefact that would settle it was the one thing not
+  ;; kept. This asserts the no-call path in particular, since that is the path
+  ;; where every other column is empty.
+  (with-db [c]
+    (let [rid (runs/start-run! c {:problem "p" :beam-width 1})]
+    (runs/open-branch! c rid {:branch-id "B1" :created-at-turn 0})
+    (journal/record-turn! c rid
+                          {:branch-id "B1" :turn 1 :tool-name "__no_call__"
+                           :result "[harness] No tool-call block." :category "failure"
+                           :assistant-text "I think the answer is 4. Let me explain at length."
+                           :reasoning-text "the model's private reasoning"})
+    (let [t (first (journal/turns c rid))]
+      (is (= "__no_call__" (:tool_name t)))
+      (is (= "I think the answer is 4. Let me explain at length." (:assistant_text t)))
+      (is (= "the model's private reasoning" (:reasoning_text t)))))))
+
+(deftest a-turn-without-a-response-stores-null-rather-than-the-string-null
+  ;; The provider-error path has no response at all. Coercing that to "" or
+  ;; "null" would make "the model said nothing" indistinguishable from "the
+  ;; model was never asked".
+  (with-db [c]
+    (let [rid (runs/start-run! c {:problem "p" :beam-width 1})]
+    (runs/open-branch! c rid {:branch-id "B1" :created-at-turn 0})
+    (journal/record-turn! c rid
+                          {:branch-id "B1" :turn 1 :tool-name "__provider_error__"
+                           :result "timeout" :category "neutral"})
+    (is (nil? (:assistant_text (first (journal/turns c rid))))))))
