@@ -18,6 +18,7 @@
             [veriframe.agent.state :as state]
             [veriframe.agent.tools :as tools]
             [veriframe.engine.prolog :as prolog]
+            [veriframe.engine.smt-templates :as templates]
             [veriframe.llm.client :as llm]
             [veriframe.llm.fence :as fence]
             [veriframe.store.failures :as failures]
@@ -27,7 +28,21 @@
 
 (def max-result-chars 4000)
 
-(defn system-prompt [] (slurp (io/resource "prompts/system.md")))
+(defn system-prompt
+  "The system prompt, with the template catalogue substituted in.
+
+  The catalogue is generated rather than written into the file because it is
+  pure data and would otherwise drift: before this, the only way the model
+  learned which templates exist was to guess a name and read the list off the
+  error, which meant a template it had not guessed was effectively invisible.
+
+  The tool documentation IS hand written, because a prompt is prose and
+  generated prose reads like it. `veriframe.prompt-test` asserts every name in
+  `tools/tool-names` appears here, so a new tool cannot be added without being
+  documented — that is what kept the whole Lean surface unreachable."
+  []
+  (-> (slurp (io/resource "prompts/system.md"))
+      (str/replace "{{templates}}" (templates/list-templates))))
 
 (defn prompt-digest
   "A cheap fingerprint of the prompt and gate set a run used. AHE component

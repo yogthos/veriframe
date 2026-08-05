@@ -7,12 +7,14 @@
             [veriframe.engine-test]
             [veriframe.agent-test]
             [veriframe.llm-test]
+            [veriframe.prompt-test]
             [veriframe.store-test]))
 
 (def namespaces
   '[veriframe.store-test
     veriframe.llm-test
     veriframe.agent-test
+    veriframe.prompt-test
     veriframe.engine-test])
 
 (defn run []
