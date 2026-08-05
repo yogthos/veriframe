@@ -37,7 +37,20 @@
   it only exercised writers, which were the half already serialized.
 
   One lock for one handle. Concurrency lives in the branches and the engines,
-  not in the store."
+  not in the store.
+
+  This looks heavier than it is, and the obvious next move — a write queue
+  drained by one thread, so reads stop waiting behind writes — was measured and
+  declined. A journal write is ~2.5ms, an FTS read ~0.7ms under twelve
+  concurrent writers, and a real run does about 3.6 writes per turn against a
+  turn that averages 37 seconds because it contains a provider call. The store
+  is roughly 0.027% of a turn.
+
+  Buffering would trade the property this system leads with — everything
+  appended as it happens, so a crashed run stays inspectable — plus a drainer
+  that stops the journal silently if it dies, for a saving nothing can observe.
+  See veriframe-clj-dpj for the numbers. Reopen it if the store ever appears in
+  a profile, which realistically means dropping this lock first."
   [& body]
   `(locking conn-lock ~@body))
 
