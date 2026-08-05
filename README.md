@@ -248,21 +248,24 @@ still outlast the turn deadline. That is filed but has not been observed.
 
 ## License
 
-GPLv3, changed from Apache-2.0 ahead of the numerical engine (veriframe-clj-15u),
-which embeds GNU Octave's C++ interpreter in-process. Octave is GPLv3, so
-linking it makes the combined work GPLv3 and the license moved first rather than
-after the code was written. Apache-2.0 is one-way compatible with GPLv3, so the
-earlier history carries forward cleanly.
+EPL-2.0, matching `jolt` and Clojure convention. Every source file carries the
+notice.
 
-The three engines shipping today are separate processes, which needs no such
-change on its own.
+This went to GPLv3 briefly, so the reasoning is worth recording. The numerical
+engine was going to embed GNU Octave's C++ interpreter in-process, Octave is
+GPLv3, and linking it would make the combined work GPLv3, so the license moved
+first. Checking what the dependencies were actually licensed under showed that
+could not work: `jolt` is EPL-2.0 without the secondary-license option
+exercised, and `data.json`, `tools.logging` and `jolt-lang/logging` are all
+EPL-1.0 by inheritance from Clojure code. The FSF lists EPL as GPL-incompatible
+in both versions. So a GPLv3 harness could not legally link the platform it runs
+on, and the only thing forcing GPLv3 was in-process Octave.
 
-Every source file carries the notice. The one exception is
-`vendor/ring_chez/adapter.clj`, which is vendored from
-`jolt-lang/ring-chez-adapter` and is not ours to license.
+Octave becomes a subprocess instead, like z3 and swipl already are. Separate
+programs communicating over pipes are not a combined work, so its GPL does not
+reach across that boundary and the conflict disappears.
 
-**This is not yet distributable.** Every `jolt-lang` dependency declares no
-license at all, including the one vendored into this repository, and without a
-grant the default is all rights reserved. That is tracked and needs upstream to
-act; until it does, run it and develop against it, but do not cut a release or
-publish a binary.
+Along the way six `jolt-lang` libraries turned out to have no license at all,
+which meant all rights reserved and no permission to redistribute them. They are
+EPL-2.0 now. `clj-http-lite` is MIT, declared in its `pom.xml` and README rather
+than a `LICENSE` file, which is why GitHub reports it as unlicensed.

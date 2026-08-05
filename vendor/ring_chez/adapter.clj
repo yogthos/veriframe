@@ -1,9 +1,10 @@
-;; NOT COVERED BY THIS PROJECT'S LICENCE, and deliberately carries no veriframe
-;; copyright notice. Vendored from jolt-lang/ring-chez-adapter @07f14d9, which
-;; declares no licence at all: there is no LICENSE file in the repository and
-;; GitHub reports none. Without a grant the default is all rights reserved, so
-;; redistributing it inside a GPLv3 program is not something this file can
-;; assert is permitted. See veriframe-clj's licensing bead.
+;; Vendored from jolt-lang/ring-chez-adapter @07f14d9 and NOT ours to relicense,
+;; so this file carries no veriframe copyright notice. Upstream is EPL-2.0,
+;; which is what this project uses, so the vendored copy is redistributable on
+;; the same terms as the rest of the tree.
+;;
+;; It had no licence at all when this copy was taken, which meant all rights
+;; reserved and no permission to redistribute it. That is why the check happened.
 ;;
 ;; The VERIFRAME-marked change below is the only local modification.
 
