@@ -28,7 +28,12 @@ jobs:
             | bash -s -- --dir "$HOME/.local/bin"
           echo "$HOME/.local/bin" >> $GITHUB_PATH
 
-      - name: Install Z3 and SWI-Prolog
+      - name: Install Z3, SWI-Prolog and Octave
+        # Octave is installed so its tests and probe actually RUN. They skip
+        # when the binary is absent, and a skipped test reads identically to a
+        # passing one in a summary, which is how the Lean engine stayed green
+        # while every call to it failed.
+        #
         # `swi-prolog`, not `swi-prolog-core`. The core package omits the
         # bundled library packs, and resources/prolog/session.pl needs
         # library(http/json) to frame its replies and library(time) for a real
@@ -38,7 +43,7 @@ jobs:
         # run from the day it was written.
         run: |
           sudo apt-get update
-          sudo apt-get install -y z3 swi-prolog
+          sudo apt-get install -y z3 swi-prolog octave
           z3 --version
           swipl --version
 
@@ -89,7 +94,7 @@ jobs:
       - name: Install Z3 and SWI-Prolog
         run: |
           sudo apt-get update
-          sudo apt-get install -y z3 swi-prolog
+          sudo apt-get install -y z3 swi-prolog octave
 
       - name: Cache jolt gitlibs
         uses: actions/cache@v4
@@ -171,7 +176,7 @@ jobs:
       - name: Install Z3 and SWI-Prolog
         run: |
           sudo apt-get update
-          sudo apt-get install -y z3 swi-prolog
+          sudo apt-get install -y z3 swi-prolog octave
 
       - name: Install elan
         run: |
