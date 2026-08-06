@@ -311,6 +311,41 @@
       (is (not-any? #{:milestone} (map :gate (arbiter/eligible {:branch b
                                                                 :max-turns 40})))))))
 
+(deftest wind-down-steers-the-branch-to-ship
+  (testing "fires at and past the wind-down fraction of the turn cap"
+    (let [ctx-at (fn [turns]
+                   {:branch (branch-with :turns (vec (repeat turns {})))
+                    :max-turns 40})]
+      (is (not-any? #{:wind-down} (map :gate (arbiter/eligible (ctx-at 33))))
+          "silent below the fraction")
+      (let [d (arbiter/decide (ctx-at 34))] ; 34/40 = 0.85
+        (is (= :wind-down (:gate d)) "fires exactly at the fraction")
+        (is (string? (:message d)))
+        (is (str/includes? (:message d) "at turn 34 of 40")
+            "the steer says where the branch stands")
+        (is (string? (:prediction d)) "every gate declares what it expects next")
+        (is (some #{:turn-budget :prologue-cap} (:passed-over d))
+            "the ship steer outranks the plain notices")))
+    (testing "fires once per branch; a spent re-fire guard keeps it silent"
+      (let [b (branch-with :turns (vec (repeat 36 {}))
+                           :gate-history [{:gate :wind-down :turn 34}])]
+        (is (not-any? #{:wind-down}
+                      (map :gate (arbiter/eligible {:branch b :max-turns 40})))))))
+
+  (testing "silent on a branch that already shipped"
+    (let [b (branch-with :turns (vec (repeat 36 {}))
+                         :status :done :final-answer "x")]
+      (is (not-any? #{:wind-down}
+                    (map :gate (arbiter/eligible {:branch b :max-turns 40}))))))
+
+  (testing "done-blocked outranks it when both hold"
+    (let [b (branch-with :turns (vec (repeat 36 {}))
+                         :artifacts [{:claim "c" :claim-status :confirmed :turn 1}])
+          d (arbiter/decide {:branch b :max-turns 40
+                             :done-block "`done` refused.\n\nNo confirmed artifact."})]
+      (is (= :done-blocked (:gate d)) "the correctness rung wins, not the budget steer")
+      (is (some #{:wind-down} (:passed-over d))))))
+
 (deftest gate-config-is-coherent
   (testing "every gate with a budget names a threshold that exists"
     (doseq [g gates/gates :when (:budget g)]
@@ -355,7 +390,23 @@
           after (branch-with :artifacts [{:claim "c" :claim-status :confirmed}])]
       (is (= :met (arbiter/settle {:gate :progress-stalled :turn 3 :window 3}
                                   {:current-turn 4 :tools-called ["verify"]
-                                   :branch-before before :branch-after after}))))))
+                                   :branch-before before :branch-after after})))))
+
+  (testing "wind-down settles on the ship tools"
+    (let [firing {:gate :wind-down :turn 34 :window 3}
+          b (branch-with)]
+      (is (= :met (arbiter/settle firing {:current-turn 35 :tools-called ["review"]
+                                          :branch-before b :branch-after b})))
+      (is (= :met (arbiter/settle firing {:current-turn 36 :tools-called ["audit"]
+                                          :branch-before b :branch-after b})))
+      (is (= :met (arbiter/settle firing {:current-turn 35 :tools-called ["done"]
+                                          :branch-before b :branch-after b})))
+      (is (nil? (arbiter/settle firing {:current-turn 35 :tools-called ["verify_claim"]
+                                        :branch-before b :branch-after b}))
+          "still open inside the window")
+      (is (= :unmet (arbiter/settle firing {:current-turn 37 :tools-called ["verify_claim"]
+                                            :branch-before b :branch-after b}))
+          "unmet once the window passes"))))
 
 ;; --- the done gate ----------------------------------------------------------
 

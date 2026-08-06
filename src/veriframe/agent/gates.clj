@@ -106,8 +106,29 @@
     :prediction (fn [_] "the branch retracts, changes technique, or ships what it has")
     :window 3}
 
-   {:gate :emergency-review
+   {:gate :wind-down
     :priority 3
+    :budget :max-wind-down-steers
+    :doc "The branch has passed the fraction of the turn cap reserved for
+          shipping. UCLA's harness reserves a deadline tail for assembly and
+          shipping, and a run with no such tail spends its whole budget
+          exploring and ships nothing. This steer outranks every nudge rung so
+          a branch near its cap is told to ship before it is nagged to do more,
+          but it never outranks done-blocked or safe-state: a branch that has
+          just been told it cannot ship is not being asked to ship."
+    :when (fn [{:keys [branch max-turns]}]
+            (and (state/active? branch)
+                 (>= (state/turn-count branch)
+                     (* (threshold :wind-down-fraction) (max 1 max-turns)))))
+    :message (fn [{:keys [branch max-turns]}]
+               (str (prompt "wind-down")
+                    "\n\nYou are at turn " (state/turn-count branch)
+                    " of " max-turns "."))
+    :prediction (fn [_] "the branch calls review, audit, or done")
+    :window 3}
+
+   {:gate :emergency-review
+    :priority 4
     :budget nil
     :doc "At the cull threshold but holding a recent confirmation. Rather than
           culling the branch that produced the most, tell it to ship what it
@@ -120,7 +141,7 @@
     :window 3}
 
    {:gate :milestone
-    :priority 4
+    :priority 5
     :budget :max-milestone-nudges
     :doc "First confirmed artifact on this branch. Runs that do not ship at
           this moment usually fail: after a confirmation the instinct is to
@@ -131,7 +152,7 @@
     :window 2}
 
    {:gate :stuck
-    :priority 5
+    :priority 6
     :budget :max-stuck-hints
     :doc "Consecutive failed or repetitive verifications. Keyed on failure,
           which is why the progress gate below exists as well."
@@ -142,7 +163,7 @@
     :window 3}
 
    {:gate :prologue-cap
-    :priority 6
+    :priority 7
     :budget nil
     :doc "The branch has produced nothing at all. Every other guard is
           principled-blind here: the stall counter arms on a progress event, the
@@ -159,7 +180,7 @@
     :window 3}
 
    {:gate :progress-stalled
-    :priority 7
+    :priority 8
     :budget :max-stall-nudges
     :doc "Turns passing with no progress event, after the branch has shown it
           can make progress. Arms only after the first, so exploration is never
@@ -176,7 +197,7 @@
     :window 3}
 
    {:gate :tier-escalation
-    :priority 8
+    :priority 9
     :budget :max-tier-escalations
     :doc "Artifacts exist but only from the fast tier. A one-shot check and a
           cross-checked template are not the same evidence, and at finalization
@@ -189,7 +210,7 @@
     :window 3}
 
    {:gate :turn-budget
-    :priority 9
+    :priority 10
     :budget nil
     :doc "The turn cap was enforced but invisible to the model, so it could not
           budget against it (dirge PR 738)."

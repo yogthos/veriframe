@@ -73,6 +73,19 @@
   :doc "Fractions of the turn cap at which the model is told where it stands.
         The cap was enforced but invisible to the model (dirge PR 738)."}
 
+ :wind-down-fraction
+ {:value 0.85 :kind :threshold :capability-tunable? false
+  :doc "Fraction of the turn cap at which the branch is told to stop exploring
+        and ship what it has. Sized so the reserved tail fits an audit plus a
+        done call for a branch with confirmed artifacts: UCLA's harness found a
+        run with no reserved shipping tail spends its whole budget exploring
+        and ships nothing."}
+
+ :max-wind-down-steers
+ {:value 1 :kind :re-fire-guard :capability-tunable? false
+  :doc "How often the wind-down rung may fire on one branch. Once: the steer
+        either lands or it does not."}
+
  :max-safe-state-aborts
  {:value 2 :kind :re-fire-guard :capability-tunable? false
   :doc "How often the safe-state rung may fire on one branch. Not

@@ -86,6 +86,7 @@
         :done-blocked (called? "done" "give_up" "audit" "review")
         :human-directive true
         :turn-budget (called? "done" "give_up" "review" "audit")
+        :wind-down (called? "review" "audit" "done")
         false)
       :met
 
