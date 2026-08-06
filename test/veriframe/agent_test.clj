@@ -24,6 +24,7 @@
             [veriframe.agent.state :as state]
             [veriframe.agent.tools :as tools]
             [veriframe.agent.verdict :as verdict]
+            [veriframe.llm.client :as llm]
             [veriframe.store.db :as db]
             [veriframe.store.failures :as failures]
             [veriframe.store.journal :as journal]
@@ -79,6 +80,86 @@
   (testing "anything but a clean pass fails closed"
     (are [text] (not (verdict/passed? (verdict/parse text)))
       "VERDICT: FAIL" "no verdict here" "" "<think>only thinking</think>")))
+
+(deftest verdict-gaps
+  (testing "GAP lines are collected without disturbing the verdict"
+    (let [r (verdict/parse "GAP: the witness leaves X unbound\nVERDICT: PASS")]
+      (is (= :pass (:verdict r)))
+      (is (= ["the witness leaves X unbound"] (:gaps r)))
+      (is (= :pass-with-gaps (:disagreement r)))))
+
+  (testing "matching is case-insensitive and takes every GAP line"
+    (let [r (verdict/parse "gap: first\nGAP: second\nVERDICT: PASS")]
+      (is (= ["first" "second"] (:gaps r)))))
+
+  (testing "a pass beside listed gaps is a disagreement the verdict wins"
+    ;; UCLA scorer_v4 converged on the same fail-closed enum and added this
+    ;; check: PASS alongside a blocking GAP is self-contradictory. PASS stands,
+    ;; and the parse says it happened rather than flipping.
+    (let [r (verdict/parse "GAP: x\nGAP: y\nVERDICT: PASS")]
+      (is (= :pass (:verdict r)))
+      (is (= :pass-with-gaps (:disagreement r)))))
+
+  (testing "FAIL with GAP lines is consistent"
+    (let [r (verdict/parse "GAP: the witness leaves X unbound\nVERDICT: FAIL")]
+      (is (= :fail (:verdict r)))
+      (is (nil? (:disagreement r)))))
+
+  (testing "FAIL beside an explicit no-gaps declaration is the other disagreement"
+    (let [r (verdict/parse "GAPS: none\nVERDICT: FAIL")]
+      (is (= :fail (:verdict r)))
+      (is (true? (:gaps-declared r)))
+      (is (= [] (:gaps r)))
+      (is (= :fail-without-gaps (:disagreement r))))
+    (is (= :fail-without-gaps
+           (:disagreement (verdict/parse "gap: none\nVERDICT: FAIL")))))
+
+  (testing "a clean pass with no gap section records no disagreement"
+    (let [r (verdict/parse "VERDICT: PASS")]
+      (is (= :pass (:verdict r)))
+      (is (false? (:gaps-declared r)))
+      (is (nil? (:gaps r)))
+      (is (nil? (:disagreement r)))))
+
+  (testing "GAP lines inside <think> are reasoning, not declarations"
+    (let [r (verdict/parse "<think>GAP: maybe a problem</think>\nVERDICT: PASS")]
+      (is (= :pass (:verdict r)))
+      (is (false? (:gaps-declared r)))
+      (is (nil? (:gaps r))))))
+
+(deftest verdict-gap-disagreement-is-journalled
+  (let [c (db/connect ":memory:")
+        _ (db/migrate! c)
+        rid (runs/start-run! c {:problem "p" :beam-width 1})
+        b (merge (state/new-branch {:id "B1" :problem "p"})
+                 {:thesis {:goal "g" :technique "t" :subClaims []}
+                  :artifacts [{:claim "c" :claim-status :confirmed
+                               :kind :smt :tier :confirmed :code "c1"}]})]
+    (runs/open-branch! c rid {:branch-id "B1" :created-at-turn 0})
+    ;; Both judge tools journal the disagreement, and both directions of it
+    ;; (PASS beside listed gaps, FAIL beside GAPS: none), so whichever handler
+    ;; is edited next has its :data shape pinned.
+    (let [calls (atom 0)]
+      (with-redefs [llm/chat (fn [& _]
+                               (case (swap! calls inc)
+                                 1 {:content "GAP: the witness leaves X unbound\nVERDICT: PASS"}
+                                 {:content "GAPS: none\nVERDICT: FAIL"}))]
+        (tools/run-tool {:branch b :turn 1 :conn c :run-id rid
+                         :tool-name "audit"
+                         :args {:claim "c" :proposedAnswer "42"}})
+        (tools/run-tool {:branch b :turn 1 :conn c :run-id rid
+                         :tool-name "review"
+                         :args {:claim "c"
+                                :rationale "independent because encoded in Z3 instead of Prolog"}}))
+      (let [evs (filter #(= "verdict-gap-disagreement" (:kind %))
+                        (journal/events-since c rid 0))
+            audit-ev (some #(when (str/includes? (:data %) "pass-with-gaps") %) evs)
+            review-ev (some #(when (str/includes? (:data %) "fail-without-gaps") %) evs)]
+        (is (= 2 (count evs)) "one disagreement event per judge call")
+        (is (some? audit-ev) "PASS beside gaps is journalled from audit")
+        (is (some? review-ev) "FAIL beside GAPS: none is journalled from review")
+        (is (str/includes? (:data audit-ev) "\"audit\""))
+        (is (str/includes? (:data review-ev) "\"review\""))))))
 
 ;; --- gates and the arbiter --------------------------------------------------
 

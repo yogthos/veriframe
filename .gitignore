@@ -1,6 +1,7 @@
 .nrepl-port
 *.sqlite3
 .cache/
+.cpcache/
 target/
 
 # AOT build output: a 20MB self-contained binary plus its intermediates.

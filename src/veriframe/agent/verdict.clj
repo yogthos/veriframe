@@ -30,7 +30,13 @@
   Ambiguity is not resolved, it is reported. Two different answers in one
   response means the judge did not answer, and guessing which it meant is how
   the substring bug did its damage. `:unparseable` and `:ambiguous` both fail
-  closed: the gate stays shut."
+  closed: the gate stays shut.
+
+  A response may also declare gaps (`GAP: <text>` lines, or `GAPS: none` for
+  an explicit none). A verdict that contradicts its own gap list is recorded
+  in `:disagreement`, never repaired: UCLA's FirstProof scorer_v4 converged on
+  the same fail-closed enum and added this check, with the verdict winning
+  over the gap list in both inconsistency directions."
   (:require [clojure.string :as str]))
 
 (defn- validate-answer-set!
@@ -91,11 +97,50 @@
         :when (some #(re-matches (token-re %) t) tokens)]
     answer))
 
+(defn- gap-lines
+  "The text after `GAP:` or `GAPS:` on each gap line, in order. Line-anchored
+  and case-insensitive, like a bare verdict token: prose that mentions a gap
+  is not a declaration."
+  [text]
+  (keep (fn [line]
+          (let [m (re-matches #"(?i)GAPS?\s*:\s*(.+)" (str/trim line))]
+            (when m (str/trim (second m)))))
+        (str/split-lines text)))
+
+(defn- gap-summary
+  "What the judge declared about gaps: {:gaps [...] :declared? bool}.
+
+  A line reading `GAP: <text>` or `GAPS: <text>` declares a gap; the text
+  after the colon is it. A line whose text is exactly `none` declares that
+  there are no gaps — `GAPS: none` is the judge engaging with the question,
+  which is different from never mentioning gaps at all."
+  [text]
+  (let [contents (gap-lines text)
+        none? (some #(= "none" (str/lower-case %)) contents)]
+    {:gaps (vec (remove #(= "none" (str/lower-case %)) contents))
+     :declared? (boolean (or none? (seq contents)))}))
+
+(defn- gap-disagreement
+  "The verdict-vs-gaps contradiction, if any.
+
+  Both directions come from UCLA's FirstProof scorer_v4, which converged on
+  the same fail-closed enum this parser uses and added the gap list on top.
+  The verdict wins in both cases — the harness acts on it, and this only
+  records that the judge contradicted itself so the run is measurable. PASS
+  beside listed gaps, or FAIL beside `GAPS: none`, each get a direction."
+  [verdict gaps declared?]
+  (cond
+    (and (= :pass verdict) (seq gaps)) :pass-with-gaps
+    (and (= :fail verdict) declared? (empty? gaps)) :fail-without-gaps
+    :else nil))
+
 (defn parse
   "Read a verdict out of `text`.
 
   Returns {:verdict :pass|:fail|:ambiguous|:unparseable, :via, :reason,
-  :drafts n}. Anything other than :pass or :fail means the gate does not open.
+  :drafts n, :gaps-declared bool, and — when the judge engaged with gaps —
+  :gaps [...], plus :disagreement when the verdict contradicts them}. Anything
+  other than :pass or :fail means the gate does not open.
 
   Two things happen before matching, and both were forced by a live run in
   which every single review came back :ambiguous.
@@ -112,7 +157,13 @@
   last. It is not the substring guess dirge PR 739 found — competing answers
   can no longer be substrings of each other, that is checked at construction —
   it is a tie-break between two well-formed answers, and `:drafts` records that
-  it happened."
+  it happened.
+
+  Gap lines are collected after the reasoning is dropped, so a `GAP:` inside
+  <think> is the judge weighing a worry, not declaring one. A verdict that
+  contradicts the gap list — PASS beside listed gaps, FAIL beside `GAPS: none`
+  — is recorded in :disagreement rather than flipped. The verdict wins, and
+  the contradiction is the judge's, not the parser's."
   ([text] (parse text pass-fail))
   ([text answer-set]
    (let [raw (or text "")
@@ -120,32 +171,39 @@
          markers (marker-hits text answer-set)
          bares (bare-hits text answer-set)
          distinct-markers (distinct markers)
-         distinct-bares (distinct bares)]
-     (cond
-       (seq markers)
-       (cond-> {:verdict (last markers) :via :marker}
-         (> (count distinct-markers) 1)
-         (assoc :drafts (dec (count markers))
-                :reason (str "The response carried " (count markers)
-                             " VERDICT lines; taking the last.")))
+         distinct-bares (distinct bares)
+         {:keys [gaps declared?]} (gap-summary text)
+         result (cond
+                  (seq markers)
+                  (cond-> {:verdict (last markers) :via :marker}
+                    (> (count distinct-markers) 1)
+                    (assoc :drafts (dec (count markers))
+                           :reason (str "The response carried " (count markers)
+                                        " VERDICT lines; taking the last.")))
 
-       (seq bares)
-       (cond-> {:verdict (last bares) :via :bare}
-         (> (count distinct-bares) 1)
-         (assoc :drafts (dec (count bares))
-                :reason (str "The response carried " (count bares)
-                             " bare verdict tokens and no VERDICT line;"
-                             " taking the last.")))
+                  (seq bares)
+                  (cond-> {:verdict (last bares) :via :bare}
+                    (> (count distinct-bares) 1)
+                    (assoc :drafts (dec (count bares))
+                           :reason (str "The response carried " (count bares)
+                                        " bare verdict tokens and no VERDICT line;"
+                                        " taking the last.")))
 
-       (str/blank? text)
-       {:verdict :unparseable
-        :reason (str "The judge produced only reasoning and no answer, which"
-                     " usually means it hit the token cap while thinking.")}
+                  (str/blank? text)
+                  {:verdict :unparseable
+                   :reason (str "The judge produced only reasoning and no answer, which"
+                                " usually means it hit the token cap while thinking.")}
 
-       :else
-       {:verdict :unparseable
-        :reason (str "No verdict found. End the response with a line reading"
-                     " exactly `VERDICT: PASS` or `VERDICT: FAIL`.")}))))
+                  :else
+                  {:verdict :unparseable
+                   :reason (str "No verdict found. End the response with a line reading"
+                                " exactly `VERDICT: PASS` or `VERDICT: FAIL`.")})
+         disagreement (when (or (= :pass (:verdict result))
+                                (= :fail (:verdict result)))
+                        (gap-disagreement (:verdict result) gaps declared?))]
+     (cond-> (assoc result :gaps-declared declared?)
+       declared? (assoc :gaps gaps)
+       disagreement (assoc :disagreement disagreement)))))
 
 (defn passed?
   "True only for an unambiguous pass. Everything else fails closed."
@@ -153,7 +211,20 @@
   (= :pass (:verdict parsed)))
 
 (def instruction
-  "What to append to any prompt whose answer this parser reads."
+  "What to append to any prompt whose answer this parser reads.
+
+  The GAP sentences are the verdict-gap contract from UCLA's FirstProof
+  scorer_v4, which converged on the same fail-closed enum and made the gap
+  list part of the answer: a judge that lists a blocking gap and still answers
+  PASS is contradicting itself. The instruction tells it to pick FAIL; the
+  parser only records the contradiction in :disagreement and never flips the
+  verdict."
   (str "End your response with a line reading exactly `VERDICT: PASS` or"
        " `VERDICT: FAIL`, and nothing else on that line. Emit exactly one such"
-       " line. If you are unsure, answer FAIL."))
+       " line. If you are unsure, answer FAIL."
+       " Optionally, list the claim's gaps before the verdict line, one per"
+       " line, each reading `GAP: <text>`, or `GAPS: none` if you checked and"
+       " found none."
+       " If any GAP line blocks the claim, your verdict must be"
+       " `VERDICT: FAIL` — writing PASS alongside a blocking GAP is"
+       " self-contradictory; pick FAIL."))

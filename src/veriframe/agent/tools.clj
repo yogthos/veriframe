@@ -39,7 +39,8 @@
             [veriframe.engine.prolog :as prolog]
             [veriframe.engine.smt :as smt]
             [veriframe.engine.smt-templates :as templates]
-            [veriframe.llm.client :as llm]))
+            [veriframe.llm.client :as llm]
+            [veriframe.store.journal :as journal]))
 
 (defmulti run-tool
   (fn [ctx] (:tool-name ctx)))
@@ -323,7 +324,14 @@
                      " Answer FAIL if the two encodings share the assumption that"
                      " could be wrong.")
               j (judge ctx p)
-              passed (verdict/passed? j)]
+              passed (verdict/passed? j)
+              _ (when-let [d (:disagreement j)]
+                  (when (and (:conn ctx) (:run-id ctx))
+                    (journal/note! (:conn ctx) (:run-id ctx)
+                                   :verdict-gap-disagreement
+                                   {:branch-id (:id branch)
+                                    :data {:tool "review"
+                                           :disagreement (name d)}})))]
           (merge
            {:branch (-> branch
                         (assoc :last-review {:passed passed :claim claim
@@ -371,7 +379,14 @@
                  " different things. Answer PASS only if the evidence establishes"
                  " the answer as stated.")
           j (judge ctx p)
-          passed (verdict/passed? j)]
+          passed (verdict/passed? j)
+          _ (when-let [d (:disagreement j)]
+              (when (and (:conn ctx) (:run-id ctx))
+                (journal/note! (:conn ctx) (:run-id ctx)
+                               :verdict-gap-disagreement
+                               {:branch-id (:id branch)
+                                :data {:tool "audit"
+                                       :disagreement (name d)}})))]
       (merge
        {:branch (assoc branch :last-audit {:passed passed :proposed-answer answer})
         :category (if passed :success :failure)
