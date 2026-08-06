@@ -122,7 +122,11 @@
        :warmup   {:lean?    (not= "0" (or (env "HARNESS_WARM_LEAN") "1"))
                   :sessions (or (env-long "HARNESS_LEAN_WARM_SESSIONS") 1)}
        :run      {:max-turns  (or (env-long "HARNESS_MAX_TURNS") 80)
-                  :beam-width (or (env-long "HARNESS_BEAM_WIDTH") 5)}}
+                  :beam-width (or (env-long "HARNESS_BEAM_WIDTH") 5)
+                  ;; Cross-branch sharing of engine-confirmed artifacts. Off by
+                  ;; default: shared lemmas may cost the beam its diversity, and
+                  ;; whether they earn it is exactly what sweep-widths measures.
+                  :share-artifacts? (= "1" (env "HARNESS_SHARE_ARTIFACTS"))}}
       overrides))))
 
 (defn redacted

@@ -27,6 +27,7 @@
             [veriframe.agent.tools :as tools]
             [veriframe.agent.verdict :as verdict]
             [veriframe.llm.client :as llm]
+            [veriframe.store.artifacts :as artifacts]
             [veriframe.store.db :as db]
             [veriframe.store.failures :as failures]
             [veriframe.store.journal :as journal]
@@ -611,6 +612,50 @@
       (testing "an unusable query returns nothing rather than throwing"
         (is (empty? (failures/similar c rid "a b c")))
         (is (empty? (failures/similar c rid "")))))))
+
+(deftest shared-artifact-log-round-trips
+  ;; The failure log's twin: what an engine CONFIRMED, with provenance inline.
+  (with-db [c]
+    (let [rid (runs/start-run! c {:problem "p"})]
+      (artifacts/record! c rid {:branch-id "B1" :turn 2 :kind :smt :tier :confirmed
+                                :claim "the pythagorean triple summing to 1000"
+                                :code "(check-sat)"})
+      (artifacts/record! c rid {:branch-id "B2" :turn 3 :kind :prolog :tier :fast
+                                :claim "the zebra owner drinks water"
+                                :code "zebra(X)"})
+      (is (= "B1" (:branch_id (first (artifacts/similar c rid "pythagorean triple 1000")))))
+      (is (empty? (artifacts/similar c rid "lean mathlib induction")))
+      (is (= 2 (count (artifacts/recent c rid))))
+      (testing "render carries provenance: branch, engine, tier"
+        (let [text (artifacts/render (artifacts/recent c rid))]
+          (is (str/includes? text "engine-verified"))
+          (is (str/includes? text "[B1 smt/confirmed]"))
+          (is (str/includes? text "[B2 prolog/fast]")))))))
+
+(deftest shared-artifacts-reach-only-other-branches
+  ;; The read side: cross-branch hits enter the context block and are
+  ;; journaled; a branch's own lemmas do not come back at it, and with the
+  ;; flag off the shared log is invisible.
+  (with-db [c]
+    (let [rid (runs/start-run! c {:problem "p"})
+          b1 (branch-with :id "B1")]
+      (artifacts/record! c rid {:branch-id "B1" :turn 1 :kind :smt :tier :confirmed
+                                :claim "own lemma about sidon sets" :code ""})
+      (artifacts/record! c rid {:branch-id "B2" :turn 2 :kind :prolog :tier :confirmed
+                                :claim "cross-branch lemma about sidon sets" :code ""})
+      (let [block (#'aloop/context-block c rid b1 "sidon sets" true)]
+        (is (str/includes? block "cross-branch lemma"))
+        (is (not (str/includes? block "own lemma"))
+            "a branch re-reading its own lemmas is noise"))
+      (testing "each hit is journaled with its source branch"
+        (let [ev (first (filter #(= "shared-artifact-hit" (:kind %))
+                                (journal/events-since c rid 0)))]
+          (is (some? ev))
+          (is (str/includes? (:data ev) "B2"))))
+      (testing "flag off, shared log invisible"
+        (let [block (#'aloop/context-block c rid b1 "sidon sets" false)]
+          (is (or (nil? block)
+                  (not (str/includes? block "cross-branch lemma")))))))))
 
 (deftest events-are-readable-by-cursor
   (with-db [c]

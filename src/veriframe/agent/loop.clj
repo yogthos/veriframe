@@ -30,6 +30,7 @@
             [veriframe.engine.smt-templates :as templates]
             [veriframe.llm.client :as llm]
             [veriframe.llm.fence :as fence]
+            [veriframe.store.artifacts :as artifacts]
             [veriframe.store.failures :as failures]
             [veriframe.store.journal :as journal]
             [veriframe.store.runs :as runs])
@@ -78,13 +79,30 @@
 
 (defn- context-block
   "What the harness adds to the branch's view before its next turn: the
-  failures most like what it just tried. FTS-ranked rather than the whole log,
-  so the block stays small and stays relevant."
-  [conn run-id branch last-claim]
-  (let [hits (if (str/blank? last-claim)
-               (failures/recent conn run-id 5)
-               (failures/similar conn run-id last-claim 5))]
-    (failures/render (remove #(= (:branch_id %) (:id branch)) hits))))
+  failures most like what it just tried, and — when sharing is on — the
+  artifacts other branches confirmed that look most like it. Both FTS-ranked
+  rather than the whole log, so the block stays small and stays relevant.
+
+  Own-branch entries are excluded from both: a branch re-reading its own
+  lemmas is noise, and the value of sharing is exactly the cross-branch hit.
+  Each shared artifact that enters a context is journaled, so whether sharing
+  earns the beam its width is a question the journal can answer."
+  [conn run-id branch last-claim share?]
+  (let [others #(remove (fn [e] (= (:branch_id e) (:id branch))) %)
+        fhits (others (if (str/blank? last-claim)
+                        (failures/recent conn run-id 5)
+                        (failures/similar conn run-id last-claim 5)))
+        ahits (when share?
+                (others (if (str/blank? last-claim)
+                          (artifacts/recent conn run-id 5)
+                          (artifacts/similar conn run-id last-claim 5))))]
+    (doseq [a ahits]
+      (journal/note! conn run-id :shared-artifact-hit
+                     {:branch-id (:id branch)
+                      :data {:claim (:claim a) :source-branch (:branch_id a)}}))
+    (let [blocks (keep identity [(failures/render fhits)
+                                 (artifacts/render ahits)])]
+      (when (seq blocks) (str/join "\n\n" blocks)))))
 
 ;; --- one turn ---------------------------------------------------------------
 
@@ -196,7 +214,16 @@
                                    :reasoning-text (:reasoning response)})
             (when-let [a (:artifact result)]
               (journal/record-artifact! conn run-id
-                                        (assoc a :branch-id (:id branch) :turn turn)))
+                                        (assoc a :branch-id (:id branch) :turn turn))
+              ;; Only engine-confirmed artifacts enter the shared pool — the
+              ;; entry condition that separates this from UCLA's self-reported
+              ;; results. The flag is the diversity trade-off's off switch.
+              (when (and (get-in ctx [:config :run :share-artifacts?])
+                         (= :confirmed (:claim-status a)))
+                (artifacts/record! conn run-id
+                                   {:branch-id (:id branch) :turn turn
+                                    :kind (:kind a) :tier (:tier a)
+                                    :claim (:claim a) :code (:code a)})))
             (when-let [f (:failure result)]
               (failures/record! conn run-id
                                 (assoc f :branch-id (:id branch) :turn turn
@@ -219,7 +246,9 @@
                                  :directive (or (:pending-directive branch)
                                                 (:directive ctx))
                                  :safe-state-coverage coverage})
-                      ctx-block (context-block conn run-id branch (get-in parsed [:args :claim]))
+                      ctx-block (context-block conn run-id branch
+                                               (get-in parsed [:args :claim])
+                                               (get-in ctx [:config :run :share-artifacts?]))
                       body (str (truncate (:result result))
                                 (when ctx-block (str "\n\n" ctx-block))
                                 (when decision (str "\n\n---\n\n" (:message decision))))

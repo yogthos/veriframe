@@ -127,8 +127,16 @@
   measure of contention rather than of the arm. Read turns and confirmations,
   not seconds."
   ([problem] (sweep-widths problem [1 2 4] 12))
-  ([problem widths turns-per-branch]
-   (let [cfg (config/load-config {:db {:path "bench-beam.sqlite3"}})
+  ([problem widths turns-per-branch] (sweep-widths problem widths turns-per-branch {}))
+  ;; opts may carry {:share-artifacts? true}: whether cross-branch sharing of
+  ;; confirmed artifacts makes width pay is the open question the flag exists
+  ;; to answer, and this is the instrument that answers it. Run the sweep both
+  ;; ways and compare confirmations per branch-turn.
+  ([problem widths turns-per-branch opts]
+   (let [cfg (config/load-config
+              (cond-> {:db {:path "bench-beam.sqlite3"}}
+                (contains? opts :share-artifacts?)
+                (assoc-in [:run :share-artifacts?] (:share-artifacts? opts))))
          conn (db/open! (get-in cfg [:db :path]))]
      (try
        (println (format "width sweep: %s at %d turns per branch, n=1 per arm"

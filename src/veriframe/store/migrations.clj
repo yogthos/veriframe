@@ -165,6 +165,28 @@
 
    "CREATE INDEX IF NOT EXISTS idx_events_cursor ON events(run_id, id)"])
 
+(def ^:private v3
+  ;; The run-scoped shared confirmed-artifact log, twin of the failure log.
+  ;; Branches already share what was disproven; this shares what an engine
+  ;; CONFIRMED, with provenance (branch, engine, tier) inline. Only
+  ;; engine-confirmed artifacts enter — never self-reports, which is the
+  ;; difference from UCLA's harness. Off by default because shared lemmas can
+  ;; cost beam diversity; sweep-widths runs it both ways to find out.
+  ["CREATE TABLE IF NOT EXISTS shared_artifacts (
+      id         INTEGER PRIMARY KEY AUTOINCREMENT,
+      run_id     TEXT NOT NULL REFERENCES runs(id),
+      branch_id  TEXT NOT NULL,
+      turn       INTEGER NOT NULL,
+      kind       TEXT NOT NULL DEFAULT '',
+      tier       TEXT NOT NULL DEFAULT 'fast',
+      claim      TEXT NOT NULL DEFAULT '',
+      code       TEXT NOT NULL DEFAULT '',
+      created_at TEXT NOT NULL
+    )"
+   ;; Standalone FTS5 like failures_fts: the indexed text is a projection
+   ;; (claim alone here), and sync is app-managed in store.artifacts.
+   "CREATE VIRTUAL TABLE IF NOT EXISTS shared_artifacts_fts USING fts5(claim)"])
+
 (def ^:private v2
   ;; What the model actually said.
   ;;
@@ -185,4 +207,4 @@
 
 (def migrations
   "Ordered. Index 0 is migration 1; PRAGMA user_version holds the count applied."
-  [v1 v2])
+  [v1 v2 v3])

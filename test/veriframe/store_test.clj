@@ -31,7 +31,8 @@
     (is (= (count migrations/migrations) (db/schema-version c)))
     (is (every? (set (db/table-names c))
                 ["runs" "branches" "turns" "artifacts" "failures"
-                 "gate_firings" "interventions" "events"]))))
+                 "gate_firings" "interventions" "events"
+                 "shared_artifacts"]))))
 
 (deftest migrations-are-idempotent
   (with-db [c]
