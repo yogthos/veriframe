@@ -104,13 +104,20 @@ function reply = vf_dispatch (req)
   end_try_catch
 endfunction
 
+% The code travels as DATA, never re-quoted into source. Building
+% "evalc('...')" by quoting broke every multi-line program — an Octave string
+% literal cannot span lines — and the resulting bare "syntax error" pointed at
+% the wrapper instead of the model's code. With the string in a base variable,
+% a parse error in the model's code reports the model's own offending line.
 function reply = vf_eval (code)
+  assignin ("base", "vf_code__", code);
   try
-    out = evalin ("base", ["evalc(" vf_quote(code) ")"]);
+    out = evalin ("base", "evalc(vf_code__)");
     reply = struct ("ok", true, "output", vf_trim (out));
   catch err
     reply = struct ("ok", false, "error", err.message);
   end_try_catch
+  evalin ("base", "clear vf_code__");
 endfunction
 
 % The verdict is deliberately narrow. The expression must reduce to a real
@@ -136,10 +143,6 @@ function reply = vf_check (expr, tol)
   else
     reply = struct ("ok", true, "verdict", logical (val), "tol", tol, "exact", (tol == 0));
   endif
-endfunction
-
-function s = vf_quote (str)
-  s = ["'" strrep(str, "'", "''") "'"];
 endfunction
 
 function s = vf_trim (str)

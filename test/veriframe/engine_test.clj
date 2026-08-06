@@ -445,6 +445,29 @@ sidon(S) :- sums(S, Sums), sort(Sums, Sorted), length(Sums, N), length(Sorted, N
         (is (:ok r) (str "L should still exist on a later call: " (:error r)))
         (is (true? (:verdict r)))))))
 
+(deftest octave-eval-accepts-multi-line-programs
+  ;; Any real program is multi-line, and every one of them failed: the code
+  ;; was re-quoted into an `evalc('...')` wrapper, and an Octave string
+  ;; literal cannot span lines, so a comment header plus a loop came back as
+  ;; a bare "syntax error" pointing at the harness's wrapper instead of the
+  ;; model's code. B2 in the magic-square live run died of this at turn 2.
+  ;; The code travels as data now and is never re-quoted.
+  (with-octave
+    (fn [s]
+      (let [r (octave/eval-code! s (str "% comment header\n"
+                                        "total = 0;\n"
+                                        "for k = 1:10\n"
+                                        "  total = total + k^2;\n"
+                                        "endfor\n"))]
+        (is (:ok r) (str "multi-line program should run: " (:error r))))
+      (is (true? (:verdict (octave/check s "total == 385"))))
+      (testing "quotes in the code survive, since nothing re-quotes them"
+        (is (:ok (octave/eval-code! s "msg = 'it''s fine';"))))
+      (testing "a genuine syntax error is still an error"
+        (let [r (octave/eval-code! s "for k = 1:3\n  x = k +;\nendfor")]
+          (is (not (:ok r)))
+          (is (seq (str (:error r)))))))))
+
 (deftest octave-refuses-anything-that-is-not-a-verdict
   ;; Coercing these is how a claim about every element silently becomes a claim
   ;; about one, or how "no answer" becomes "false".

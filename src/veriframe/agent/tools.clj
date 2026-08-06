@@ -375,25 +375,55 @@
   other prompt files."
   (slurp (io/resource "prompts/judge-exemptions.md")))
 
+(def ^:private max-judge-attempts 3)
+
 (defn- judge
   "Ask the model a yes-or-no question and read the answer through the
-  constrained parser. Any failure to answer cleanly fails closed."
-  [{:keys [llm-adapter llm-config]} prompt]
-  (try
-    (let [r (llm/chat llm-adapter llm-config
-                      [{:role "system" :content (str "You are a strict reviewer. "
-                                                     verdict/instruction)}
-                       {:role "user" :content prompt}]
-                      {:temperature 0.0})
-          parsed (verdict/parse (:content r))]
-      ;; The reasoning stream is stripped HERE, not at the call sites, because
-      ;; every caller quotes :text back into the branch's message history and a
-      ;; branch that reads reviewer-voice reasoning answers its next turn as a
-      ;; reviewer instead of calling a tool. Keeping the raw text in the map
-      ;; would leave that trap set for the next caller added.
-      (assoc parsed :text (verdict/strip-reasoning (:content r))))
-    (catch Throwable e
-      {:verdict :unparseable :reason (str "the judge call failed: " (ex-message e))})))
+  constrained parser. Any failure to answer cleanly fails closed.
+
+  A well-formed response with no verdict in it — a reasoning judge that spent
+  its whole token budget thinking — is a judge process failure, not evidence
+  about the claim, so it is retried here inside the same tool call rather
+  than handed to the branch as a failed turn: three audits died this way in
+  one live run and cost the branch its ship (vf-42e). Retries sharpen the
+  instruction and double the token budget, and each one is journaled. A
+  transport failure is NOT retried: llm/chat already ran its own bounded
+  retry loop, and a second loop here would multiply it."
+  [{:keys [llm-adapter llm-config conn run-id branch turn]} prompt]
+  (loop [attempt 1]
+    (let [system (str "You are a strict reviewer. " verdict/instruction
+                      (when (> attempt 1)
+                        (str " Your previous response ended before any verdict"
+                             " line. State the verdict line now and keep any"
+                             " justification to a few sentences.")))
+          r (try
+              {:response (llm/chat llm-adapter llm-config
+                                   [{:role "system" :content system}
+                                    {:role "user" :content prompt}]
+                                   (cond-> {:temperature 0.0}
+                                     (> attempt 1)
+                                     (assoc :max-tokens
+                                            (some-> (:max-tokens llm-config) (* 2)))))}
+              (catch Throwable e {:error (ex-message e)}))]
+      (if (:error r)
+        {:verdict :unparseable :reason (str "the judge call failed: " (:error r))}
+        (let [content (get-in r [:response :content])
+              parsed (verdict/parse content)]
+          (if (and (= :unparseable (:verdict parsed))
+                   (< attempt max-judge-attempts))
+            (do (when (and conn run-id)
+                  (journal/note! conn run-id :judge-retry
+                                 {:branch-id (:id branch) :turn turn
+                                  :data {:attempt attempt
+                                         :reason (:reason parsed)}}))
+                (recur (inc attempt)))
+            ;; The reasoning stream is stripped HERE, not at the call sites,
+            ;; because every caller quotes :text back into the branch's message
+            ;; history and a branch that reads reviewer-voice reasoning answers
+            ;; its next turn as a reviewer instead of calling a tool. Keeping
+            ;; the raw text in the map would leave that trap set for the next
+            ;; caller added.
+            (assoc parsed :text (verdict/strip-reasoning content))))))))
 
 (defmethod run-tool "review" [{:keys [branch] :as ctx}]
   (if-let [m (missing ctx :claim :rationale)]

@@ -497,6 +497,73 @@
         (is (= "the sequence converges for n = 1, 2, 3" (:established la)))
         (is (true? (:relaxation? la)))))))
 
+(deftest judge-retries-a-token-capped-verdict
+  ;; vf-42e: in the magic-square live run three audits came back "unparseable
+  ;; — the judge produced only reasoning and no answer", each costing the
+  ;; branch a turn; the branch reached an audit-approved answer exactly at the
+  ;; turn cap and could not ship. A well-formed response with no verdict is a
+  ;; judge process failure, not evidence about the claim, so it is retried
+  ;; inside the same tool call — sharper instruction, doubled token budget —
+  ;; and the retry is journaled so runs stay measurable.
+  (let [c (db/connect ":memory:")
+        _ (db/migrate! c)
+        rid (runs/start-run! c {:problem "p" :beam-width 1})
+        b (merge (state/new-branch {:id "B1" :problem "p"})
+                 {:thesis {:goal "g" :technique "t" :subClaims []}
+                  :artifacts [{:claim "c" :claim-status :confirmed
+                               :kind :smt :tier :confirmed :code "c1"}]})
+        calls (atom [])]
+    (runs/open-branch! c rid {:branch-id "B1" :created-at-turn 0})
+    (with-redefs [llm/chat (fn [_ _ msgs opts]
+                             (swap! calls conj {:msgs msgs :opts opts})
+                             (if (= 1 (count @calls))
+                               {:content "<think>reasoning that never commits"}
+                               {:content "GAPS: none\nVERDICT: PASS"}))]
+      (let [r (tools/run-tool {:branch b :turn 1 :conn c :run-id rid
+                               :llm-config {:max-tokens 100}
+                               :tool-name "audit"
+                               :args {:claim "c" :proposedAnswer "42"}})]
+        (is (true? (get-in r [:branch :last-audit :passed]))
+            "the retried verdict is the one that counts")
+        (is (= 2 (count @calls)) "one retry resolved it")
+        (is (str/includes? (get-in (second @calls) [:msgs 0 :content])
+                           "previous response")
+            "the retry names what went wrong last time")
+        (is (= 200 (get-in (second @calls) [:opts :max-tokens]))
+            "the retry doubles the token budget")
+        (is (= 1 (count (filter #(= "judge-retry" (:kind %))
+                                (journal/events-since c rid 0))))
+            "the retry is journaled")))))
+
+(deftest judge-retries-are-bounded
+  (let [b (merge (state/new-branch {:id "B1" :problem "p"})
+                 {:thesis {:goal "g" :technique "t" :subClaims []}
+                  :artifacts [{:claim "c" :claim-status :confirmed
+                               :kind :smt :tier :confirmed :code "c1"}]})
+        calls (atom 0)]
+    (with-redefs [llm/chat (fn [& _] (swap! calls inc)
+                             {:content "<think>never a verdict"})]
+      (let [r (tools/run-tool {:branch b :turn 1 :tool-name "audit"
+                               :args {:claim "c" :proposedAnswer "42"}})]
+        (is (= :failure (:category r)) "exhausted retries fail closed")
+        (is (= 3 @calls) "attempts are bounded")))))
+
+(deftest judge-transport-failure-is-not-retried
+  ;; The retry exists for a judge that ANSWERED without a verdict. A transport
+  ;; failure already went through llm/chat's own bounded retry loop, and a
+  ;; second loop here would multiply that by three.
+  (let [b (merge (state/new-branch {:id "B1" :problem "p"})
+                 {:thesis {:goal "g" :technique "t" :subClaims []}
+                  :artifacts [{:claim "c" :claim-status :confirmed
+                               :kind :smt :tier :confirmed :code "c1"}]})
+        calls (atom 0)]
+    (with-redefs [llm/chat (fn [& _] (swap! calls inc)
+                             (throw (ex-info "socket reset" {})))]
+      (let [r (tools/run-tool {:branch b :turn 1 :tool-name "audit"
+                               :args {:claim "c" :proposedAnswer "42"}})]
+        (is (= :failure (:category r)))
+        (is (= 1 @calls))))))
+
 (deftest relaxation-is-journalled-as-thesis-drift
   (let [c (db/connect ":memory:")
         _ (db/migrate! c)

@@ -1005,8 +1005,18 @@ different-shape re-verification — the independence requirement did real work.
 approved — verbatim matching did real work. But three audits came back
 unparseable (judge hit its token cap mid-reasoning), and the branch reached
 an audit-approved answer exactly at the turn cap: exhausted, one turn short
-of shipping. The residual report carries all five confirmed lemmas. Filed
-vf-42e: unparseable judge verdicts should not cost the branch its turn.
+of shipping. The residual report carries all five confirmed lemmas. Fixed
+(vf-42e): a well-formed judge response with no verdict is now retried inside
+the same tool call — sharper instruction, doubled token budget, journaled as
+judge-retry — and only exhausted retries reach the branch. Transport
+failures still fail closed immediately; llm/chat already retries those.
+
+The culled branch's death also traced to a harness bug, not the model: every
+multi-line Octave program failed with a bare "syntax error", because the code
+was re-quoted into an `evalc('...')` wrapper and an Octave string literal
+cannot span lines. The model's first program was fine. The code travels as
+data now (assigned into base, never re-quoted), so a real parse error names
+the model's own offending line instead of the wrapper.
 
 A launch bug surfaced en route: any POST body with multibyte UTF-8 hung the
 server — the vendored adapter judged request completeness by character count
