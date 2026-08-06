@@ -25,6 +25,7 @@
             [veriframe.engine.prolog]
             [veriframe.agent.gates :as gates]
             [veriframe.agent.loop :as aloop]
+            [veriframe.agent.resume :as resume]
             [veriframe.agent.state :as state]
             [veriframe.agent.tools :as tools]
             [veriframe.agent.verdict :as verdict]
@@ -1228,3 +1229,59 @@
       (is (empty? (filter #(= "candidate-selection" (:kind %))
                           (journal/events-since c rid 0)))
           "no note when there was nothing to choose between"))))
+
+;; --- resume ------------------------------------------------------------------
+
+(deftest resumability-is-a-one-way-door
+  (with-db [c]
+    (let [rid (runs/start-run! c {:problem "p" :max-turns 10 :beam-width 1})]
+      (is (resume/resumable? c rid) "a running run resumes")
+      (runs/finish-run! c rid :completed "42")
+      (is (not (resume/resumable? c rid)) "a completed run shipped; the answer is the record"))
+    (let [rid (runs/start-run! c {:problem "p" :max-turns 10 :beam-width 1})]
+      (runs/finish-run! c rid :aborted nil)
+      (is (not (resume/resumable? c rid)) "abort is a person saying stop; resume is not them changing their mind"))
+    (let [rid (runs/start-run! c {:problem "p" :max-turns 10 :beam-width 1})]
+      (runs/finish-run! c rid :failed nil)
+      (is (resume/resumable? c rid) "an exhausted process that never tore down may continue"))
+    (is (not (resume/resumable? c "no-such-run")))))
+
+(deftest resume-replays-the-journal-under-the-original-budget
+  ;; The anchor rule: a run recorded through turn 3 of 10 gets 7 more turns,
+  ;; not 10. run-rounds is stubbed to capture what resume hands it, so the
+  ;; test is offline - no model, no swipl.
+  (with-db [c]
+    (let [rid (runs/start-run! c {:problem "prove P" :max-turns 10 :beam-width 1})]
+      (runs/open-branch! c rid {:branch-id "B1" :created-at-turn 0})
+      (runs/set-thesis! c rid "B1" {:goal "prove P" :technique "t" :subClaims ["lemma A"]})
+      (journal/record-turn! c rid {:branch-id "B1" :turn 1 :tool-name "verify"
+                                   :result "confirmed" :category "success"
+                                   :assistant-text "trying lemma A"})
+      (journal/record-artifact! c rid {:branch-id "B1" :turn 1 :kind :smt
+                                       :claim "lemma A" :code "(x)"
+                                       :claim-status :confirmed :tier :fast})
+      (journal/record-turn! c rid {:branch-id "B1" :turn 2 :tool-name "verify"
+                                   :result "goal failed" :category "failure"})
+      (journal/record-turn! c rid {:branch-id "B1" :turn 3 :tool-name "verify"
+                                   :result "goal failed" :category "failure"})
+      (journal/record-gate! c rid {:branch-id "B1" :turn 3 :gate "stuck"
+                                   :prediction "changes technique" :window 3})
+      (let [handed (atom nil)]
+        (with-redefs [beam/run-rounds (fn [ctx branches start-turn]
+                                        (reset! handed {:ctx ctx :branches branches
+                                                        :start-turn start-turn})
+                                        {:status :captured})
+                      veriframe.engine.prolog/create-session (fn [_] nil)]
+          (is (= :captured (:status (resume/resume! {:conn c :config {} :run-id rid})))))
+        (let [{:keys [ctx branches start-turn]} @handed
+              b (first branches)]
+          (is (= 4 start-turn) "continues one past the last recorded turn")
+          (is (= 10 (:max-turns ctx)) "under the ORIGINAL budget, not a fresh one")
+          (is (= "B1" (:id b)))
+          (is (= 1 (count (state/confirmed-artifacts b))))
+          (is (= "prove P" (get-in b [:thesis :goal])))
+          (is (= 2 (:consecutive-failures b)) "counters recomputed from the turns table")
+          (is (:any-progress? b))
+          (is (= 1 (count (:open-predictions b))) "the unsettled firing still settles later")
+          (is (some #(= "trying lemma A" (:content %)) (:messages b))
+              "the model's own words are back in its history"))))))

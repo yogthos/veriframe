@@ -18,6 +18,7 @@
   the steer path."
   (:require [clojure.tools.logging :as log]
             [veriframe.agent.beam :as beam]
+            [veriframe.agent.resume :as resume]
             [veriframe.llm.registry :as registry]
             [veriframe.store.interventions :as interventions]
             [veriframe.store.runs :as runs]))
@@ -75,6 +76,34 @@
         {:run_id run-id :status "aborting"})
     {:error (str "no active run " run-id)}))
 
+(defn resume!
+  "Resume a crashed run from its journal, in the background like start-run!.
+
+  Returns {:status 409 :body ...} when the run is not resumable — aborted runs
+  stay aborted, completed runs shipped — else a success map the caller turns
+  into an HTTP 200. The resumed run is registered under `active` with a fresh
+  abort flag, so abort! can stop it like any other."
+  [{:keys [conn config]} run-id]
+  (if-not (resume/resumable? conn run-id)
+    {:status 409 :body {:error {:message (str "run " run-id " is not resumable")
+                                :run_id run-id}}}
+    (let [llm-config (:llm config)
+          adapter (registry/adapter-for (:provider llm-config))
+          abort (atom false)
+          fut (future
+                (try
+                  (let [r (resume/resume! {:conn conn :config config
+                                           :llm-adapter adapter
+                                           :llm-config llm-config
+                                           :run-id run-id :abort abort})]
+                    (swap! active dissoc run-id)
+                    r)
+                  (catch Throwable e
+                    (log/error "resume failed:" (ex-message e))
+                    {:status :error :error (ex-message e)})))]
+      (swap! active assoc run-id {:future fut :abort abort})
+      {:body {:run_id run-id :status "resuming"
+              :max_turns (:max_turns (runs/get-run conn run-id))}})))
 (defn intervene!
   [conn run-id body]
   (let [id (interventions/submit! conn run-id

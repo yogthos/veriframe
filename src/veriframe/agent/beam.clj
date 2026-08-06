@@ -271,40 +271,23 @@
                              :winner (:id winner)}}))
     winner))
 
-(defn run!
-  "Run a beam to completion.
+(defn run-rounds
+  "The beam's scheduling loop over `branches`, starting at round `start-turn`.
 
-  Returns {:status :answer :run-id :branches :residuals}. The first branch to
-  land a `done` wins and the rest are abandoned, since paying for four more
-  provider calls after the answer exists is pure waste."
-  [{:keys [conn config llm-adapter llm-config problem max-turns beam-width
-           abort on-start] :as opts}]
-  (let [max-turns (or max-turns (get-in config [:run :max-turns]) 40)
-        width (or beam-width (get-in config [:run :beam-width]) 5)
-        run-id (runs/start-run! conn {:problem problem
-                                      :provider (:provider llm-config)
-                                      :model (:model llm-config)
-                                      :max-turns max-turns
-                                      :beam-width width
-                                      :prompt-digest (branch-loop/prompt-digest)})
-        ;; Every session ever opened, including forked children, so the
-        ;; supervisor can tear them all down regardless of how the run ended.
-        ;; The stop path must not depend on the agent's state — the RAX
-        ;; manager could always halt the Lisp task no matter what it believed.
-        sessions (atom [])
-        live-branches (atom [])
-        ctx {:conn conn :run-id run-id :config config :problem problem
-             :llm-adapter llm-adapter :llm-config llm-config
-             :max-turns max-turns :beam? (> width 1) :sessions sessions
-             ;; One claim registry per run: two branches reaching the same
-             ;; claim share one slow verification instead of racing it.
-             :claims (claims/new-registry)}
-        initial (mapv #(open-branch! ctx (str "B" (inc %)) nil nil 0) (range width))]
-    ;; Hand the id back before the first turn so a caller that started this in
-    ;; the background can address the run while it is still running.
-    (when on-start (on-start run-id))
+  Split out of `run!` so a resumed run can enter the same loop at the round
+  after its journal's last recorded turn. `max-turns` is read from the ctx,
+  which a resume builds from the runs row — the ORIGINAL budget — so starting
+  at turn N+1 of M is what keeps a crash from re-granting the N turns before
+  it. This is UCLA's persisted run-start anchor: the anchor is the turns
+  table, and the budget is the runs row.
+
+  Returns {:status :completed|:aborted|:exhausted :run-id :branches ...}.
+  Teardown lives here rather than in the callers, so every engine session is
+  disposed no matter how the run ended."
+  [{:keys [conn run-id max-turns abort sessions] :as ctx} branches start-turn]
+  (let [live-branches (atom branches)]
     (try
-      (loop [branches initial, turn 1]
+      (loop [branches branches, turn start-turn]
         ;; Kept current so the finally block can tear down Lean sessions,
         ;; which tools open lazily on a branch rather than the scheduler
         ;; opening them up front.
@@ -402,6 +385,40 @@
         (doseq [s @sessions]
           (try (prolog/dispose! s) (catch Throwable _ nil)))
         (dispose-lean! @live-branches)))))
+
+(defn run!
+  "Run a beam to completion.
+
+  Returns {:status :answer :run-id :branches :residuals}. The first branch to
+  land a `done` wins and the rest are abandoned, since paying for four more
+  provider calls after the answer exists is pure waste."
+  [{:keys [conn config llm-adapter llm-config problem max-turns beam-width
+           abort on-start] :as opts}]
+  (let [max-turns (or max-turns (get-in config [:run :max-turns]) 40)
+        width (or beam-width (get-in config [:run :beam-width]) 5)
+        run-id (runs/start-run! conn {:problem problem
+                                      :provider (:provider llm-config)
+                                      :model (:model llm-config)
+                                      :max-turns max-turns
+                                      :beam-width width
+                                      :prompt-digest (branch-loop/prompt-digest)})
+        ;; Every session ever opened, including forked children, so the
+        ;; supervisor can tear them all down regardless of how the run ended.
+        ;; The stop path must not depend on the agent's state — the RAX
+        ;; manager could always halt the Lisp task no matter what it believed.
+        sessions (atom [])
+        ctx {:conn conn :run-id run-id :config config :problem problem
+             :llm-adapter llm-adapter :llm-config llm-config
+             :max-turns max-turns :beam? (> width 1) :sessions sessions
+             :abort abort
+             ;; One claim registry per run: two branches reaching the same
+             ;; claim share one slow verification instead of racing it.
+             :claims (claims/new-registry)}
+        initial (mapv #(open-branch! ctx (str "B" (inc %)) nil nil 0) (range width))]
+    ;; Hand the id back before the first turn so a caller that started this in
+    ;; the background can address the run while it is still running.
+    (when on-start (on-start run-id))
+    (run-rounds ctx initial 1)))
 
 (defn summary
   "One line per branch, for logs and the run response."

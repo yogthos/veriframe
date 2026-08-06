@@ -132,6 +132,11 @@
    [:post "/v1/runs/:id/abort"
     (fn [req] (json-response (control/abort! (system/conn)
                                              (get-in req [:path-params :id]))))]
+   [:post "/v1/runs/:id/resume"
+    (fn [req] (let [r (control/resume! {:conn (system/conn)
+                                        :config (system/config)}
+                                       (get-in req [:path-params :id]))]
+                (json-response (or (:status r) 200) (:body r))))]
    [:get "/v1/interventions/kinds" (fn [_] (json-response (control/kinds)))]])
 
 (defn- match-path [pattern uri]
