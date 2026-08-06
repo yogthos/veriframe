@@ -33,10 +33,12 @@
   closed: the gate stays shut.
 
   A response may also declare gaps (`GAP: <text>` lines, or `GAPS: none` for
-  an explicit none). A verdict that contradicts its own gap list is recorded
-  in `:disagreement`, never repaired: UCLA's FirstProof scorer_v4 converged on
-  the same fail-closed enum and added this check, with the verdict winning
-  over the gap list in both inconsistency directions."
+  an explicit none) and patchable defects (`MINOR: <text> FIX: <text>` lines,
+  where a MINOR line without a FIX reads as a blocking GAP). A verdict that
+  contradicts its own declarations is recorded in `:disagreement`, never
+  repaired: UCLA's FirstProof scorer_v4 converged on the same fail-closed
+  enum and added these checks, with the verdict winning over the declarations
+  in every inconsistency direction."
   (:require [clojure.string :as str]))
 
 (defn- validate-answer-set!
@@ -98,13 +100,42 @@
     answer))
 
 (defn- gap-lines
-  "The text after `GAP:` or `GAPS:` on each gap line, in order. Line-anchored
-  and case-insensitive, like a bare verdict token: prose that mentions a gap
-  is not a declaration."
+  "The text after `GAP:` or `GAPS:` on each gap line, in order. A `MINOR:`
+  line without a `FIX:` segment is a gap too — the claim that a defect is
+  patchable is substantiated only by the patch itself. Line-anchored and
+  case-insensitive, like a bare verdict token: prose that mentions a gap is
+  not a declaration."
   [text]
   (keep (fn [line]
-          (let [m (re-matches #"(?i)GAPS?\s*:\s*(.+)" (str/trim line))]
-            (when m (str/trim (second m)))))
+          (let [m (re-matches #"(?i)(GAPS?|MINOR)\s*:\s*(.+)" (str/trim line))]
+            (when m
+              (let [prefix (str/lower-case (second m))
+                    body (nth m 2)]
+                (when-not (and (= "minor" prefix)
+                               (re-matches #"(?i).+?\s*FIX\s*:.+" body))
+                  (str/trim body))))))
+        (str/split-lines text)))
+
+(defn- minor-lines
+  "The patchable defects a judge declared, in order: `MINOR: <description>`
+  lines that also carry a `FIX: <fix>` segment.
+
+  Patch-existence is the severity criterion because severity claims are not
+  artifacts a harness can check — a judge calling a defect \"minor\" asserts
+  nothing verifiable — while a stated fix is an artifact the next turn can act
+  on. This is UCLA's FirstProof scorer_v4 critical rule made mechanical: if
+  you can supply the missing argument the defect is MINOR even while it is
+  still absent, and it is MAJOR only when you cannot. A MINOR line without a
+  FIX segment is read as a blocking gap (see gap-lines); the claim of
+  patchability is substantiated only by the patch itself. Line-anchored and
+  case-insensitive, like a bare verdict token: prose that mentions a minor is
+  not a declaration."
+  [text]
+  (keep (fn [line]
+          (when-let [m (re-matches #"(?i)MINOR\s*:\s*(.+)" (str/trim line))]
+            (when-let [f (re-matches #"(?i)(.+?)\s*FIX\s*:\s*(.+)" (second m))]
+              {:description (str/trim (second f))
+               :patch (str/trim (nth f 2))})))
         (str/split-lines text)))
 
 (defn- gap-summary
@@ -120,17 +151,20 @@
     {:gaps (vec (remove #(= "none" (str/lower-case %)) contents))
      :declared? (boolean (or none? (seq contents)))}))
 
-(defn- gap-disagreement
-  "The verdict-vs-gaps contradiction, if any.
+(defn- verdict-disagreement
+  "The verdict-vs-declarations contradiction, if any.
 
-  Both directions come from UCLA's FirstProof scorer_v4, which converged on
-  the same fail-closed enum this parser uses and added the gap list on top.
-  The verdict wins in both cases — the harness acts on it, and this only
-  records that the judge contradicted itself so the run is measurable. PASS
-  beside listed gaps, or FAIL beside `GAPS: none`, each get a direction."
-  [verdict gaps declared?]
+  All three directions come from UCLA's FirstProof scorer_v4, which converged
+  on the same fail-closed enum this parser uses and added the declaration
+  lines on top. The verdict wins in every case — the harness acts on it, and
+  this only records that the judge contradicted itself so the run is
+  measurable. PASS beside listed gaps, FAIL beside `GAPS: none`, and FAIL
+  beside nothing but patchable MINOR lines (every defect the judge found was
+  fixable, yet it refused anyway) each get a direction."
+  [verdict gaps declared? minors]
   (cond
     (and (= :pass verdict) (seq gaps)) :pass-with-gaps
+    (and (= :fail verdict) (empty? gaps) (seq minors)) :fail-with-only-patchables
     (and (= :fail verdict) declared? (empty? gaps)) :fail-without-gaps
     :else nil))
 
@@ -139,8 +173,10 @@
 
   Returns {:verdict :pass|:fail|:ambiguous|:unparseable, :via, :reason,
   :drafts n, :gaps-declared bool, and — when the judge engaged with gaps —
-  :gaps [...], plus :disagreement when the verdict contradicts them}. Anything
-  other than :pass or :fail means the gate does not open.
+  :gaps [...], plus :minors [...] when it carried fixes for patchable
+  defects, and :disagreement when the verdict contradicts its own
+  declarations}. Anything other than :pass or :fail means the gate does not
+  open.
 
   Two things happen before matching, and both were forced by a live run in
   which every single review came back :ambiguous.
@@ -159,11 +195,12 @@
   it is a tie-break between two well-formed answers, and `:drafts` records that
   it happened.
 
-  Gap lines are collected after the reasoning is dropped, so a `GAP:` inside
-  <think> is the judge weighing a worry, not declaring one. A verdict that
-  contradicts the gap list — PASS beside listed gaps, FAIL beside `GAPS: none`
-  — is recorded in :disagreement rather than flipped. The verdict wins, and
-  the contradiction is the judge's, not the parser's."
+  Gap and MINOR lines are collected after the reasoning is dropped, so a
+  declaration inside <think> is the judge weighing a worry, not making one. A
+  verdict that contradicts its own declarations — PASS beside listed gaps,
+  FAIL beside `GAPS: none`, FAIL beside nothing but patchable MINOR lines —
+  is recorded in :disagreement rather than flipped. The verdict wins, and the
+  contradiction is the judge's, not the parser's."
   ([text] (parse text pass-fail))
   ([text answer-set]
    (let [raw (or text "")
@@ -173,6 +210,7 @@
          distinct-markers (distinct markers)
          distinct-bares (distinct bares)
          {:keys [gaps declared?]} (gap-summary text)
+         minors (minor-lines text)
          result (cond
                   (seq markers)
                   (cond-> {:verdict (last markers) :via :marker}
@@ -200,9 +238,11 @@
                                 " exactly `VERDICT: PASS` or `VERDICT: FAIL`.")})
          disagreement (when (or (= :pass (:verdict result))
                                 (= :fail (:verdict result)))
-                        (gap-disagreement (:verdict result) gaps declared?))]
+                        (verdict-disagreement (:verdict result) gaps
+                                              declared? minors))]
      (cond-> (assoc result :gaps-declared declared?)
        declared? (assoc :gaps gaps)
+       (seq minors) (assoc :minors minors)
        disagreement (assoc :disagreement disagreement)))))
 
 (defn passed?
@@ -213,11 +253,12 @@
 (def instruction
   "What to append to any prompt whose answer this parser reads.
 
-  The GAP sentences are the verdict-gap contract from UCLA's FirstProof
-  scorer_v4, which converged on the same fail-closed enum and made the gap
-  list part of the answer: a judge that lists a blocking gap and still answers
-  PASS is contradicting itself. The instruction tells it to pick FAIL; the
-  parser only records the contradiction in :disagreement and never flips the
+  The GAP and MINOR sentences are the declaration contract from UCLA's
+  FirstProof scorer_v4, which converged on the same fail-closed enum and made
+  severity part of the answer: a defect is MINOR only when its concrete fix
+  can be stated, and a judge that lists a blocking gap and still answers PASS
+  is contradicting itself. The instruction tells it to pick FAIL; the parser
+  only records the contradiction in :disagreement and never flips the
   verdict."
   (str "End your response with a line reading exactly `VERDICT: PASS` or"
        " `VERDICT: FAIL`, and nothing else on that line. Emit exactly one such"
@@ -225,6 +266,12 @@
        " Optionally, list the claim's gaps before the verdict line, one per"
        " line, each reading `GAP: <text>`, or `GAPS: none` if you checked and"
        " found none."
+       " For each defect you find, decide whether you can supply the concrete"
+       " fix. If you can, list it as `MINOR: <defect> FIX: <fix>` — the FIX"
+       " part is mandatory, and a MINOR line without FIX is read as blocking."
+       " If you cannot state the fix, list `GAP: <defect>` instead, and your"
+       " verdict must be `VERDICT: FAIL` — a defect is blocking only when its"
+       " fix cannot be stated."
        " If any GAP line blocks the claim, your verdict must be"
        " `VERDICT: FAIL` — writing PASS alongside a blocking GAP is"
        " self-contradictory; pick FAIL."))

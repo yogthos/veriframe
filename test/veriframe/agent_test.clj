@@ -128,6 +128,36 @@
       (is (false? (:gaps-declared r)))
       (is (nil? (:gaps r))))))
 
+(deftest verdict-minors
+  (testing "a MINOR line with a FIX parses into :minors, not :gaps"
+    (let [r (verdict/parse "MINOR: X is unbound FIX: bind X\nVERDICT: FAIL")]
+      (is (= [{:description "X is unbound" :patch "bind X"}] (:minors r)))
+      (is (nil? (:gaps r)))))
+  (testing "a MINOR line without a FIX is not minor — it blocks"
+    (let [r (verdict/parse "MINOR: X is unbound\nVERDICT: FAIL")]
+      (is (nil? (:minors r)))
+      (is (= ["X is unbound"] (:gaps r)))))
+  (testing "PASS alongside minors-with-fixes is consistent"
+    (let [r (verdict/parse "MINOR: typo FIX: fix it\nVERDICT: PASS")]
+      (is (= :pass (:verdict r)))
+      (is (nil? (:disagreement r)))))
+  (testing "FAIL with only patchable minors is the third disagreement direction"
+    (let [r (verdict/parse "minor: typo fix: fix it\nVERDICT: FAIL")]
+      (is (= :fail (:verdict r)))
+      (is (= :fail-with-only-patchables (:disagreement r)))))
+  (testing "a gap blocks even alongside a carried patch"
+    (let [r (verdict/parse "GAP: the witness leaves X unbound\nMINOR: typo FIX: fix it\nVERDICT: FAIL")]
+      (is (= :fail (:verdict r)))
+      (is (= ["the witness leaves X unbound"] (:gaps r)))
+      (is (= [{:description "typo" :patch "fix it"}] (:minors r)))
+      (is (nil? (:disagreement r)))))
+  (testing "MINOR lines inside <think> are reasoning, not declarations"
+    (let [r (verdict/parse "<think>MINOR: maybe a problem FIX: fix it</think>\nVERDICT: PASS")]
+      (is (= :pass (:verdict r)))
+      (is (nil? (:minors r)))
+      (is (nil? (:gaps r)))
+      (is (nil? (:disagreement r))))))
+
 (deftest verdict-gap-disagreement-is-journalled
   (let [c (db/connect ":memory:")
         _ (db/migrate! c)
@@ -161,6 +191,29 @@
         (is (some? review-ev) "FAIL beside GAPS: none is journalled from review")
         (is (str/includes? (:data audit-ev) "\"audit\""))
         (is (str/includes? (:data review-ev) "\"review\""))))))
+
+(deftest audit-failure-carries-patches
+  (let [c (db/connect ":memory:")
+        _ (db/migrate! c)
+        rid (runs/start-run! c {:problem "p" :beam-width 1})
+        b (merge (state/new-branch {:id "B1" :problem "p"})
+                 {:thesis {:goal "g" :technique "t" :subClaims []}
+                  :artifacts [{:claim "c" :claim-status :confirmed
+                               :kind :smt :tier :confirmed :code "c1"}]})]
+    (runs/open-branch! c rid {:branch-id "B1" :created-at-turn 0})
+    ;; A judge that fails while listing patchable defects must hand the branch
+    ;; the repairs verbatim — the next turn is a fresh model call and the
+    ;; patches are the whole point of the refusal.
+    (with-redefs [llm/chat (fn [& _]
+                             {:content (str "MINOR: the answer leaves X unbound"
+                                            " FIX: bind X to a witness\n"
+                                            "VERDICT: FAIL")})]
+      (let [r (tools/run-tool {:branch b :turn 1 :conn c :run-id rid
+                               :tool-name "audit"
+                               :args {:claim "c" :proposedAnswer "42"}})]
+        (is (str/includes? (:result r) "PATCHES:"))
+        (is (str/includes? (:result r) "bind X to a witness"))
+        (is (str/includes? (get-in r [:failure :reason]) "1 patchable"))))))
 
 ;; --- gates and the arbiter --------------------------------------------------
 

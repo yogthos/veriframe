@@ -53,6 +53,24 @@
 
 (defn- arg [ctx k] (get-in ctx [:args k]))
 
+(defn- patches-section
+  "The repairs a judge carried, as a `PATCHES:` block appended to its result
+  so the branch's next turn — a fresh model call — has the fixes spelled out
+  even when the judge's prose buried them."
+  [minors]
+  (when (seq minors)
+    (str "\n\nPATCHES:\n"
+         (str/join "\n" (for [m minors]
+                          (str "- " (:description m) " → " (:patch m)))))))
+
+(defn- patchable-suffix
+  "The ` — N patchable defect(s) listed` tail for a failure reason, when the
+  judge carried fixes."
+  [minors]
+  (when (seq minors)
+    (let [n (count minors)]
+      (str " — " n " patchable defect" (when (> n 1) "s") " listed"))))
+
 (defn- missing [ctx & ks]
   (let [absent (remove #(let [v (arg ctx %)]
                           (and (some? v) (not (and (string? v) (str/blank? v)))))
@@ -341,9 +359,12 @@
             :progress? passed
             :result (str "Review verdict: " (name (:verdict j))
                          (when (:reason j) (str " — " (:reason j)))
-                         "\n\n" (or (:text j) ""))}
+                         "\n\n" (or (:text j) "")
+                         (patches-section (:minors j)))}
            (when-not passed
-             {:failure {:claim claim :reason (str "review returned " (name (:verdict j)))}})))))))
+             {:failure {:claim claim
+                        :reason (str "review returned " (name (:verdict j))
+                                     (patchable-suffix (:minors j)))}})))))))
 
 (defmethod run-tool "audit" [{:keys [branch] :as ctx}]
   (cond
@@ -394,10 +415,13 @@
         :result (str "Audit verdict: " (name (:verdict j))
                      (when (:reason j) (str " — " (:reason j)))
                      "\n\n" (or (:text j) "")
+                     (patches-section (:minors j))
                      (when passed
                        "\n\nThe done gate will accept this answer verbatim."))}
        (when-not passed
-         {:failure {:claim claim :reason (str "audit returned " (name (:verdict j)))}})))))
+         {:failure {:claim claim
+                    :reason (str "audit returned " (name (:verdict j))
+                                 (patchable-suffix (:minors j)))}})))))
 
 ;; --- the done gate ----------------------------------------------------------
 
