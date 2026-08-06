@@ -19,6 +19,7 @@
             [clojure.test :refer [deftest testing is are]]
             [veriframe.agent.arbiter :as arbiter]
             [veriframe.agent.beam :as beam]
+            [veriframe.agent.claims :as claims]
             [veriframe.agent.consensus :as consensus]
             [veriframe.engine.prolog]
             [veriframe.agent.gates :as gates]
@@ -612,6 +613,62 @@
       (testing "an unusable query returns nothing rather than throwing"
         (is (empty? (failures/similar c rid "a b c")))
         (is (empty? (failures/similar c rid "")))))))
+
+(deftest claim-registry-follows-the-ucla-protocol
+  (let [r (claims/new-registry)]
+    (testing "atomic double-claim: second branch is told who holds it"
+      (is (= :claimed (claims/try-claim! r "B1" "the zebra owner drinks water")))
+      (let [answer (claims/try-claim! r "B2" "The Zebra owner drinks WATER!")]
+        (is (= :held (:status answer)) "normalization groups the phrasings")
+        (is (= "B1" (:holder answer)))))
+    (testing "a verdict settles the claim and stays, even a failing one"
+      (claims/complete! r "B1" "the zebra owner drinks water" :failed "prolog said no")
+      (let [answer (claims/try-claim! r "B2" "the zebra owner drinks water")]
+        (is (= :done (:status answer)))
+        (is (= :failed (:outcome answer)))
+        (is (= "prolog said no" (:reason answer))
+            "a failed verdict is information, not a slot to re-race")))
+    (testing "release drops an in-flight claim so another branch may try"
+      (is (= :claimed (claims/try-claim! r "B1" "n < 2^n for all n")))
+      (claims/release! r "B1" "n < 2^n for all n")
+      (is (= :claimed (claims/try-claim! r "B2" "n < 2^n for all n"))))
+    (testing "only the holder may release"
+      (claims/release! r "B1" "n < 2^n for all n")
+      (is (= :held (:status (claims/try-claim! r "B3" "n < 2^n for all n")))
+          "B1's release of B2's claim must not have dropped it"))))
+
+(deftest slow-verification-is-not-spent-twice
+  ;; Two branches, one claim, one judge call. The second branch is served the
+  ;; first branch's verdict with provenance, spends nothing, and the dedup is
+  ;; journaled. A nil registry means every tool runs as before — the rest of
+  ;; the suite is that regression test.
+  (with-db [c]
+    (let [rid (runs/start-run! c {:problem "p"})
+          registry (claims/new-registry)
+          mk (fn [id] (merge (state/new-branch {:id id :problem "p"})
+                             {:artifacts [{:claim "the triple sums to 1000"
+                                           :claim-status :confirmed
+                                           :kind :smt :tier :confirmed :code "(x)"}]}))
+          calls (atom 0)]
+      (with-redefs [llm/chat (fn [& _]
+                               (swap! calls inc)
+                               {:content "GAPS: none\nVERDICT: PASS"})]
+        (let [ra (tools/run-tool {:branch (mk "B1") :turn 1 :conn c :run-id rid
+                                  :claims registry :tool-name "review"
+                                  :args {:claim "the triple sums to 1000"
+                                         :rationale "different encoding"}})
+              rb (tools/run-tool {:branch (mk "B2") :turn 1 :conn c :run-id rid
+                                  :claims registry :tool-name "review"
+                                  :args {:claim "The triple sums to 1000."
+                                         :rationale "yet another encoding"}})]
+          (is (= :success (:category ra)))
+          (is (= 1 @calls) "the second review spends no judge call")
+          (is (= :success (:category rb)))
+          (is (str/includes? (:result rb) "B1") "provenance names the source branch")
+          (let [ev (first (filter #(= "verification-dedup-hit" (:kind %))
+                                  (journal/events-since c rid 0)))]
+            (is (some? ev))
+            (is (str/includes? (:data ev) "B1"))))))))
 
 (deftest shared-artifact-log-round-trips
   ;; The failure log's twin: what an engine CONFIRMED, with provenance inline.

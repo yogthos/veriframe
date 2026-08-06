@@ -27,6 +27,7 @@
   `veriframe.bench.beam` is the comparison."
   (:require [clojure.string :as str]
             [clojure.tools.logging :as log]
+            [veriframe.agent.claims :as claims]
             [veriframe.agent.gates :as gates]
             [veriframe.agent.loop :as branch-loop]
             [veriframe.agent.state :as state]
@@ -274,7 +275,10 @@
         live-branches (atom [])
         ctx {:conn conn :run-id run-id :config config :problem problem
              :llm-adapter llm-adapter :llm-config llm-config
-             :max-turns max-turns :beam? (> width 1) :sessions sessions}
+             :max-turns max-turns :beam? (> width 1) :sessions sessions
+             ;; One claim registry per run: two branches reaching the same
+             ;; claim share one slow verification instead of racing it.
+             :claims (claims/new-registry)}
         initial (mapv #(open-branch! ctx (str "B" (inc %)) nil nil 0) (range width))]
     ;; Hand the id back before the first turn so a caller that started this in
     ;; the background can address the run while it is still running.

@@ -30,6 +30,7 @@
   no error-keyed guard while burning the whole run."
   (:require [clojure.java.io :as io]
             [clojure.string :as str]
+            [veriframe.agent.claims :as claims]
             [veriframe.agent.state :as state]
             [veriframe.agent.verdict :as verdict]
             [veriframe.engine.lean-pool :as lean-pool]
@@ -78,6 +79,62 @@
                        ks)]
     (when (seq absent)
       (str "Missing required argument(s): " (str/join ", " (map name absent)) "."))))
+
+(defn- claim-dedup
+  "Serve another branch's verification of the same claim instead of spending
+  this branch's call on it. Returns a result map when the claim is owned by
+  another branch, nil when this branch should run the tool itself.
+
+  The registry is optional by design: a nil registry — no run — makes every
+  tool run exactly as before. A claim another branch holds in flight is served
+  as a neutral notice (do not re-verify, the verdict will land); a settled
+  claim is served as its outcome, the confirmed artifact credited wholesale
+  with the source branch named, the failure reason carried over without
+  re-running the check."
+  [{:keys [claims branch] :as ctx} claim]
+  (when-let [r claims]
+    (let [answer (claims/try-claim! r (:id branch) claim)]
+      (when (not= :claimed answer)
+        (let [holder (:holder answer)
+              disposition (if (= :held (:status answer)) :held (:outcome answer))]
+          (when (and (:conn ctx) (:run-id ctx))
+            (journal/note! (:conn ctx) (:run-id ctx) :verification-dedup-hit
+                           {:branch-id (:id branch)
+                            :data {:claim claim :holder holder
+                                   :disposition (name disposition)}}))
+          (case (:status answer)
+            :held
+            (ok branch (str "Claim `" claim "` is already being verified by branch "
+                            holder ". Do not re-verify it — that verdict will land here."))
+
+            :done
+            (if (= :confirmed (:outcome answer))
+              {:branch (update branch :tiers-seen conj :slow)
+               :category :success
+               :progress? true
+               :result (str "Claim `" claim "` was already CONFIRMED by branch " holder
+                            ". Its verified artifact is credited below instead of"
+                            " spending another verification on the same claim.")
+               :artifact (:artifact answer)}
+              {:branch (update branch :tiers-seen conj :slow)
+               :category :failure
+               :progress? false
+               :result (str "Claim `" claim "` was already checked by branch " holder
+                            " and FAILED: " (:reason answer)
+                            " — carried over, not re-run.")
+               :failure {:claim claim :reason (:reason answer)}})))))))
+
+(defn- settle-claim!
+  "Record the verdict of a verification this branch just ran, or release the
+  claim when the run never produced one. The UCLA rule lives here: a verdict —
+  even a failing one — is recorded and stays; only a process failure (engine
+  error, unparseable judge output) releases the claim for another branch. A
+  nil registry makes this a no-op."
+  [{:keys [claims branch]} claim outcome payload]
+  (when claims
+    (if (= :released outcome)
+      (claims/release! claims (:id branch) claim)
+      (claims/complete! claims (:id branch) claim outcome payload))))
 
 ;; --- Prolog -----------------------------------------------------------------
 
@@ -249,33 +306,42 @@
 (defmethod run-tool "verify_template" [{:keys [branch config] :as ctx}]
   (if-let [m (missing ctx :claim :template)]
     (fail branch m)
-    (let [claim (arg ctx :claim)
-          tname (arg ctx :template)
-          slots (or (arg ctx :slots) {})
-          r (smt/run-template tname slots (get-in config [:engines :z3]))]
-      (if (= :error (:status r))
-        (fail branch (:error r) :failure {:claim claim :reason (:error r)})
-        (let [status (cond (:confirmed r) :confirmed
-                           (:agreed r) :refuted
-                           :else :ambiguous)]
-          (merge
-           {:branch (update branch :tiers-seen conj :slow)
-            :category (if (:confirmed r) :success :failure)
-            :progress? (:confirmed r)
-            :result (str (:note r)
-                         "\n  primary   " (name (get-in r [:primary :verdict]))
-                         " (expected " (name (get-in r [:primary :expected])) ")"
-                         "\n  crosscheck " (name (get-in r [:cross :verdict]))
-                         " (expected " (name (get-in r [:cross :expected])) ")"
-                         (when (:confirmed r)
-                           "\n\nBoth encodings agree, so this needs no separate review."))
-            :artifact {:kind :smt :claim claim
-                       :code (get-in r [:primary :smtlib])
-                       :verdict (get-in r [:primary :verdict])
-                       :witness (get-in r [:primary :model])
-                       :claim-status status :tier :slow}}
-           (when-not (:confirmed r)
-             {:failure {:claim claim :reason (:note r)}})))))))
+    (if-let [served (claim-dedup ctx (arg ctx :claim))]
+      served
+      (let [claim (arg ctx :claim)
+            tname (arg ctx :template)
+            slots (or (arg ctx :slots) {})
+            r (smt/run-template tname slots (get-in config [:engines :z3]))]
+        (if (= :error (:status r))
+          ;; The engine never ran — a process failure, so the claim is released
+          ;; for another branch to try rather than left locked behind an error.
+          (do (settle-claim! ctx claim :released nil)
+              (fail branch (:error r) :failure {:claim claim :reason (:error r)}))
+          (let [status (cond (:confirmed r) :confirmed
+                             (:agreed r) :refuted
+                             :else :ambiguous)
+                confirmed? (= :confirmed status)
+                artifact {:kind :smt :claim claim
+                          :code (get-in r [:primary :smtlib])
+                          :verdict (get-in r [:primary :verdict])
+                          :witness (get-in r [:primary :model])
+                          :claim-status status :tier :slow}]
+            (settle-claim! ctx claim (if confirmed? :confirmed :failed)
+                           (if confirmed? artifact (:note r)))
+            (merge
+             {:branch (update branch :tiers-seen conj :slow)
+              :category (if confirmed? :success :failure)
+              :progress? confirmed?
+              :result (str (:note r)
+                           "\n  primary   " (name (get-in r [:primary :verdict]))
+                           " (expected " (name (get-in r [:primary :expected])) ")"
+                           "\n  crosscheck " (name (get-in r [:cross :verdict]))
+                           " (expected " (name (get-in r [:cross :expected])) ")"
+                           (when confirmed?
+                             "\n\nBoth encodings agree, so this needs no separate review."))
+              :artifact artifact}
+             (when-not confirmed?
+               {:failure {:claim claim :reason (:note r)}}))))))))
 
 ;; --- planning ---------------------------------------------------------------
 
@@ -332,48 +398,59 @@
 (defmethod run-tool "review" [{:keys [branch] :as ctx}]
   (if-let [m (missing ctx :claim :rationale)]
     (fail branch m)
-    (let [claim (arg ctx :claim)
-          confirmed (state/confirmed-artifacts branch)]
-      (if (empty? confirmed)
-        (fail branch (str "Nothing to review: this branch has no confirmed artifact."
-                          " Verify something first."))
-        (let [artifact (last confirmed)
-              p (str "A harness verified this claim and is about to ship it.\n\n"
-                     "CLAIM: " claim "\n\n"
-                     "ORIGINAL ENCODING (" (name (:kind artifact)) "):\n"
-                     (:code artifact) "\n\n"
-                     "The author says their cross-check is independent because:\n"
-                     (arg ctx :rationale) "\n\n"
-                     "Answer PASS only if the cross-check really is independent in"
-                     " SHAPE — a different formulation of the same question, not the"
-                     " same encoding rewritten — and the claim follows from it."
-                     " Answer FAIL if the two encodings share the assumption that"
-                     " could be wrong."
-                     "\n\n" judge-exemptions)
-              j (judge ctx p)
-              passed (verdict/passed? j)
-              _ (when-let [d (:disagreement j)]
-                  (when (and (:conn ctx) (:run-id ctx))
-                    (journal/note! (:conn ctx) (:run-id ctx)
-                                   :verdict-gap-disagreement
-                                   {:branch-id (:id branch)
-                                    :data {:tool "review"
-                                           :disagreement (name d)}})))]
-          (merge
-           {:branch (-> branch
-                        (assoc :last-review {:passed passed :claim claim
-                                             :rationale (arg ctx :rationale)})
-                        (update :tiers-seen conj :slow))
-            :category (if passed :success :failure)
-            :progress? passed
-            :result (str "Review verdict: " (name (:verdict j))
-                         (when (:reason j) (str " — " (:reason j)))
-                         "\n\n" (or (:text j) "")
-                         (patches-section (:minors j)))}
-           (when-not passed
-             {:failure {:claim claim
-                        :reason (str "review returned " (name (:verdict j))
-                                     (patchable-suffix (:minors j)))}})))))))
+    (if-let [served (claim-dedup ctx (arg ctx :claim))]
+      served
+      (let [claim (arg ctx :claim)
+            confirmed (state/confirmed-artifacts branch)]
+        (if (empty? confirmed)
+          (fail branch (str "Nothing to review: this branch has no confirmed artifact."
+                            " Verify something first."))
+          (let [artifact (last confirmed)
+                p (str "A harness verified this claim and is about to ship it.\n\n"
+                       "CLAIM: " claim "\n\n"
+                       "ORIGINAL ENCODING (" (name (:kind artifact)) "):\n"
+                       (:code artifact) "\n\n"
+                       "The author says their cross-check is independent because:\n"
+                       (arg ctx :rationale) "\n\n"
+                       "Answer PASS only if the cross-check really is independent in"
+                       " SHAPE — a different formulation of the same question, not the"
+                       " same encoding rewritten — and the claim follows from it."
+                       " Answer FAIL if the two encodings share the assumption that"
+                       " could be wrong."
+                       "\n\n" judge-exemptions)
+                j (judge ctx p)
+                passed (verdict/passed? j)
+                _ (when-let [d (:disagreement j)]
+                    (when (and (:conn ctx) (:run-id ctx))
+                      (journal/note! (:conn ctx) (:run-id ctx)
+                                     :verdict-gap-disagreement
+                                     {:branch-id (:id branch)
+                                      :data {:tool "review"
+                                             :disagreement (name d)}})))
+                _ (if (= :unparseable (:verdict j))
+                    ;; The judge never produced a verdict — a process failure,
+                    ;; so the claim is released for another branch to try.
+                    (settle-claim! ctx claim :released nil)
+                    (settle-claim! ctx claim (if passed :confirmed :failed)
+                                   (if passed
+                                     artifact
+                                     (str "review returned " (name (:verdict j))
+                                          (patchable-suffix (:minors j))))))]
+            (merge
+             {:branch (-> branch
+                          (assoc :last-review {:passed passed :claim claim
+                                               :rationale (arg ctx :rationale)})
+                          (update :tiers-seen conj :slow))
+              :category (if passed :success :failure)
+              :progress? passed
+              :result (str "Review verdict: " (name (:verdict j))
+                           (when (:reason j) (str " — " (:reason j)))
+                           "\n\n" (or (:text j) "")
+                           (patches-section (:minors j)))}
+             (when-not passed
+               {:failure {:claim claim
+                          :reason (str "review returned " (name (:verdict j))
+                                       (patchable-suffix (:minors j)))}}))))))))
 
 (defmethod run-tool "audit" [{:keys [branch] :as ctx}]
   (cond
