@@ -983,6 +983,36 @@ journaled; artifacts still re-enter the context every turn. The set is branch
 memory, so a resume can journal one duplicate hit per pair — same accepted
 class as the claim registry.
 
+## Live checks, 2026-08-06 (open-problem probes)
+
+Two runs against `deepseek-v4-flash` probing how the harness behaves when the
+problem itself is beyond reach.
+
+**P != NP, beam 2.** Both branches called `give_up` on turn 1 with accurate
+reasons ("open problem; no contradiction from P = NP is known"). No engine
+call, no fabricated proof, run failed in 17 seconds. The honest exit is the
+path of least resistance, which is the design goal.
+
+**Magic square of squares, beam 2 at 30 turns.** The productive contrast. B2
+was culled at turn 4 after three consecutive failures. B1 confirmed five
+artifacts — the mod-8 obstruction (odd center forces every entry ≡ 1 mod 8,
+even center forces all entries even squares) — in two engines with genuinely
+different shapes: Z3 over the affine parametrization, Prolog exhausting all
+3^9 residue grids. The gate story is the finding. `review` first FAILED the
+cross-check as "the same reduction rewritten" and passed only a
+different-shape re-verification — the independence requirement did real work.
+`done` was refused once because the answer text differed from what the audit
+approved — verbatim matching did real work. But three audits came back
+unparseable (judge hit its token cap mid-reasoning), and the branch reached
+an audit-approved answer exactly at the turn cap: exhausted, one turn short
+of shipping. The residual report carries all five confirmed lemmas. Filed
+vf-42e: unparseable judge verdicts should not cost the branch its turn.
+
+A launch bug surfaced en route: any POST body with multibyte UTF-8 hung the
+server — the vendored adapter judged request completeness by character count
+against a byte-denominated Content-Length. Fixed with a regression test
+(server-test), verified live.
+
 ## Risks
 
 **Blocking pipe reads under Chez threads. Resolved.** Five branches each holding

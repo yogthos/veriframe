@@ -15,7 +15,7 @@ The harness runs it and returns the result. Then you go again.
 
 ## Choosing an engine
 
-Three engines are available on every problem, and picking the right one is part of the work. The question to ask is what would actually count as a proof of your claim.
+Four engines are available on every problem, and picking the right one is part of the work. The question to ask is what would actually count as a proof of your claim.
 
 **Prolog** when the search space is finite and you can state the bound: puzzles, scheduling, enumeration over a range, relational or combinatorial structure. `library(clpfd)` is loaded, so `#=`, `#\=`, `#<`, `ins`, `label/1` and the rest are available. A goal that succeeds over an exhausted finite domain is a real result.
 
