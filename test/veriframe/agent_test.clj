@@ -376,6 +376,120 @@
                                         [{:claim "solved" :code ""
                                           :witness [{:A "knave"}]}])))))
 
+(deftest verdict-parses-established-and-relaxation
+  (testing "ESTABLISHED and RELAXATION lines are read"
+    (let [j (verdict/parse (str "The artifacts cover the cases I checked.\n"
+                                "ESTABLISHED: the sequence converges for n = 1, 2, 3\n"
+                                "RELAXATION: yes\n"
+                                "VERDICT: PASS"))]
+      (is (= "the sequence converges for n = 1, 2, 3" (:established j)))
+      (is (= true (:relaxation? j)))))
+
+  (testing "RELAXATION: no reads as false"
+    (is (= false (:relaxation? (verdict/parse "RELAXATION: no\nVERDICT: PASS")))))
+
+  (testing "absent lines stay absent — back-compat"
+    (let [j (verdict/parse "VERDICT: PASS")]
+      (is (nil? (:established j)))
+      (is (nil? (:relaxation? j)))))
+
+  (testing "several ESTABLISHED lines: the last wins, like verdict markers"
+    (let [j (verdict/parse (str "ESTABLISHED: draft one\n"
+                                "ESTABLISHED: draft two\n"
+                                "VERDICT: PASS"))]
+      (is (= "draft two" (:established j)))))
+
+  (testing "inside <think> is a weighing, not a commitment"
+    (let [j (verdict/parse (str "<think>ESTABLISHED: nope\nRELAXATION: no</think>\n"
+                                "VERDICT: PASS"))]
+      (is (nil? (:established j)))
+      (is (nil? (:relaxation? j)))))
+
+  (testing "an ESTABLISHED line is not a gap declaration"
+    (let [j (verdict/parse "ESTABLISHED: x holds\nVERDICT: PASS")]
+      (is (false? (:gaps-declared j)))
+      (is (nil? (:gaps j))))))
+
+(deftest audit-stores-established-and-relaxation
+  (let [b (merge (state/new-branch {:id "B1" :problem "p"})
+                 {:thesis {:goal "g" :technique "t" :subClaims []}
+                  :artifacts [{:claim "c" :claim-status :confirmed
+                               :kind :smt :tier :confirmed :code "c1"}]})]
+    (with-redefs [llm/chat (fn [& _]
+                             {:content (str "ESTABLISHED: the sequence converges for n = 1, 2, 3\n"
+                                            "RELAXATION: yes\n"
+                                            "VERDICT: PASS")})]
+      (let [la (:last-audit (:branch (tools/run-tool
+                                      {:branch b :turn 1 :tool-name "audit"
+                                       :args {:claim "c" :proposedAnswer "42"}})))]
+        (is (true? (:passed la)))
+        (is (= "the sequence converges for n = 1, 2, 3" (:established la)))
+        (is (true? (:relaxation? la)))))))
+
+(deftest relaxation-is-journalled-as-thesis-drift
+  (let [c (db/connect ":memory:")
+        _ (db/migrate! c)
+        rid (runs/start-run! c {:problem "p" :beam-width 1})
+        b (merge (state/new-branch {:id "B1" :problem "p"})
+                 {:thesis {:goal "the sequence converges for all natural n"
+                           :technique "t" :subClaims []}
+                  :artifacts [{:claim "c" :claim-status :confirmed
+                               :kind :smt :tier :confirmed :code "c1"}]})]
+    (runs/open-branch! c rid {:branch-id "B1" :created-at-turn 0})
+    ;; A passing audit that declares the evidence weaker than the goal records
+    ;; the drift. The thesis is not re-pinned to the restatement — that is the
+    ;; UCLA hole — so the journal entry is the only trace.
+    (with-redefs [llm/chat (fn [& _]
+                             {:content (str "ESTABLISHED: only the checked cases hold\n"
+                                            "RELAXATION: yes\n"
+                                            "VERDICT: PASS")})]
+      (tools/run-tool {:branch b :turn 1 :conn c :run-id rid
+                       :tool-name "audit"
+                       :args {:claim "c" :proposedAnswer "42"}}))
+    (let [evs (filter #(= "thesis-drift" (:kind %))
+                      (journal/events-since c rid 0))]
+      (is (= 1 (count evs)) "one drift entry per relaxation audit")
+      (is (str/includes? (:data (first evs))
+                         "the sequence converges for all natural n"))
+      (is (str/includes? (:data (first evs)) "only the checked cases hold")))))
+
+(deftest done-refuses-a-full-claim-answer-on-a-relaxation-audit
+  ;; The audit passed but declared the evidence a weakening of the thesis; the
+  ;; answer still asserts the full claim. The done gate refuses, naming the
+  ;; drift: what the thesis asked vs what the evidence establishes.
+  (let [artifact {:claim "the sequence converges for the checked values n = 1, 2, 3"
+                  :claim-status :confirmed :kind :smt :tier :slow :code "c1"}
+        b (branch-with :thesis {:goal "the sequence converges for all natural n"
+                                :technique "t" :subClaims []}
+                       :artifacts [artifact]
+                       :last-audit {:passed true
+                                    :proposed-answer "the sequence converges for every natural number n, with limit 2"
+                                    :established "the sequence converges for the checked values n = 1, 2, 3"
+                                    :relaxation? true})]
+    (let [r (tools/run-tool {:branch b :turn 1 :tool-name "done"
+                             :args {:answer "the sequence converges for every natural number n, with limit 2"}})]
+      (is (= :failure (:category r)))
+      (is (str/includes? (:result r) "relaxation"))
+      (is (str/includes? (:result r) "for all natural n")
+          "the refusal names what the thesis asked")
+      (is (str/includes? (:result r) "checked values n = 1, 2, 3")
+          "and what the audit says the evidence establishes"))))
+
+(deftest done-accepts-an-answer-that-states-the-established-claim
+  (let [artifact {:claim "the sequence converges for the checked values n = 1, 2, 3"
+                  :claim-status :confirmed :kind :smt :tier :slow :code "c1"}
+        b (branch-with :thesis {:goal "the sequence converges for all natural n"
+                                :technique "t" :subClaims []}
+                       :artifacts [artifact]
+                       :last-audit {:passed true
+                                    :proposed-answer "the sequence converges for the checked values n = 1, 2, 3"
+                                    :established "the sequence converges for the checked values n = 1, 2, 3"
+                                    :relaxation? true})]
+    (let [r (tools/run-tool {:branch b :turn 1 :tool-name "done"
+                             :args {:answer "the sequence converges for the checked values n = 1, 2, 3"}})]
+      (is (= :done (:status (:branch r))))
+      (is (= :success (:category r))))))
+
 (deftest free-variables-detection
   (testing "a constant pinned to a literal is not free"
     (is (= [] (tools/free-variables "(declare-const a Int)(assert (= a 5))"))))

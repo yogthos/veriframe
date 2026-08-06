@@ -38,7 +38,19 @@
   contradicts its own declarations is recorded in `:disagreement`, never
   repaired: UCLA's FirstProof scorer_v4 converged on the same fail-closed
   enum and added these checks, with the verdict winning over the declarations
-  in every inconsistency direction."
+  in every inconsistency direction.
+
+  A judge may also declare what the evidence actually establishes
+  (`ESTABLISHED: <text>` lines) and whether that is strictly weaker than the
+  goal (`RELAXATION: yes|no` lines). The parser reads both but the harness
+  never acts on them by re-pinning the claim: UCLA's FirstProof restates the
+  problem each round and re-pins the target to that restatement, so the goal
+  monotonically shrinks and a proof gets accepted against a weaker claim than
+  it started with. This harness deliberately does not copy that — the thesis
+  stays pinned, and drift is recorded, never adopted. The anti-conflation
+  rule keeps the two axes separate: a FAILED attempt at the full theorem is
+  not a relaxation. RELAXATION: yes means the evidence establishes something,
+  just something weaker; evidence that establishes nothing is FAIL with gaps."
   (:require [clojure.string :as str]))
 
 (defn- validate-answer-set!
@@ -138,6 +150,38 @@
                :patch (str/trim (nth f 2))})))
         (str/split-lines text)))
 
+(defn- established-lines
+  "The text after `ESTABLISHED:` on each line, in order.
+
+  The judge's restatement of what the evidence actually establishes — the
+  claim-evidence audit is only as honest as its answer to \"and what did you
+  prove?\". Several lines means drafts; the LAST wins, the same rule the
+  verdict markers earned. Line-anchored and case-insensitive, post
+  strip-reasoning: prose that mentions an established result is not a
+  declaration, and one weighed inside <think> is not a commitment."
+  [text]
+  (keep (fn [line]
+          (when-let [m (re-matches #"(?i)ESTABLISHED\s*:\s*(.+)" (str/trim line))]
+            (str/trim (second m))))
+        (str/split-lines text)))
+
+(defn- relaxation-value
+  "The boolean from `RELAXATION: yes|no` lines, or nil when there is none.
+
+  `yes` means the ESTABLISHED claim is strictly weaker than what was asked:
+  the evidence establishes something, just something less. A failed attempt
+  at the full theorem is not a relaxation — that is the anti-conflation rule,
+  and it is why the parser reads this as a declaration instead of inferring
+  it from a verdict. The value must be exactly yes or no, line-anchored and
+  case-insensitive; several lines means drafts, and the last wins."
+  [text]
+  (when-let [v (last (keep (fn [line]
+                             (when-let [m (re-matches #"(?i)RELAXATION\s*:\s*(yes|no)\s*"
+                                                      (str/trim line))]
+                               (second m)))
+                           (str/split-lines text)))]
+    (= "yes" (str/lower-case v))))
+
 (defn- gap-summary
   "What the judge declared about gaps: {:gaps [...] :declared? bool}.
 
@@ -175,8 +219,9 @@
   :drafts n, :gaps-declared bool, and — when the judge engaged with gaps —
   :gaps [...], plus :minors [...] when it carried fixes for patchable
   defects, and :disagreement when the verdict contradicts its own
-  declarations}. Anything other than :pass or :fail means the gate does not
-  open.
+  declarations, plus :established (last ESTABLISHED line wins) and
+  :relaxation? when the judge declared them}. Anything other than :pass or
+  :fail means the gate does not open.
 
   Two things happen before matching, and both were forced by a live run in
   which every single review came back :ambiguous.
@@ -211,6 +256,8 @@
          distinct-bares (distinct bares)
          {:keys [gaps declared?]} (gap-summary text)
          minors (minor-lines text)
+         established (established-lines text)
+         relaxation (relaxation-value text)
          result (cond
                   (seq markers)
                   (cond-> {:verdict (last markers) :via :marker}
@@ -243,6 +290,10 @@
      (cond-> (assoc result :gaps-declared declared?)
        declared? (assoc :gaps gaps)
        (seq minors) (assoc :minors minors)
+       (seq established) (assoc :established (last established))
+       ;; `some?`, not truthiness: RELAXATION: no parses to false and must
+       ;; still land in the result — absent and declared-no are different.
+       (some? relaxation) (assoc :relaxation? relaxation)
        disagreement (assoc :disagreement disagreement)))))
 
 (defn passed?

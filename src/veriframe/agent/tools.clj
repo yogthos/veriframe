@@ -408,6 +408,18 @@
                  " artifact covers, or if the thesis and the evidence are about"
                  " different things. Answer PASS only if the evidence establishes"
                  " the answer as stated."
+                 "\n\nThen declare what the evidence actually establishes. On a line"
+                 " reading `ESTABLISHED: <text>`, restate it fully self-contained —"
+                 " no anaphora. Never write \"the claim\", \"the problem above\", or"
+                 " \"as stated\": the ESTABLISHED line must stand alone with the"
+                 " THESIS goal and the artifacts both in the room."
+                 "\nOn a line reading `RELAXATION: yes` or `RELAXATION: no`, declare"
+                 " whether that ESTABLISHED claim is strictly weaker than the THESIS"
+                 " goal: fewer cases, extra hypotheses, a weaker bound, existence"
+                 " where a witness was asked. Evidence that fails to establish the"
+                 " full goal is a FAIL with gaps, not a relaxation — RELAXATION: yes"
+                 " is only for evidence that does establish something, just something"
+                 " weaker."
                  "\n\n" judge-exemptions)
           j (judge ctx p)
           passed (verdict/passed? j)
@@ -417,9 +429,22 @@
                                :verdict-gap-disagreement
                                {:branch-id (:id branch)
                                 :data {:tool "audit"
-                                       :disagreement (name d)}})))]
+                                       :disagreement (name d)}})))
+          _ (when (and passed (:relaxation? j))
+              (when (and (:conn ctx) (:run-id ctx))
+                ;; The thesis is NOT re-pinned to this restatement — that is
+                ;; UCLA's shrinking-claim hole, and drift is recorded, never
+                ;; adopted.
+                (journal/note! (:conn ctx) (:run-id ctx)
+                               :thesis-drift
+                               {:branch-id (:id branch)
+                                :data {:thesis-goal (get-in branch [:thesis :goal])
+                                       :established (:established j)}})))]
       (merge
-       {:branch (assoc branch :last-audit {:passed passed :proposed-answer answer})
+       {:branch (assoc branch :last-audit
+                      {:passed passed :proposed-answer answer
+                       :established (:established j)
+                       :relaxation? (:relaxation? j)})
         :category (if passed :success :failure)
         :progress? false
         :result (str "Audit verdict: " (name (:verdict j))
@@ -539,6 +564,22 @@
 
                   (and review (not (:passed review)) (not template-confirmed?))
                   "The last review FAILED. Resolve the disagreement before shipping."
+
+                  (and audit (:relaxation? audit)
+                       (seq (uncovered-tokens
+                             answer
+                             [{:claim (or (:established audit) "")
+                               :code "" :witness nil}])))
+                  (str "The audit flagged this answer as a relaxation of the thesis."
+                       "\n\nThe thesis asked for: "
+                       (get-in branch [:thesis :goal])
+                       "\nThe evidence establishes: "
+                       (or (:established audit) "nothing stated")
+                       "\n\nYour answer asserts the full thesis claim, but the audit"
+                       " itself says the evidence only establishes the weaker claim"
+                       " above. Either state the answer as what is established, or"
+                       " confirm evidence that establishes the full thesis and"
+                       " re-run `audit`.")
 
                   (seq uncovered)
                   (str "Your answer asserts things no confirmed artifact supports: "
