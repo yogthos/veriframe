@@ -54,7 +54,10 @@
   - last-review / last-audit are branch memory; the done gate re-requires
     review/audit after a resume rather than trusting pre-crash state.
   - The claim registry is run-scoped memory; resume starts it empty, safe
-    because the worst case is one duplicate slow verification."
+    because the worst case is one duplicate slow verification.
+  - :shared-served (which shared artifacts a branch was already told about)
+    is branch memory; resume starts it empty, so each artifact-branch pair
+    can journal one duplicate shared-artifact-hit after a resume."
   (:require [clojure.data.json :as json]
             [veriframe.agent.beam :as beam]
             [veriframe.agent.claims :as claims]

@@ -70,7 +70,7 @@
        []
        (try
          (db/fetch conn
-                     ["SELECT sa.branch_id, sa.turn, sa.kind, sa.tier, sa.claim, sa.code
+                     ["SELECT sa.id, sa.branch_id, sa.turn, sa.kind, sa.tier, sa.claim, sa.code
                        FROM shared_artifacts_fts fts
                        JOIN shared_artifacts sa ON sa.id = fts.rowid
                        WHERE shared_artifacts_fts MATCH ? AND sa.run_id = ?
@@ -81,7 +81,7 @@
 (defn recent
   ([conn run-id] (recent conn run-id 10))
   ([conn run-id limit]
-   (db/fetch conn ["SELECT branch_id, turn, kind, tier, claim, code FROM shared_artifacts
+   (db/fetch conn ["SELECT id, branch_id, turn, kind, tier, claim, code FROM shared_artifacts
                       WHERE run_id = ? ORDER BY id DESC LIMIT ?" run-id limit])))
 
 (defn render

@@ -718,7 +718,7 @@
                                 :claim "own lemma about sidon sets" :code ""})
       (artifacts/record! c rid {:branch-id "B2" :turn 2 :kind :prolog :tier :confirmed
                                 :claim "cross-branch lemma about sidon sets" :code ""})
-      (let [block (#'aloop/context-block c rid b1 "sidon sets" true)]
+      (let [{:keys [block]} (#'aloop/context-block c rid b1 "sidon sets" true)]
         (is (str/includes? block "cross-branch lemma"))
         (is (not (str/includes? block "own lemma"))
             "a branch re-reading its own lemmas is noise"))
@@ -728,9 +728,30 @@
           (is (some? ev))
           (is (str/includes? (:data ev) "B2"))))
       (testing "flag off, shared log invisible"
-        (let [block (#'aloop/context-block c rid b1 "sidon sets" false)]
+        (let [{:keys [block]} (#'aloop/context-block c rid b1 "sidon sets" false)]
           (is (or (nil? block)
                   (not (str/includes? block "cross-branch lemma")))))))))
+
+(deftest shared-artifact-hit-journals-once-per-pair
+  ;; A 28-turn run produced 86 hit events for a 15-row pool: the block
+  ;; re-renders every turn, so per-serving journaling counted turns, not
+  ;; sharing. Only the FIRST serving of an artifact to a branch is journaled;
+  ;; the artifact itself keeps re-entering the context.
+  (with-db [c]
+    (let [rid (runs/start-run! c {:problem "p"})
+          hits #(count (filter (fn [e] (= "shared-artifact-hit" (:kind e)))
+                               (journal/events-since c rid 0)))]
+      (artifacts/record! c rid {:branch-id "B2" :turn 1 :kind :smt :tier :confirmed
+                                :claim "shared lemma about sidon sets" :code ""})
+      (let [{b1 :branch} (#'aloop/context-block c rid (branch-with :id "B1")
+                                                "sidon sets" true)
+            {:keys [block]} (#'aloop/context-block c rid b1 "sidon sets" true)]
+        (is (= 1 (hits)) "re-serving the same artifact journals nothing new")
+        (is (str/includes? block "shared lemma")
+            "dedup is for the journal only; the artifact still re-enters context"))
+      (testing "another branch is a new pair and gets its own hit"
+        (#'aloop/context-block c rid (branch-with :id "B3") "sidon sets" true)
+        (is (= 2 (hits)))))))
 
 (deftest events-are-readable-by-cursor
   (with-db [c]

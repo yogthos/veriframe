@@ -977,8 +977,11 @@ branch is busy complying. It is now guarded (`:max-emergency-reviews`, fires
 once). And a hit event is journaled every turn an artifact is re-served into a
 context, so one 28-turn run produced 86 of them; correct but chatty, and
 journaling only first-time artifact-to-branch servings would make the count
-directly interpretable. Left as-is for now — the count still answers "did
-sharing happen", just not "how much distinct sharing".
+directly interpretable. Fixed (vf-emt): the branch now carries the served
+artifact ids and only the first serving of each artifact to each branch is
+journaled; artifacts still re-enter the context every turn. The set is branch
+memory, so a resume can journal one duplicate hit per pair — same accepted
+class as the claim registry.
 
 ## Risks
 
