@@ -54,6 +54,15 @@
  {:value 1 :kind :re-fire-guard :capability-tunable? false
   :doc "The milestone fires once per branch, on the first confirmation."}
 
+ :max-emergency-reviews
+ {:value 1 :kind :re-fire-guard :capability-tunable? false
+  :doc "The emergency review fires once per branch. It was the one steer gate
+        with no guard, and a live knights-3 run (2026-08-06) showed why that
+        matters: its precondition held across three consecutive boundaries and
+        it re-fired on every one, all predictions unmet — the exact
+        happened-versus-already-reacted blindness re-fire guards exist for.
+        Once: the steer either lands or the cull proceeds on its own."}
+
  :max-tier-escalations
  {:value 2 :kind :re-fire-guard :capability-tunable? false
   :doc "How often the fast-green-only escalation may fire."}

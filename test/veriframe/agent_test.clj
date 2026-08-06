@@ -314,7 +314,22 @@
     (let [b (branch-with :artifacts [{:claim "c" :claim-status :confirmed :turn 1}]
                          :gate-history [{:gate :milestone :turn 1}])]
       (is (not-any? #{:milestone} (map :gate (arbiter/eligible {:branch b
-                                                                :max-turns 40})))))))
+                                                                :max-turns 40}))))))
+
+  (testing "the emergency review is guarded like every other steer"
+    ;; A live knights-3 run re-fired it on three consecutive boundaries, all
+    ;; predictions unmet: its precondition persists while the branch is busy
+    ;; complying. It was the one steer gate with no re-fire guard.
+    (let [b (branch-with :consecutive-failures 3
+                         :turns (vec (repeat 4 {}))
+                         :artifacts [{:claim "c" :claim-status :confirmed :turn 3}])]
+      (is (some #{:emergency-review} (map :gate (arbiter/eligible {:branch b
+                                                                   :max-turns 40})))
+          "fires while at the cull threshold holding a recent confirmation")
+      (let [spent (assoc b :gate-history [{:gate :emergency-review :turn 4}])]
+        (is (not-any? #{:emergency-review}
+                      (map :gate (arbiter/eligible {:branch spent :max-turns 40})))
+            "and once is all it gets")))))
 
 (deftest wind-down-steers-the-branch-to-ship
   (testing "fires at and past the wind-down fraction of the turn cap"

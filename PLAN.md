@@ -949,6 +949,37 @@ that calls the recorder directly passes forever while measuring nothing. A
 one-line check that every `record-*` in `journal.clj` has a caller outside its own
 namespace and tests would have caught it.
 
+## Live checks, 2026-08-06 (UCLA-findings epic, vf-1bx)
+
+Two live runs against `deepseek-v4-flash` after the epic landed, read the only
+way n=1 permits: did the mechanism fire when it should and stay silent
+otherwise.
+
+**Wind-down rung.** Provocation: `sidon-40-in-100` at `max-turns 8`. The rung
+fired exactly once, at turn 7 (the first boundary past 0.85×8), its prediction
+settled `met` at turn 8, and the run exhausted rather than shipping the
+nonexistent set — the false-positive discipline held under budget pressure.
+Control: `knights-3` at `max-turns 40` shipped at turn 29 with zero wind-down
+firings. Both sides of the probe contract hold.
+
+**Shared-artifact flag.** `sweep-widths` on knights-3, widths [1 2 4] at 12
+turns per branch, flag on then off. On: 15 artifacts entered the pool and 100
+`shared-artifact-hit` events were journaled across the width-2 and width-4
+runs; both shipped. Off: zero events, zero pool rows, arms comparable — the
+flag gates both the write and the read side. Width-2 shipped at 12 branch-turns
+on versus 14 off, which is under the noise floor and is not a result. The
+width question stays open; the instrument now demonstrably works.
+
+Two findings came out of the runs. `emergency-review` re-fired on three
+consecutive boundaries of the control run, every prediction unmet — it was the
+one steer gate with no re-fire guard, and its precondition persists while the
+branch is busy complying. It is now guarded (`:max-emergency-reviews`, fires
+once). And a hit event is journaled every turn an artifact is re-served into a
+context, so one 28-turn run produced 86 of them; correct but chatty, and
+journaling only first-time artifact-to-branch servings would make the count
+directly interpretable. Left as-is for now — the count still answers "did
+sharing happen", just not "how much distinct sharing".
+
 ## Risks
 
 **Blocking pipe reads under Chez threads. Resolved.** Five branches each holding

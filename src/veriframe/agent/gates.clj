@@ -129,10 +129,12 @@
 
    {:gate :emergency-review
     :priority 4
-    :budget nil
+    :budget :max-emergency-reviews
     :doc "At the cull threshold but holding a recent confirmation. Rather than
           culling the branch that produced the most, tell it to ship what it
-          has or change approach."
+          has or change approach. Guarded since a live run re-fired it on
+          three consecutive boundaries: the precondition persists while the
+          branch is busy complying, which is what re-fire guards are for."
     :when (fn [{:keys [branch]}]
             (and (>= (:consecutive-failures branch) (threshold :cull-threshold))
                  (state/confirmed-in-last branch (threshold :cull-recent-window))))
