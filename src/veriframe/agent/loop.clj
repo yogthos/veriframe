@@ -53,11 +53,18 @@
   (-> (slurp (io/resource "prompts/system.md"))
       (str/replace "{{templates}}" (templates/list-templates))))
 
+(defn judge-exemptions
+  "The DO-NOT-FLAG list shipped to the audit and review judges. A var rather
+  than a slurp inline so the digest can be attributable to it; re-read per
+  digest, which is per run."
+  []
+  (slurp (io/resource "prompts/judge-exemptions.md")))
+
 (defn prompt-digest
   "A cheap fingerprint of the prompt and gate set a run used. AHE component
   observability: a pass-rate change should be attributable to a file."
   []
-  (str (hash [(system-prompt) (gates/config)])))
+  (str (hash [(system-prompt) (gates/config) (judge-exemptions)])))
 
 (defn- truncate [s]
   (let [s (str s)]

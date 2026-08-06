@@ -28,7 +28,8 @@
   :category and :progress? are separate on purpose. A tool call can succeed and
   advance nothing, and a model making varied, well-formed, useless calls trips
   no error-keyed guard while burning the whole run."
-  (:require [clojure.string :as str]
+  (:require [clojure.java.io :as io]
+            [clojure.string :as str]
             [veriframe.agent.state :as state]
             [veriframe.agent.verdict :as verdict]
             [veriframe.engine.lean-pool :as lean-pool]
@@ -301,6 +302,13 @@
 
 ;; --- sub-LLM judgements -----------------------------------------------------
 
+(def ^:private judge-exemptions
+  "DO-NOT-FLAG list for the audit and review judges (UCLA FirstProof finding:
+  a judge with no exemption list drowns real gaps in nitpicks and burns the
+  done-block budget on non-gaps). Loaded once at namespace load, like the
+  other prompt files."
+  (slurp (io/resource "prompts/judge-exemptions.md")))
+
 (defn- judge
   "Ask the model a yes-or-no question and read the answer through the
   constrained parser. Any failure to answer cleanly fails closed."
@@ -340,7 +348,8 @@
                      " SHAPE — a different formulation of the same question, not the"
                      " same encoding rewritten — and the claim follows from it."
                      " Answer FAIL if the two encodings share the assumption that"
-                     " could be wrong.")
+                     " could be wrong."
+                     "\n\n" judge-exemptions)
               j (judge ctx p)
               passed (verdict/passed? j)
               _ (when-let [d (:disagreement j)]
@@ -398,7 +407,8 @@
                  " stated universally, if the proposed answer asserts anything no"
                  " artifact covers, or if the thesis and the evidence are about"
                  " different things. Answer PASS only if the evidence establishes"
-                 " the answer as stated.")
+                 " the answer as stated."
+                 "\n\n" judge-exemptions)
           j (judge ctx p)
           passed (verdict/passed? j)
           _ (when-let [d (:disagreement j)]

@@ -22,6 +22,7 @@
             [veriframe.agent.consensus :as consensus]
             [veriframe.engine.prolog]
             [veriframe.agent.gates :as gates]
+            [veriframe.agent.loop :as aloop]
             [veriframe.agent.state :as state]
             [veriframe.agent.tools :as tools]
             [veriframe.agent.verdict :as verdict]
@@ -214,6 +215,38 @@
         (is (str/includes? (:result r) "PATCHES:"))
         (is (str/includes? (:result r) "bind X to a witness"))
         (is (str/includes? (get-in r [:failure :reason]) "1 patchable"))))))
+
+(deftest judges-receive-the-exemption-list
+  ;; The DO-NOT-FLAG list only works if the judge actually sees it, and the
+  ;; never-exempt section is what keeps it from reading as a relaxation. Both
+  ;; must reach both judges or the exemption is a file, not a mechanism.
+  (let [b (merge (state/new-branch {:id "B1" :problem "p"})
+                 {:thesis {:goal "g" :technique "t" :subClaims []}
+                  :artifacts [{:claim "c" :claim-status :confirmed
+                               :kind :smt :tier :confirmed :code "c1"}]})
+        prompts (atom [])]
+    (with-redefs [llm/chat (fn [_ _ msgs _]
+                             (swap! prompts conj
+                                    (:content (last msgs)))
+                             {:content "VERDICT: FAIL"})]
+      (tools/run-tool {:branch b :turn 1 :tool-name "audit"
+                       :args {:claim "c" :proposedAnswer "42"}})
+      (tools/run-tool {:branch b :turn 1 :tool-name "review"
+                       :args {:claim "c" :rationale "different encoding"}}))
+    (is (= 2 (count @prompts)))
+    (doseq [p @prompts]
+      (is (str/includes? p "what is not a gap")
+          "the exemption list reaches the judge")
+      (is (str/includes? p "Never exempt")
+          "and so does the section that keeps it from being a relaxation")
+      (is (str/includes? p "universal claim verified only at instances")))))
+
+(deftest prompt-digest-covers-the-exemption-list
+  ;; Prompts are files so a pass-rate change localizes to one file; that only
+  ;; holds if every judge-facing file participates in the digest.
+  (is (not= (aloop/prompt-digest)
+            (with-redefs [aloop/judge-exemptions (fn [] "changed")]
+              (aloop/prompt-digest)))))
 
 ;; --- gates and the arbiter --------------------------------------------------
 
