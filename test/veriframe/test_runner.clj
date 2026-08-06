@@ -18,6 +18,7 @@
             [veriframe.llm-test]
             [veriframe.pool-test]
             [veriframe.prompt-test]
+            [veriframe.server-test]
             [veriframe.store-test]))
 
 (def namespaces
@@ -26,6 +27,7 @@
     veriframe.agent-test
     veriframe.pool-test
     veriframe.prompt-test
+    veriframe.server-test
     veriframe.engine-test])
 
 (defn run []

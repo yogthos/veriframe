@@ -90,6 +90,15 @@
                                   (= \return (nth hdrs j)) (= \newline (nth hdrs j))) j (recur (inc j))))]
         (or (parse-long (str/trim (subs hdrs s e))) 0)))))
 
+;; VERIFRAME: Content-Length is octets, but the accumulator is a decoded
+;; string, so `count` on it is characters. Judging completeness by characters
+;; left any body with multibyte UTF-8 waiting forever for bytes that had
+;; already arrived. Headers are ASCII, so the header/body split index is safe.
+(defn- request-complete? [acc]
+  (when-let [hdr-end (str/index-of acc "\r\n\r\n")]
+    (>= (alength (.getBytes (subs acc (+ hdr-end 4)) "UTF-8"))
+        (content-length acc hdr-end))))
+
 ;; read a full request (headers + Content-Length body) into a string, or nil.
 (defn- read-request [conn]
   (let [buf (ffi/alloc bufsize)]
@@ -98,12 +107,8 @@
         (let [n (c-recv conn buf bufsize 0)]
           (if (<= n 0)
             (when (pos? (count acc)) acc)
-            (let [acc (str acc (ffi/read-bytes buf n))
-                  hdr-end (str/index-of acc "\r\n\r\n")]
-              (cond
-                (nil? hdr-end) (recur acc)
-                (>= (- (count acc) (+ hdr-end 4)) (content-length acc hdr-end)) acc
-                :else (recur acc))))))
+            (let [acc (str acc (ffi/read-bytes buf n))]
+              (if (request-complete? acc) acc (recur acc))))))
       (finally (ffi/free buf)))))
 
 ;; --- request -> Ring map ----------------------------------------------------
