@@ -19,6 +19,7 @@
             [clojure.test :refer [deftest testing is are]]
             [veriframe.agent.arbiter :as arbiter]
             [veriframe.agent.beam :as beam]
+            [veriframe.agent.consensus :as consensus]
             [veriframe.engine.prolog]
             [veriframe.agent.gates :as gates]
             [veriframe.agent.state :as state]
@@ -613,3 +614,112 @@
   (is (empty? (tools/answer-tokens "verified with Lean 4 and Mathlib")))
   (is (= ["4"] (tools/answer-tokens "the answer is 4"))
       "a bare number is still a claim"))
+
+;; --- consensus: judge-not-vote ----------------------------------------------
+
+(deftest single-report-passes-through-without-a-judge
+  ;; One verdict is not an aggregation. No judge call, no augmentation: the
+  ;; report is the answer, and the disagreement keys stay absent.
+  (let [report {:verdict :pass :gaps nil :text "verified" :source "review"}
+        called? (atom false)
+        judge (fn [& _] (reset! called? true) {:verdict :fail})]
+    (is (= report (consensus/judge-reports [report] judge)))
+    (is (= report (consensus/judge-reports [report]))
+        "no judge fn is fine with a single report")
+    (is (false? @called?) "the judge is never invoked for one report")))
+
+(deftest agreeing-reports-still-go-through-the-judge
+  ;; Agreement is not an auto-pass. Two PASS reports with identical gap lists
+  ;; are aggregated like anything else, and the judge may still reject the
+  ;; claim — the agreement is evidence the judge weighs, not a decision.
+  (let [r1 {:verdict :pass :gaps nil :text "a" :source "A"}
+        r2 {:verdict :pass :gaps nil :text "b" :source "B"}
+        seen (atom nil)
+        judge (fn [reports disagreements]
+                (reset! seen [reports disagreements])
+                {:verdict :fail :text "both encodings share the culled assumption"})]
+    (let [result (consensus/judge-reports [r1 r2] judge)]
+      (is (some? @seen) "two agreeing reports still invoke the judge")
+      (is (= :fail (:verdict result)) "the judge's rejection stands over agreement")
+      (is (empty? (:disagreements result)) "no report is party to a disagreement"))))
+
+(deftest conflicting-reports-hand-the-disagreement-set-to-the-judge
+  (let [r1 {:verdict :pass :gaps nil :text "a" :source "A"}
+        r2 {:verdict :fail :gaps ["the witness leaves X unbound"]
+            :text "b" :source "B"}
+        seen (atom nil)
+        judge (fn [reports disagreements]
+                (reset! seen [reports disagreements])
+                {:verdict :pass :text "the gap is addressed elsewhere"})]
+    (let [result (consensus/judge-reports [r1 r2] judge)]
+      (is (= :pass (:verdict result)) "the judge's answer wins the 1-1 split")
+      (is (= #{r1 r2} (:disagreements result)) "both reports are party to the conflict")
+      (is (= #{r1 r2} (second @seen)) "the disagreement set reaches the judge")
+      (is (= "the gap is addressed elsewhere" (:reasoning result))
+          "the judge's reasoning is carried on the result"))))
+
+(deftest aggregating-two-reports-without-a-judge-throws
+  ;; Counting verdicts is the vote. With two or more reports the judge fn is
+  ;; required, so the majority-count path is not merely discouraged: it is
+  ;; unrepresentable.
+  (is (thrown? clojure.lang.ExceptionInfo
+               (consensus/judge-reports [{:verdict :pass :source "A"}
+                                         {:verdict :fail :source "B"}])))
+  (is (thrown? clojure.lang.ExceptionInfo
+               (consensus/judge-reports [{:verdict :pass :source "A"}
+                                         {:verdict :fail :source "B"}] nil))))
+
+(deftest the-judge-siding-with-the-one-beats-the-three
+  ;; The anti-vote property, stated as a name: 3 reports say PASS, 1 says FAIL,
+  ;; the judge reads the evidence and sides with the 1. Majority counting would
+  ;; hand the claim PASS; the contract hands the claim to the judge.
+  (let [pass {:verdict :pass :gaps nil :text "looks fine" :source "P"}
+        fail {:verdict :fail :gaps ["counterexample at x=3"]
+              :text "found one" :source "F"}
+        judge (fn [& _]
+                {:verdict :fail
+                 :text "the located counterexample refutes the claim"})]
+    (let [result (consensus/judge-reports [pass pass pass fail] judge)]
+      (is (= :fail (:verdict result))
+          "the judge's verdict wins over a 3-1 vote")
+      (is (= #{pass fail} (:disagreements result))
+          "every report in a split is party to the disagreement"))))
+
+(deftest engine-agreement-counts-distinct-engines-not-artifact-rows
+  ;; Counting is legitimate only for independent engine confirmations. Two Z3
+  ;; artifacts for the same claim are one confirmation, not two; Z3 plus Prolog
+  ;; is two. Claim grouping is spelling-normalized.
+  (let [artifacts [{:claim "the sidon set exists" :kind :smt :tier :fast}
+                   {:claim "the sidon set exists" :kind :smt :tier :slow}
+                   {:claim "The Sidon set exists" :kind :prolog :tier :slow}
+                   {:claim "there is no 3-coloring" :kind :prolog :tier :slow}]]
+    (let [agreement (consensus/engine-agreement artifacts)]
+      (is (= 2 (get agreement "the sidon set exists"))
+          "SMT and Prolog confirm the claim: 2 distinct kinds")
+      (is (= 1 (get agreement "there is no 3 coloring"))
+          "one engine kind counts once, no matter how many artifacts")
+      (is (= 2 (count agreement)) "claims are grouped by normalized text"))))
+
+(deftest consensus-judgement-is-journalled-when-conn-and-run-id-are-supplied
+  (let [c (db/connect ":memory:")
+        _ (db/migrate! c)
+        rid (runs/start-run! c {:problem "p" :beam-width 1})
+        r1 {:verdict :pass :gaps nil :text "a" :source "A"}
+        r2 {:verdict :fail :gaps ["the witness leaves X unbound"]
+            :text "b" :source "B"}
+        judge (fn [& _]
+                {:verdict :pass
+                 :text "A is right: the unbound X is bound by the witness"})]
+    (consensus/judge-reports [r1 r2] judge c rid)
+    (let [evs (filter #(= "consensus-judgement" (:kind %))
+                      (journal/events-since c rid 0))
+          ev (first evs)]
+      (is (= 1 (count evs)) "one judgement event per aggregation")
+      (is (str/includes? (:data ev) "\"disagreements\""))
+      (is (str/includes? (:data ev) "\"reasoning\""))
+      (is (str/includes? (:data ev)
+                         "A is right: the unbound X is bound by the witness")
+          "the judge's reasoning is journalled")
+      (is (str/includes? (:data ev) "\"B\"") "the disagreeing report is named"))
+    ;; nil conn skips the journal silently — the guard idiom from tools.clj.
+    (is (= :pass (:verdict (consensus/judge-reports [r1 r2] judge nil nil))))))
