@@ -251,6 +251,26 @@
   (when (:octave b) (try (octave/dispose! (:octave b)) (catch Throwable _ nil)))
   (when (:prolog b) (try (prolog/dispose! (:prolog b)) (catch Throwable _ nil))))
 
+(defn select-done-branch
+  "The winner among branches that landed :final-answer this round.
+
+  The choice is mechanical — state/rank-finished over the engine-audited
+  evidence each branch carries — so no model sits in the path where UCLA
+  needed an LLM selector. When more than one branch is eligible the choice
+  is journalled with each candidate's id and ranking key plus the winner,
+  so it is auditable from the run record. A single candidate is today's
+  behavior and journals nothing."
+  [{:keys [conn run-id]} candidates]
+  (let [winner (first (state/rank-finished candidates))]
+    (when (and conn run-id (< 1 (count candidates)))
+      (journal/note! conn run-id :candidate-selection
+                     {:data {:candidates (mapv (fn [b]
+                                                 {:branch-id (:id b)
+                                                  :key (state/finished-key b)})
+                                               candidates)
+                             :winner (:id winner)}}))
+    winner))
+
 (defn run!
   "Run a beam to completion.
 
@@ -290,7 +310,9 @@
         ;; opening them up front.
         (reset! live-branches branches)
         (let [active (filterv state/active? branches)
-              done-branch (first (filter :final-answer branches))]
+              done-candidates (filterv :final-answer branches)
+              multi-candidate? (< 1 (count done-candidates))
+              done-branch (select-done-branch ctx done-candidates)]
           (cond
             ;; Checked at the top of every round. An abort must not need the
             ;; run's cooperation, so it is a flag the scheduler reads rather
@@ -303,7 +325,12 @@
             (do (doseq [b branches
                         :when (and (state/active? b) (not= (:id b) (:id done-branch)))]
                   (runs/close-branch! conn run-id (:id b) :abandoned
-                                      (str "superseded by " (:id done-branch) " done()")))
+                                      (str (if multi-candidate?
+                                             "outranked by "
+                                             "superseded by ")
+                                           (:id done-branch)
+                                           (when-not multi-candidate?
+                                             " done()"))))
                 (runs/finish-run! conn run-id :completed (:final-answer done-branch))
                 {:status :completed :answer (:final-answer done-branch)
                  :run-id run-id :branches branches})

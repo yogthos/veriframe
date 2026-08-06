@@ -15,7 +15,8 @@
   form \"this reduces turns\" is unmeasurable at an affordable sample size,
   while \"the mechanism fired when it should and stayed silent otherwise\" is
   checkable deterministically."
-  (:require [clojure.string :as str]
+  (:require [clojure.data.json :as json]
+            [clojure.string :as str]
             [clojure.test :refer [deftest testing is are]]
             [veriframe.agent.arbiter :as arbiter]
             [veriframe.agent.beam :as beam]
@@ -28,6 +29,7 @@
             [veriframe.agent.tools :as tools]
             [veriframe.agent.verdict :as verdict]
             [veriframe.llm.client :as llm]
+            [clojure.data.json :as json]
             [veriframe.store.artifacts :as artifacts]
             [veriframe.store.db :as db]
             [veriframe.store.failures :as failures]
@@ -1124,3 +1126,105 @@
       (is (str/includes? (:data ev) "\"B\"") "the disagreeing report is named"))
     ;; nil conn skips the journal silently — the guard idiom from tools.clj.
     (is (= :pass (:verdict (consensus/judge-reports [r1 r2] judge nil nil))))))
+
+;; --- done-eligible ranking ---------------------------------------------------
+
+(defn- finished-branch
+  "A minimal done-eligible branch: :final-answer plus whatever evidence the
+  test under exercise needs. Explicit per test, so each one states only the
+  axes it is about."
+  [id & {:as evidence}]
+  (merge (state/new-branch {:id id :problem "p"})
+         {:final-answer (str "answer " id)}
+         evidence))
+
+(deftest rank-finished-non-relaxation-beats-relaxation
+  (testing "a direct proof outranks a relaxation even when the relaxation carries more artifacts"
+    (let [direct (finished-branch "B1"
+                                  :last-audit {:relaxation? false}
+                                  :artifacts [{:kind :prolog :claim "c"
+                                               :claim-status :confirmed :tier :fast}])
+          relaxed (finished-branch "B2"
+                                   :last-audit {:relaxation? true}
+                                   :artifacts [{:kind :prolog :claim "c"
+                                                :claim-status :confirmed :tier :fast}
+                                               {:kind :smt :claim "c2"
+                                                :claim-status :confirmed :tier :fast}
+                                               {:kind :smt :claim "c3"
+                                                :claim-status :confirmed :tier :fast}])]
+      (is (= ["B1" "B2"] (mapv :id (state/rank-finished [relaxed direct])))
+          "non-relaxation is the first component, so it wins regardless of the rest"))))
+
+(deftest rank-finished-slow-tier-beats-fast-only
+  (testing "any slow-tier evidence outranks a fast-only branch with more artifacts"
+    (let [fast (finished-branch "B1"
+                                :artifacts [{:kind :prolog :claim "c"
+                                             :claim-status :confirmed :tier :fast}
+                                            {:kind :smt :claim "c2"
+                                             :claim-status :confirmed :tier :fast}])
+          slow (finished-branch "B2"
+                                :tiers-seen #{:slow}
+                                :artifacts [{:kind :prolog :claim "c"
+                                             :claim-status :confirmed :tier :fast}])]
+      (is (= ["B2" "B1"] (mapv :id (state/rank-finished [fast slow])))
+          "the review/template signal is compared before artifact count"))))
+
+(deftest rank-finished-engine-diversity-beats-count
+  (testing "distinct engine kinds compare before artifact count"
+    (let [two-smt (finished-branch "B1"
+                                   :artifacts [{:kind :smt :claim "c"
+                                                :claim-status :confirmed :tier :fast}
+                                               {:kind :smt :claim "c2"
+                                                :claim-status :confirmed :tier :fast}])
+          smt-plus-prolog (finished-branch "B2"
+                                           :artifacts [{:kind :smt :claim "c"
+                                                        :claim-status :confirmed :tier :fast}
+                                                       {:kind :prolog :claim "c"
+                                                        :claim-status :confirmed :tier :fast}])]
+      (is (= ["B2" "B1"] (mapv :id (state/rank-finished [two-smt smt-plus-prolog])))
+          "one z3 + one prolog beats two z3s: diversity (component c) outranks count (component d)"))))
+
+(deftest rank-finished-id-breaks-ties-stably
+  (testing "identical evidence ranks by branch id ascending, independent of input order"
+    (let [mk (fn [id] (finished-branch id
+                                       :artifacts [{:kind :prolog :claim "c"
+                                                    :claim-status :confirmed :tier :fast}]))
+          expect ["B10" "B2" "B7"]]
+      (is (= expect (mapv :id (state/rank-finished [(mk "B7") (mk "B10") (mk "B2")]))))
+      (is (= expect (mapv :id (state/rank-finished [(mk "B2") (mk "B7") (mk "B10")])))))))
+
+(deftest candidate-selection-is-journalled-when-multiple-finish
+  (with-db [c]
+    (let [rid (runs/start-run! c {:problem "p"})
+          winner (beam/select-done-branch
+                  {:conn c :run-id rid}
+                  [(finished-branch "B1"
+                                    :artifacts [{:kind :prolog :claim "c"
+                                                 :claim-status :confirmed :tier :fast}])
+                   (finished-branch "B2"
+                                    :artifacts [{:kind :prolog :claim "c"
+                                                 :claim-status :confirmed :tier :fast}
+                                                {:kind :smt :claim "c2"
+                                                 :claim-status :confirmed :tier :fast}])])
+          evs (filter #(= "candidate-selection" (:kind %))
+                      (journal/events-since c rid 0))
+          data (json/read-str (:data (first evs)) :key-fn keyword)]
+      (is (= "B2" (:id winner)) "the more diverse branch wins")
+      (is (= 1 (count evs)) "one note per selection")
+      (is (= "B2" (:winner data)))
+      (is (= #{"B1" "B2"} (set (map :branch-id (:candidates data)))))
+      (is (= [1 0 1 1 "B1"] (:key (first (:candidates data))))
+          "the journal records each candidate's ranking inputs"))))
+
+(deftest candidate-selection-is-silent-for-a-lone-finisher
+  (with-db [c]
+    (let [rid (runs/start-run! c {:problem "p"})
+          winner (beam/select-done-branch
+                  {:conn c :run-id rid}
+                  [(finished-branch "B1"
+                                    :artifacts [{:kind :prolog :claim "c"
+                                                 :claim-status :confirmed :tier :fast}])])]
+      (is (= "B1" (:id winner)))
+      (is (empty? (filter #(= "candidate-selection" (:kind %))
+                          (journal/events-since c rid 0)))
+          "no note when there was nothing to choose between"))))

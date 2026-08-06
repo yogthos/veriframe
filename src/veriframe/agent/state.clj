@@ -75,6 +75,59 @@
                          (>= (:turn %) cutoff))
                    (:artifacts branch)))))
 
+(defn finished-key
+  "The ranking tuple for a done-eligible branch, best-first component order.
+
+  UCLA's FirstProof selector ranked prose candidates with an LLM judge —
+  rigor, then self-consistency, then citation reliability, prefer-the-
+  stronger-claim on ties — because nothing about their candidates was
+  mechanical. Ours are engine-audited, so the ranking is data and no model
+  sits in the path. Components, most important first:
+
+  [non-relaxation slow-seen engine-diversity confirmed-count id]
+
+  - non-relaxation: 1 unless the last audit declared the evidence a
+    relaxation of the thesis. A branch that proved the asked claim beats one
+    that proved a weakening — UCLA's prefer-the-stronger-claim tie-break,
+    mechanical here because the audit already judged it. A nil last-audit
+    counts as non-relaxation; only an explicit RELAXATION: yes lowers it.
+  - slow-seen: 1 when :slow is in :tiers-seen. A cross-checked template or
+    an independent review is stronger evidence than a one-shot check.
+    :tiers-seen is the authoritative signal because every slow path records
+    it — verify_template stamps the set AND the artifact, review re-
+    confirms without producing a new artifact and stamps only the set.
+  - engine-diversity: distinct engine kinds among confirmed artifacts.
+    Independent engines compose (consensus/engine-agreement's counting
+    rule): one Prolog + one Z3 confirmation is stronger than two Z3s.
+  - confirmed-count: more engine-confirmed artifacts beats fewer.
+  - id: ascending, a stable arbitrary tie-break so the ranking never
+    depends on vector order."
+  [branch]
+  [(if (:relaxation? (:last-audit branch)) 0 1)
+   (if (contains? (:tiers-seen branch) :slow) 1 0)
+   (count (distinct (keep :kind (confirmed-artifacts branch))))
+   (count (confirmed-artifacts branch))
+   (:id branch)])
+
+(defn rank-finished
+  "Rank done-eligible branches best first, by `finished-key`.
+
+  Expects branches holding :final-answer (the caller has filtered); the
+  ranking reads only the evidence they carry, never the order they arrived
+  in. Components compare in key order, so a relaxation never outranks a
+  direct proof no matter how many artifacts it carries.
+
+  Implemented as sort-by over a normalized key — numeric components negated
+  so bigger-is-better becomes ascending, the id left as-is — rather than a
+  hand-rolled comparator. The obvious `(or (compare ...) ...)` chain is a
+  bug: `compare` returns 0 on ties and 0 is truthy, so the chain never
+  falls through to the next component."
+  [branches]
+  (sort-by (fn [b]
+             (let [[non-relax slow diversity confirmed id] (finished-key b)]
+               [(- non-relax) (- slow) (- diversity) (- confirmed) id]))
+           branches))
+
 (defn record-mechanics
   "Fold one turn's fence signals into the branch's mechanics counters."
   [branch signals]
