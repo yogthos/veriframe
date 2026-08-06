@@ -635,6 +635,54 @@
     (is (= ["lemma B"] (:outstanding r)))
     (is (str/includes? (state/render-residual r) "lemma B"))))
 
+(deftest exhaustion-report-never-ships-a-lie
+  ;; The full residual report for a run that exhausted without shipping.
+  ;; Never ship nothing, never ship a lie: only engine-confirmed artifacts
+  ;; render as established, and every other bucket is labeled for what it
+  ;; does not substantiate. Pure — scripted branch states, no model, no store.
+  (let [b1 (branch-with :id "B1"
+                        :thesis {:goal "prove G" :technique "t"
+                                 :subClaims ["lemma A" "lemma B"]}
+                        :artifacts [{:claim "lemma A" :claim-status :confirmed
+                                     :kind :smt :tier :confirmed :turn 2}
+                                    {:claim "some coloring exists"
+                                     :claim-status :existential
+                                     :kind :smt :tier :fast :turn 3}
+                                    {:claim "refuted approach D"
+                                     :claim-status :refuted
+                                     :kind :prolog :tier :fast :turn 4}])
+        b2 (branch-with :id "B2"
+                        :thesis {:goal "prove G" :technique "t2" :subClaims []}
+                        :last-audit {:passed true
+                                     :established "G for n < 5"
+                                     :relaxation? true})
+        report (state/build-residual-report
+                {:branches [b1 b2]
+                 :failures [{:branch_id "B1" :turn 4 :tool_name "verify"
+                             :claim "approach D" :reason "goal failed"}]
+                 :gate-tally [{:gate "wind-down" :fired 1 :met 0 :unmet 1 :open 0}]})
+        text (state/render-residual-report report)
+        [r1 r2] (:branches report)]
+    (testing "the label says what this is on its face"
+      (is (str/includes? (:label report) "not a solution"))
+      (is (str/includes? text "PROGRESS REPORT")))
+    (testing "buckets separate what substantiates from what does not"
+      (is (= ["lemma A"] (map :claim (:established r1))))
+      (is (= ["some coloring exists"] (map :claim (:existential r1))))
+      (is (= ["lemma B"] (:outstanding r1)))
+      (is (= ["lemma A"] (:proved r1))))
+    (testing "a refuted artifact never renders anywhere"
+      (is (not (str/includes? text "refuted approach D"))))
+    (testing "existential artifacts are labeled as non-witnesses in the text"
+      (is (str/includes? text "confirmed existence, not an instance")))
+    (testing "thesis drift reports established against goal, no re-pinning"
+      (is (= "G for n < 5" (get-in r2 [:drift :established])))
+      (is (true? (get-in r2 [:drift :relaxation?])))
+      (is (str/includes? text "strictly weaker than the goal")))
+    (testing "run-level sections ride along"
+      (is (str/includes? text "Shared failure log"))
+      (is (str/includes? text "wind-down: 1 fired")))))
+
 ;; --- progress must mean progress -------------------------------------------
 
 (deftest confirmation-alone-is-not-progress

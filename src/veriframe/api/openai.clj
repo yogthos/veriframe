@@ -88,12 +88,17 @@
                 model
                 (if answered
                   (render-answer (:answer r) artifacts)
-                  (str "The harness did not reach a verified answer ("
-                       (name (:status r)) ").\n\n"
-                       (or (beam/summary r) "")))
+                  ;; An exhausted run ships its progress report, not a failure
+                  ;; string: never ship nothing, never ship a lie. Other
+                  ;; unanswered statuses (abort, error) keep the plain line.
+                  (or (:report-text r)
+                      (str "The harness did not reach a verified answer ("
+                           (name (:status r)) ").\n\n"
+                           (or (beam/summary r) ""))))
                 {:harness {:mode "agent"
                            :run_id (:run-id r)
                            :status (name (:status r))
+                           :report (:report r)
                            :metrics (metrics/run-metrics conn (:run-id r))
                            :branches (mapv (fn [b]
                                              {:id (:id b) :status (name (:status b))

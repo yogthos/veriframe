@@ -183,6 +183,103 @@
            (str "    outstanding: " (str/join "; " (:outstanding r)) "\n"))
          (when (:best r) (str "    best confirmed: " (:best r) "\n")))))
 
+(defn- artifact-substantiates
+  "What an artifact's claim-status lets it substantiate. Only :confirmed
+  artifacts may be presented as established; the existential and ambiguous
+  buckets get their own clearly-labeled sections, and anything else (refuted,
+  unknown) substantiates nothing and never renders."
+  [a]
+  (cond
+    (= :confirmed (:claim-status a)) :established
+    (= :existential (:claim-status a)) :existential
+    (= :ambiguous (:claim-status a)) :ambiguous
+    :else :neither))
+
+(defn build-residual-report
+  "The honest progress report for a run that exhausted without shipping.
+
+  Never ship nothing, never ship a lie — UCLA Track B's honesty mandate, made
+  mechanical by the artifact requirement: only artifacts with :confirmed
+  status may appear as established, and every other artifact is labeled for
+  exactly what it does and does not substantiate. The report says on its face
+  that it is a progress report, not a solution.
+
+  Pure: the final branch states, the failure-log entries and the gate tally
+  arrive as data, so this is testable with no model and no store."
+  [{:keys [branches failures gate-tally]}]
+  {:label (str "PROGRESS REPORT — not a solution. Nothing below is"
+               " established unless an engine confirmed it.")
+   :branches
+   (mapv (fn [b]
+           (let [{:keys [goal subClaims]} (:thesis b)
+                 confirmed (confirmed-artifacts b)
+                 proved (set (map :claim confirmed))
+                 grouped (group-by artifact-substantiates (:artifacts b))
+                 provenance #(mapv (fn [a] (select-keys a [:claim :kind :tier :turn])) %)
+                 audit (:last-audit b)]
+             (cond-> {:branch (:id b)
+                      :goal goal
+                      :outstanding (vec (remove proved subClaims))
+                      :proved (vec (filter proved subClaims))
+                      :established (provenance (get grouped :established))
+                      :existential (provenance (get grouped :existential))
+                      :ambiguous (provenance (get grouped :ambiguous))}
+               ;; Drift is only reportable when the audit actually restated
+               ;; what the evidence establishes; an audit with no ESTABLISHED
+               ;; line has nothing to compare against the goal.
+               (:established audit)
+               (assoc :drift {:goal goal
+                              :established (:established audit)
+                              :relaxation? (:relaxation? audit)}))))
+         branches)
+   :failures (vec failures)
+   :gate-tally (vec gate-tally)})
+
+(defn render-residual-report
+  "Markdown-ish text for the API content slot. The established section is the
+  load-bearing one; existential, ambiguous, drift and run-level sections are
+  labeled for exactly what they are."
+  [r]
+  (when r
+    (str (:label r) "\n\n"
+         (str/join "\n\n"
+                   (for [b (:branches r)]
+                     (str (str "## " (:branch b)
+                               (when (:goal b) (str " — was proving: " (:goal b))))
+                          (when (seq (:outstanding b))
+                            (str "\n\nOutstanding sub-claims (undischarged):\n"
+                                 (str/join "\n" (map #(str "- " %) (:outstanding b)))))
+                          (when (seq (:established b))
+                            (str "\n\nEstablished (engine-confirmed):\n"
+                                 (str/join "\n" (for [a (:established b)]
+                                                  (str "- [" (:kind a) "/" (:tier a) "] " (:claim a))))))
+                          (when (seq (:existential b))
+                            (str "\n\nExistential only — the engine confirmed existence, not an instance:\n"
+                                 (str/join "\n" (for [a (:existential b)]
+                                                  (str "- [" (:kind a) "/" (:tier a) "] " (:claim a))))))
+                          (when (seq (:ambiguous b))
+                            (str "\n\nAmbiguous — the engine returned no decisive verdict; substantiates nothing:\n"
+                                 (str/join "\n" (for [a (:ambiguous b)]
+                                                  (str "- [" (:kind a) "/" (:tier a) "] " (:claim a))))))
+                          (when (:drift b)
+                            (str "\n\nThesis drift — the last audit found the evidence establishes \""
+                                 (:established (:drift b)) "\", "
+                                 (if (:relaxation? (:drift b))
+                                   "strictly weaker than the goal"
+                                   "matching the goal")
+                                 " \"" (:goal b) "\".")))))
+         (when (seq (:failures r))
+           (str "\n\n## Shared failure log (most recent first)\n"
+                (str/join "\n" (for [f (:failures r)]
+                                 (str "- [" (:branch_id f) " t" (:turn f) " " (:tool_name f) "] "
+                                      (:claim f) "\n  → " (:reason f))))))
+         (when (seq (:gate-tally r))
+           (str "\n\n## Gate firings\n"
+                (str/join "\n" (for [g (:gate-tally r)]
+                                 (str "- " (:gate g) ": " (:fired g) " fired, "
+                                      (or (:met g) 0) " met, " (or (:unmet g) 0) " unmet, "
+                                      (or (:open g) 0) " open"))))))))
+
 ;; --- safe state -------------------------------------------------------------
 ;;
 ;; DS1's third failure rung, which dirge implemented as a git-backed restore.

@@ -33,6 +33,7 @@
             [veriframe.engine.lean-repl :as lean-repl]
             [veriframe.engine.octave :as octave]
             [veriframe.engine.prolog :as prolog]
+            [veriframe.store.failures :as failures]
             [veriframe.store.interventions :as interventions]
             [veriframe.store.journal :as journal]
             [veriframe.store.runs :as runs])
@@ -304,15 +305,23 @@
                  :run-id run-id :branches branches})
 
             (or (empty? active) (> turn max-turns))
-            (let [residuals (keep state/residual branches)]
+            (let [residuals (keep state/residual branches)
+                  report (state/build-residual-report
+                          {:branches branches
+                           :failures (failures/recent conn run-id 10)
+                           :gate-tally (journal/gate-tally conn run-id)
+                           :max-turns max-turns})]
               (doseq [b active]
                 (runs/close-branch! conn run-id (:id b) :exhausted
                                     (str "turn cap of " max-turns " reached")))
               (doseq [r residuals]
                 (journal/note! conn run-id :residual {:branch-id (:branch r) :data r}))
+              (journal/note! conn run-id :residual-report {:data report})
               (runs/finish-run! conn run-id :failed nil)
-              {:status (if (empty? active) :exhausted :exhausted)
-               :run-id run-id :branches branches :residuals (vec residuals)})
+              {:status :exhausted
+               :run-id run-id :branches branches :residuals (vec residuals)
+               :report report
+               :report-text (state/render-residual-report report)})
 
             :else
             (let [directives (interventions/pending conn run-id)
