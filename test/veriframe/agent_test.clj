@@ -628,6 +628,38 @@
       (is (= :done (:status (:branch r))))
       (is (= :success (:category r))))))
 
+(deftest done-with-no-answer-ships-the-audited-text
+  ;; vf-691: two consecutive live runs produced audit-approved mathematics and
+  ;; died re-typing it — the model reformats the approved answer, the verbatim
+  ;; rung refuses, and the turn cap lands before a re-audit. The approved text
+  ;; is already on the branch, so `done` with no answer ships it exactly.
+  (let [approved "the sequence converges for the checked values n = 1, 2, 3"
+        artifact {:claim "the sequence converges for the checked values n = 1, 2, 3"
+                  :claim-status :confirmed :kind :smt :tier :slow :code "c1"}
+        b (branch-with :thesis {:goal "the sequence converges for the checked values"
+                                :technique "t" :subClaims []}
+                       :artifacts [artifact]
+                       :last-audit {:passed true
+                                    :proposed-answer approved
+                                    :established approved
+                                    :relaxation? false})]
+    (let [r (tools/run-tool {:branch b :turn 1 :tool-name "done" :args {}})]
+      (is (= :success (:category r)))
+      (is (= :done (:status (:branch r))))
+      (is (= approved (:final-answer (:branch r)))
+          "what ships is the audited text, character for character"))))
+
+(deftest done-with-no-answer-needs-a-passing-audit
+  ;; Shipping by reference needs a referent. No passing audit, no default.
+  (let [artifact {:claim "something confirmed"
+                  :claim-status :confirmed :kind :smt :tier :slow :code "c1"}]
+    (doseq [audit [nil {:passed false :proposed-answer "rejected text"}]]
+      (let [b (branch-with :artifacts [artifact] :last-audit audit)
+            r (tools/run-tool {:branch b :turn 1 :tool-name "done" :args {}})]
+        (is (= :failure (:category r)))
+        (is (str/includes? (:result r) "audit")
+            "the refusal points at the missing audit")))))
+
 (deftest free-variables-detection
   (testing "a constant pinned to a literal is not free"
     (is (= [] (tools/free-variables "(declare-const a Int)(assert (= a 5))"))))

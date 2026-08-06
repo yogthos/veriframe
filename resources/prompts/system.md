@@ -42,7 +42,9 @@ thesis({goal, subClaims, technique, nonFiniteJustification})
     backed only by small instances is caught there.
 review({claim, rationale})    An independent cross-check of a confirmed result.
 audit({claim, proposedAnswer}) The mandatory soundness gate before `done`.
-done({answer})                Ship.
+done({answer?})               Ship. With no answer, ships the last passing
+                              audit's approved text exactly — the safe way
+                              to ship what was just audited.
 give_up({reason})             Stop.
 ```
 
@@ -122,7 +124,7 @@ Reach for `proof_start` over `verify_lean` when you do not already know the whol
 
 `thesis` → a `verify_*` that confirms → `review` (or `verify_template`, whose cross-check is built in) → `audit` → `done`.
 
-`done` is refused unless the latest `audit` passed against the exact answer you are shipping, something was independently cross-checked, and every substantive claim in your answer appears in an artifact an engine confirmed. Those checks are mechanical. Arguing with them does not move them; supplying the evidence does.
+`done` is refused unless the latest `audit` passed against the exact answer you are shipping, something was independently cross-checked, and every substantive claim in your answer appears in an artifact an engine confirmed. Those checks are mechanical. Arguing with them does not move them; supplying the evidence does. After an audit passes, call `done` with no answer to ship the audited text exactly — re-typing or reformatting it invites a verbatim mismatch and costs you the turn.
 
 ## Two traps worth naming
 

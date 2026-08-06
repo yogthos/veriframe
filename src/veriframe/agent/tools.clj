@@ -639,69 +639,84 @@
     (remove #(str/includes? haystack %) (answer-tokens answer))))
 
 (defmethod run-tool "done" [{:keys [branch] :as ctx}]
-  (if-let [m (missing ctx :answer)]
-    (fail branch m)
-    (let [answer (arg ctx :answer)
-          confirmed (state/confirmed-artifacts branch)
-          audit (:last-audit branch)
-          review (:last-review branch)
-          template-confirmed? (some #(and (= :slow (:tier %))
-                                          (= :confirmed (:claim-status %)))
-                                    (:artifacts branch))
-          uncovered (uncovered-tokens answer confirmed)
-          block (cond
-                  (empty? confirmed)
-                  "This branch has no confirmed artifact. Nothing has been verified."
+  ;; The answer may be omitted, in which case the last PASSING audit's
+  ;; approved text ships verbatim. Two consecutive live runs produced
+  ;; audit-approved results and then died re-typing them: the model reformats
+  ;; the approved answer, the verbatim rung refuses, and the turn cap lands
+  ;; before a re-audit (vf-691). Shipping by reference removes the
+  ;; transcription step; every other rung still runs, and an explicitly
+  ;; supplied answer keeps the verbatim rule.
+  (let [audit (:last-audit branch)
+        supplied (arg ctx :answer)
+        answer (if (str/blank? (str supplied))
+                 (when (:passed audit) (:proposed-answer audit))
+                 supplied)
+        confirmed (state/confirmed-artifacts branch)
+        review (:last-review branch)
+        template-confirmed? (some #(and (= :slow (:tier %))
+                                        (= :confirmed (:claim-status %)))
+                                  (:artifacts branch))
+        uncovered (uncovered-tokens answer confirmed)
+        block (cond
+                (nil? answer)
+                (str "No answer was supplied and no audit has passed. Call"
+                     " `audit` with {claim, proposedAnswer}; once it passes,"
+                     " `done` with no answer ships the audited text exactly.")
 
-                  (not (and audit (:passed audit)))
-                  (str "The pre-ship audit has not passed. Call `audit` with"
-                       " {claim, proposedAnswer} first.")
+                (empty? confirmed)
+                "This branch has no confirmed artifact. Nothing has been verified."
 
-                  (not= (:proposed-answer audit) answer)
-                  (str "The audit passed for a different answer. It approved:\n  "
-                       (:proposed-answer audit)
-                       "\nand you are shipping:\n  " answer
-                       "\nRe-run `audit` against the answer you actually intend to ship.")
+                (not (and audit (:passed audit)))
+                (str "The pre-ship audit has not passed. Call `audit` with"
+                     " {claim, proposedAnswer} first.")
 
-                  (and (not review) (not template-confirmed?))
-                  (str "Nothing has been independently cross-checked. Either run"
-                       " `review` with an encoding different in shape from the one"
-                       " that confirmed the result, or use `verify_template`, whose"
-                       " cross-check is built in.")
+                (not= (:proposed-answer audit) answer)
+                (str "The audit passed for a different answer. It approved:\n  "
+                     (:proposed-answer audit)
+                     "\nand you are shipping:\n  " answer
+                     "\nEither re-run `audit` against the answer you intend to"
+                     " ship, or call `done` with no answer to ship the audited"
+                     " text exactly.")
 
-                  (and review (not (:passed review)) (not template-confirmed?))
-                  "The last review FAILED. Resolve the disagreement before shipping."
+                (and (not review) (not template-confirmed?))
+                (str "Nothing has been independently cross-checked. Either run"
+                     " `review` with an encoding different in shape from the one"
+                     " that confirmed the result, or use `verify_template`, whose"
+                     " cross-check is built in.")
 
-                  (and audit (:relaxation? audit)
-                       (seq (uncovered-tokens
-                             answer
-                             [{:claim (or (:established audit) "")
-                               :code "" :witness nil}])))
-                  (str "The audit flagged this answer as a relaxation of the thesis."
-                       "\n\nThe thesis asked for: "
-                       (get-in branch [:thesis :goal])
-                       "\nThe evidence establishes: "
-                       (or (:established audit) "nothing stated")
-                       "\n\nYour answer asserts the full thesis claim, but the audit"
-                       " itself says the evidence only establishes the weaker claim"
-                       " above. Either state the answer as what is established, or"
-                       " confirm evidence that establishes the full thesis and"
-                       " re-run `audit`.")
+                (and review (not (:passed review)) (not template-confirmed?))
+                "The last review FAILED. Resolve the disagreement before shipping."
 
-                  (seq uncovered)
-                  (str "Your answer asserts things no confirmed artifact supports: "
-                       (str/join ", " (map #(str "`" % "`") (take 8 uncovered)))
-                       ".\nEvery substantive claim in the answer has to appear in"
-                       " something an engine confirmed. Either verify these or"
-                       " remove them from the answer."))]
-      (if block
-        (fail branch (str "`done` refused.\n\n" block) :done-block block)
-        {:branch (assoc branch :final-answer answer :status :done)
-         :category :success
-         :progress? true
-         :done? true
-         :answer answer
-         :result (str "Answer accepted.\n\n" answer)}))))
+                (and audit (:relaxation? audit)
+                     (seq (uncovered-tokens
+                           answer
+                           [{:claim (or (:established audit) "")
+                             :code "" :witness nil}])))
+                (str "The audit flagged this answer as a relaxation of the thesis."
+                     "\n\nThe thesis asked for: "
+                     (get-in branch [:thesis :goal])
+                     "\nThe evidence establishes: "
+                     (or (:established audit) "nothing stated")
+                     "\n\nYour answer asserts the full thesis claim, but the audit"
+                     " itself says the evidence only establishes the weaker claim"
+                     " above. Either state the answer as what is established, or"
+                     " confirm evidence that establishes the full thesis and"
+                     " re-run `audit`.")
+
+                (seq uncovered)
+                (str "Your answer asserts things no confirmed artifact supports: "
+                     (str/join ", " (map #(str "`" % "`") (take 8 uncovered)))
+                     ".\nEvery substantive claim in the answer has to appear in"
+                     " something an engine confirmed. Either verify these or"
+                     " remove them from the answer."))]
+    (if block
+      (fail branch (str "`done` refused.\n\n" block) :done-block block)
+      {:branch (assoc branch :final-answer answer :status :done)
+       :category :success
+       :progress? true
+       :done? true
+       :answer answer
+       :result (str "Answer accepted.\n\n" answer)})))
 
 (defmethod run-tool "give_up" [{:keys [branch] :as ctx}]
   (let [reason (or (arg ctx :reason) "no reason given")]
