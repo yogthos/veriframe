@@ -80,6 +80,12 @@
                   :temperature 0.7
                   ;; Per-read inactivity bound (SO_RCVTIMEO on the socket).
                   :timeout-ms  (or (env-long "HARNESS_TIMEOUT_MS") 300000)
+                  ;; Bound on the TCP handshake alone. Honoured as of
+                  ;; http-client v0.0.3; before that a connect to a host that
+                  ;; drops SYNs ran to the kernel's retry limit (~75s), which
+                  ;; is a whole branch turn spent before the first byte.
+                  :conn-timeout-ms (or (env-long "HARNESS_CONN_TIMEOUT_MS")
+                                       15000)
                   ;; Total wall-clock bound on one response, across all reads.
                   ;; A peer that trickles a byte every few seconds resets the
                   ;; per-read timer forever, so :timeout-ms alone does not bound

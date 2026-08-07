@@ -37,6 +37,19 @@
 
 (def default-max-retries 2)
 (def default-timeout-ms 300000)
+
+(def default-conn-timeout-ms
+  "A bound on the TCP handshake alone, separate from the per-read timeout.
+
+  http-client honours this as of v0.0.3; before that it was silently ignored
+  (setting O_NONBLOCK needs variadic fcntl, and on Apple arm64 a fixed-arity
+  binding corrupts the stack-passed argument), so a connect to a host that
+  drops SYNs was bounded only by the kernel's retry limit — about 75 seconds
+  on macOS. Every call here passes one now: a provider that is unreachable
+  should cost a branch its turn, not its budget, and should not hold up
+  startup at all. Fifteen seconds is far past any real handshake and far
+  short of the kernel's."
+  15000)
 ;; Never sleep longer than this on a provider's say-so. A header asking for
 ;; ten minutes should not silently become a ten-minute stall.
 (def max-backoff-ms 60000)
@@ -93,7 +106,8 @@
                                              {"Content-Type" "application/json"})
                              :body payload
                              :socket-timeout (:timeout-ms config default-timeout-ms)
-                             :conn-timeout 30000
+                             :conn-timeout (:conn-timeout-ms config
+                                                             default-conn-timeout-ms)
                              :throw-exceptions false})
         elapsed (- (System/currentTimeMillis) started)
         status (:status resp)
@@ -172,8 +186,13 @@
   "Model ids the endpoint advertises, or [] when it has no such endpoint."
   [adapter config]
   (if-let [url (adapter/models-url adapter config)]
+    ;; Bounded like every other call: this is the boot-time reachability
+    ;; probe (core/warm-tls!), and a harness whose provider is unreachable
+    ;; must still come up rather than sit in a connect nobody bounded.
     (let [resp (http/get url {:headers (adapter/auth-headers adapter config)
                               :socket-timeout 30000
+                              :conn-timeout (:conn-timeout-ms config
+                                                              default-conn-timeout-ms)
                               :throw-exceptions false})]
       (if (<= 200 (:status resp) 299)
         (adapter/parse-models adapter (decode (:body resp)))

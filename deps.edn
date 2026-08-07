@@ -3,9 +3,14 @@
  ;; Git deps are fetched into ~/.jolt/gitlibs by jolt. Full SHAs only —
  ;; `git fetch` can't resolve short ones.
  :deps {;; provider calls (clj-http-lite over jolt.ffi sockets + OpenSSL + libz)
+        ;; v0.0.3 honours :conn-timeout: it bounds the connect itself through a
+        ;; non-blocking socket, which needs jolt 0.6.8's :varargs FFI marker
+        ;; (fcntl is variadic, and on Apple arm64 a fixed-arity binding
+        ;; silently corrupts the stack-passed argument).
         jolt-lang/http-client
         {:git/url "https://github.com/jolt-lang/http-client"
-         :git/sha "0d5686256f26a85b05c3292c193e057795f146b2"}
+         :git/tag "v0.0.3"
+         :git/sha "add8184b819b69dcfed1305b9577eb8794f76409"}
 
         ;; durable sessions: jdbc.core over the system libsqlite3 via jolt.ffi
         jolt-lang/db

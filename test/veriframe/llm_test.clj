@@ -16,6 +16,7 @@
   (:require [clojure.data.json :as json]
             [clojure.string :as str]
             [clojure.test :refer [deftest testing is are]]
+            [jolt.http-client :as http]
             [veriframe.llm.adapter :as adapter]
             [veriframe.llm.client :as client]
             [veriframe.llm.fence :as fence]
@@ -198,6 +199,37 @@
       (is (thrown? Throwable (registry/adapter-for :nope))))))
 
 ;; --- retry policy -----------------------------------------------------------
+
+(deftest every-provider-call-bounds-its-connect
+  ;; http-client honours :conn-timeout as of v0.0.3 (a variadic-fcntl fix);
+  ;; before that it was ignored and a connect was bounded only by the
+  ;; kernel's SYN retry limit, about 75s on macOS. Now that the option has
+  ;; teeth, a call that omits it is the one that hangs — and list-models,
+  ;; the boot-time reachability probe, was exactly that call.
+  (let [cfg {:base-url "https://api.example.com/v1" :model "m" :api-key "k"
+             :conn-timeout-ms 4321}
+        a (registry/adapter-for :deepseek)
+        seen (atom nil)]
+    (testing "the chat call"
+      (with-redefs [http/post
+                    (fn [_ opts]
+                      (reset! seen opts)
+                      {:status 200
+                       :body (json/write-str
+                              {:choices [{:message {:content "ok"}
+                                          :finish_reason "stop"}]})})]
+        (client/chat a cfg [{:role "user" :content "hi"}])
+        (is (= 4321 (:conn-timeout @seen)))))
+    (testing "the models probe"
+      (with-redefs [http/get (fn [_ opts] (reset! seen opts)
+                               {:status 200 :body "{\"data\":[]}"})]
+        (client/list-models a cfg)
+        (is (= 4321 (:conn-timeout @seen)))))
+    (testing "a config with no explicit value still bounds it"
+      (with-redefs [http/get (fn [_ opts] (reset! seen opts)
+                               {:status 200 :body "{\"data\":[]}"})]
+        (client/list-models a (dissoc cfg :conn-timeout-ms))
+        (is (pos? (:conn-timeout @seen)))))))
 
 (deftest error-classification
   (let [a (registry/adapter-for :deepseek)]

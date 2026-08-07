@@ -284,6 +284,7 @@ stay silent otherwise.
 | `HARNESS_BEAM_WIDTH` | `5` | treat as unjustified; see PLAN.md |
 | `HARNESS_MAX_TOKENS` | `16384` | a correctness parameter, not a cost knob |
 | `HARNESS_TIMEOUT_MS` | `300000` | per-read inactivity bound on a provider call |
+| `HARNESS_CONN_TIMEOUT_MS` | `15000` | bound on the TCP handshake alone, so an unreachable provider fails fast |
 | `HARNESS_MAX_RESPONSE_MS` | `600000` | total bound on one response; kept below the turn deadline |
 | `HARNESS_TURN_DEADLINE_MS` | `900000` | sized to the worst legitimate turn, not the typical one |
 | `HARNESS_Z3_TIMEOUT_MS` | `120000` | |
