@@ -1187,8 +1187,46 @@
                               "SCORE distinctness: 5\nSCORE viability: 4\n"
                               "SCORE progress: 2")))))))
 
+(deftest branch-out-waits-before-asking-again
+  ;; Gen-9: the rung fired on turns 14, 15 and 16 — one fork, then two
+  ;; nagging re-fires — and the branch's whole fork budget was gone by turn
+  ;; 16 of a 65-turn run. A gate that re-fires while the branch is still
+  ;; acting on it spends the budget on repetition, which is what re-fire
+  ;; guards exist for.
+  (let [fit (fn [now last-fired]
+              (branch-with :artifacts [{:claim "c" :claim-status :confirmed :turn 5}]
+                           :turns (vec (repeat now {}))
+                           :gate-history (into [{:gate :milestone :turn 1}]
+                                               (when last-fired
+                                                 [{:gate :branch-out :turn last-fired}]))))]
+    (testing "silent immediately after firing"
+      (is (not-any? #{:branch-out}
+                    (map :gate (arbiter/eligible {:branch (fit 12 11) :max-turns 40
+                                                  :branch-count 3})))))
+    (testing "eligible again once the cooldown has passed"
+      (is (some #{:branch-out}
+                (map :gate (arbiter/eligible
+                            {:branch (fit (+ 11 (gates/threshold :branch-out-cooldown)) 11)
+                             :max-turns 40 :branch-count 3})))))
+    (testing "the budget allows a productive branch several forks over a run"
+      (is (>= (gates/threshold :max-branch-outs) 5)))))
+
+(deftest domination-ignores-accumulated-progress
+  ;; Survival is about where a line is going, not what it has banked. The
+  ;; artifacts a branch already confirmed are in the log and cannot be lost
+  ;; by culling it, while `progress` is cumulative and therefore rises with
+  ;; age — comparing on it lets any mature branch dominate any young one
+  ;; indefinitely, which is the age bias that outlives the grace period.
+  (let [young {:progress 1 :momentum 4 :distinctness 4 :viability 4}
+        mature {:progress 5 :momentum 4 :distinctness 4 :viability 4}]
+    (is (not (critic/dominated? young [mature]))
+        "more banked work alone does not dominate")
+    (is (critic/dominated? {:progress 5 :momentum 2 :distinctness 2 :viability 2}
+                           [{:progress 1 :momentum 4 :distinctness 4 :viability 4}])
+        "a branch going nowhere is dominated however much it banked")))
+
 (deftest critic-domination
-  (let [a {:progress 4 :momentum 3 :distinctness 3 :viability 4}
+  (let [a {:progress 4 :momentum 4 :distinctness 3 :viability 4}
         b {:progress 3 :momentum 3 :distinctness 3 :viability 4}
         c {:progress 1 :momentum 1 :distinctness 5 :viability 2}]
     (is (critic/dominated? b [a]) "worse somewhere, better nowhere: dominated")
@@ -1261,15 +1299,15 @@
                                  (failing 3 {:progress 2 :momentum 2
                                              :distinctness 2 :viability 3})
                                  1
-                                 [{:progress 3 :momentum 2
-                                   :distinctness 2 :viability 3}])))))
+                                 [{:progress 3 :momentum 4
+                                   :distinctness 3 :viability 4}])))))
       (testing "failing but non-dominated: spared, journaled, and told"
         (let [b (#'beam/cull-or-keep
                  ctx
                  (failing 3 {:progress 2 :momentum 2
                              :distinctness 5 :viability 3})
                  1
-                 [{:progress 3 :momentum 2 :distinctness 2 :viability 3}])]
+                 [{:progress 3 :momentum 4 :distinctness 2 :viability 4}])]
           (is (state/active? b))
           (is (some #(and (= "user" (:role %))
                           (str/includes? (:content %) "no sibling dominates"))

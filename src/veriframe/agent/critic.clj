@@ -61,14 +61,27 @@
                 (str/split-lines t))]
     (when (= (count objectives) (count m)) m)))
 
+(def survival-objectives
+  "The objectives a CULL decision reads: everything except :progress.
+
+  :progress is cumulative, so it rises with age and nothing else. Comparing
+  on it lets any mature branch dominate any young one indefinitely — the age
+  bias that the juvenile grace period only postpones. It is also the wrong
+  question: the artifacts a branch already confirmed are in the log and
+  cannot be lost by culling it, so survival should turn on where the line is
+  GOING (momentum, viability) and on what it uniquely covers (distinctness).
+  A branch that banked a great deal and then stopped moving is exactly the
+  one worth reclaiming budget from."
+  [:momentum :distinctness :viability])
+
 (defn dominated?
-  "True when some sibling's scores are at least as good on every objective
+  "True when some sibling is at least as good on every survival objective
   and strictly better on one. Equal vectors do not dominate."
   [scores sibling-scores]
   (boolean
    (some (fn [o]
-           (and (every? #(>= (get o % 0) (get scores % 0)) objectives)
-                (some #(> (get o % 0) (get scores % 0)) objectives)))
+           (and (every? #(>= (get o % 0) (get scores % 0)) survival-objectives)
+                (some #(> (get o % 0) (get scores % 0)) survival-objectives)))
          sibling-scores)))
 
 (defn- summary

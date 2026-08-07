@@ -140,8 +140,18 @@
         a first verification — long enough to produce one confirmation, short
         enough that a genuinely dead line does not linger."}
 
+ :branch-out-cooldown
+ {:value 6 :kind :re-fire-guard :capability-tunable? true
+  :doc "Turns before the branch-out rung may ask the same branch again.
+        Generation 9 fired it on turns 14, 15 and 16 — one fork, then two
+        re-fires while the branch was still acting on the first — and the
+        whole fork budget was gone by turn 16 of a 65-turn run. The
+        precondition (a confirmation exists, the beam has room) stays true
+        for as long as the branch is productive, which is exactly the
+        happened-versus-already-reacted blindness a cooldown fixes."}
+
  :max-branch-outs
- {:value 3 :kind :re-fire-guard :capability-tunable? false
+ {:value 6 :kind :re-fire-guard :capability-tunable? false
   :doc "How often the branch-out rung may fire on one branch. This is the
         reproduction half of the loop, so it is a guard rather than a cost
         ceiling: each firing asks for offspring, and a branch that keeps

@@ -170,10 +170,17 @@
           that just proved something. Silent once the run is winding down,
           because a new line that late cannot finish."
     :when (fn [{:keys [branch branch-count max-turns]}]
-            (and (state/has-confirmed? branch)
-                 (< (or branch-count 0) (threshold :max-total-branches))
-                 (< (state/turn-count branch)
-                    (* (threshold :wind-down-fraction) (max 1 (or max-turns 40))))))
+            (let [last-fired (->> (:gate-history branch)
+                                  (filter #(= :branch-out (:gate %)))
+                                  (map :turn)
+                                  (reduce max -1000))]
+              (and (state/has-confirmed? branch)
+                   (< (or branch-count 0) (threshold :max-total-branches))
+                   ;; Not while the branch is still acting on the last ask.
+                   (>= (- (state/turn-count branch) last-fired)
+                       (threshold :branch-out-cooldown))
+                   (< (state/turn-count branch)
+                      (* (threshold :wind-down-fraction) (max 1 (or max-turns 40)))))))
     :message (fn [_] (prompt "branch-out"))
     :prediction (fn [_] "the branch calls branch_theses")
     :window 3}
