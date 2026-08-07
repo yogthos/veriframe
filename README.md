@@ -148,6 +148,14 @@ intervention endpoint as the `curl` above, so it lands at that branch's next
 turn boundary. The header cycles runs, aborts, and resumes, including resuming
 an exhausted run with a larger budget.
 
+`new run` in the header opens a form for starting one: the problem statement in
+a text area, plus max turns, beam width, and a run to seed from. Empty knobs
+take the server's configured defaults; a knob filled in wrong is refused rather
+than quietly dropped. `from current run` copies the selected run's statement and
+seeds from it, which is how a campaign moves to its next generation — edit the
+targets, keep the confirmed artifacts. The GUI attaches to the new run as soon
+as the server hands back its id.
+
 ## How the loop works
 
 A run is a beam: several branches attack the same problem in parallel, each with

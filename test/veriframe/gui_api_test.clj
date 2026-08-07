@@ -52,6 +52,25 @@
         (is (not (str/includes? (second (last @calls)) "max_turns")))
         (api/resume! "http://x:1" "r1" 400)
         (is (str/includes? (second (last @calls)) "400"))))
+    (testing "starting a run POSTs the body and hands back the new id"
+      (with-redefs [http/post (fn [url opts]
+                                (swap! calls conj [url (:body opts)])
+                                (ok {:run_id "r9" :status "running"}))]
+        (let [r (api/start-run! "http://x:1" {:problem "does an odd covering exist?"
+                                              :max_turns 300})
+              [url body] (last @calls)]
+          (is (= "http://x:1/v1/runs" url))
+          (is (str/includes? body "odd covering"))
+          (is (str/includes? body "300"))
+          (is (= "r9" (-> r :body :run_id))
+              "the caller needs the id to attach the poller"))))
+    (testing "a run the server refused to start is an error, not a run"
+      ;; start-run! answers 200 with an {:error ...} body when the beam does
+      ;; not come up inside 30s, so :ok alone does not mean a run exists.
+      (with-redefs [http/post (fn [_ _] (ok {:error "the run did not start within 30s"}))]
+        (let [r (api/start-run! "http://x:1" {:problem "p"})]
+          (is (false? (:ok r)))
+          (is (str/includes? (:error r) "did not start")))))
     (testing "a dead server is a value, not a throw"
       (with-redefs [http/get (fn [& _] (throw (ex-info "connection refused" {})))]
         (let [r (api/list-runs "http://x:1")]

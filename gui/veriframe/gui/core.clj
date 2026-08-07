@@ -24,7 +24,11 @@
             [veriframe.gui.api :as api]
             [veriframe.gui.glpane :as glpane]
             [veriframe.gui.graph :as graph]
-            [veriframe.gui.mathtext :as mt]))
+            [veriframe.gui.mathtext :as mt]
+            [veriframe.gui.newrun :as newrun]
+            ;; Registers [:text-view ...] with glimmer as a side effect of
+            ;; loading — the problem statement needs more than one line.
+            [veriframe.gui.textview]))
 
 (defn default-base-url
   "Where the server is. Defaults to the same port `jolt serve` does, so the
@@ -46,6 +50,8 @@
            :connected? false
            :notice nil                  ; transient feedback line
            :budget ""                   ; resume budget-extension entry
+           :composing? false            ; the new-run form is open
+           :form {:problem "" :max-turns "" :beam-width "" :seed-run ""}
            :draft ""}))                 ; intervention input text
 
 (defonce poller (atom nil))
@@ -182,13 +188,84 @@
                    (str "resuming" (when budget (str " with budget " budget)))
                    (str "resume failed: " (:error r))))))))
 
+;; --- starting a run -----------------------------------------------------------
+
+(defn- form-field! [k v] (swap! state assoc-in [:form k] v))
+
+(defn- toggle-compose! []
+  (swap! state update :composing? not)
+  (notice! nil))
+
+(defn- copy-current-problem!
+  "Fill the statement from the selected run. Each generation of a campaign
+  is the previous prompt edited — retyping several paragraphs to change one
+  target is the kind of friction that stops the GUI being used at all."
+  []
+  (let [{:keys [runs run]} @state
+        row (first (filter #(= run (:id %)) runs))]
+    (if-let [p (:problem row)]
+      (do (form-field! :problem p)
+          (form-field! :seed-run (str run))
+          (notice! "loaded the current run's statement — edit it for the next generation"))
+      (notice! "no run selected to copy from"))))
+
+(defn- start-new-run! []
+  (let [{:keys [base-url form]} @state
+        {:keys [body error]} (newrun/request form)]
+    (if error
+      (notice! error)
+      (do (notice! (str "starting — " (newrun/summary body) "…"))
+          (future
+            (let [r (api/start-run! base-url body)
+                  id (get-in r [:body :run_id])]
+              (if (and (:ok r) id)
+                (do (swap! state assoc :composing? false
+                           :form {:problem "" :max-turns "" :beam-width ""
+                                  :seed-run ""})
+                    ;; Attach before refreshing the list: the poller is what
+                    ;; the user is waiting to see, and the list is cosmetic.
+                    (connect-to! id)
+                    (notice! (str "started " (subs (str id) 0 8)))
+                    (refresh-runs!))
+                (notice! (str "could not start: "
+                              (or (:error r) "no run id came back"))))))))))
+
 ;; --- components ---------------------------------------------------------------
+
+(defn- new-run-panel []
+  (let [{:keys [form]} @state]
+    [:frame {:label "new run" :vexpand true}
+     [:vbox {:spacing 8 :margin 8 :vexpand true}
+      [:label {:markup (mt/dim "the problem the beam will work on — state what counts as a shippable answer, and that only engine-confirmed claims count")
+               :wrap true :xalign 0.0}]
+      [:scrolled {:vexpand true}
+       [:text-view {:text (:problem form)
+                    :on-text #(form-field! :problem %)}]]
+      [:hbox {:spacing 8}
+       [:label {:label "max turns"}]
+       [:entry {:text (:max-turns form) :placeholder "default" :width-request 90
+                :on-change #(form-field! :max-turns %)}]
+       [:label {:label "beam width"}]
+       [:entry {:text (:beam-width form) :placeholder "default" :width-request 90
+                :on-change #(form-field! :beam-width %)}]
+       [:label {:label "seed from run"}]
+       [:entry {:text (:seed-run form) :hexpand true
+                :placeholder "run id — carries its confirmed artifacts in"
+                :on-change #(form-field! :seed-run %)}]]
+      [:hbox {:spacing 8}
+       [:button {:label "start run" :on-click start-new-run!}]
+       [:button {:label "from current run" :tooltip "copy the selected run's statement and seed from it"
+                 :on-click copy-current-problem!}]
+       [:button {:label "cancel" :on-click toggle-compose!}]]]]))
 
 (defn- header []
   (let [{:keys [runs run connected? notice budget]} @state
         row (first (filter #(= run (:id %)) runs))]
     [:hbox {:spacing 8}
      [:label {:markup "<b>veriframe</b>"}]
+     [:button {:label (if (:composing? @state) "close" "new run")
+               :tooltip "start a fresh run from a problem statement"
+               :on-click toggle-compose!}]
      [:button {:label "refresh" :tooltip "re-fetch the run list"
                :on-click refresh-runs!}]
      [:button {:label "◀" :on-click #(cycle-run! 1)}]
@@ -404,16 +481,24 @@
    [:button {:label "send" :on-click send-intervention!}]])
 
 (defn root []
-  [:vbox {:spacing 8 :margin 8}
-   [header]
-   [legend]
-   [:separator]
-   [:hbox {:spacing 8 :vexpand true}
-    [graph-pane]
-    [log-panel]]
-   [status-line]
-   [:separator]
-   [input-bar]])
+  (if (:composing? @state)
+    ;; The form takes the whole body rather than squeezing in beside the
+    ;; graph: a problem statement is paragraphs, and the GL pane keeps its
+    ;; context (and its poller) while this is open.
+    [:vbox {:spacing 8 :margin 8}
+     [header]
+     [:separator]
+     [new-run-panel]]
+    [:vbox {:spacing 8 :margin 8}
+     [header]
+     [legend]
+     [:separator]
+     [:hbox {:spacing 8 :vexpand true}
+      [graph-pane]
+      [log-panel]]
+     [status-line]
+     [:separator]
+     [input-bar]]))
 
 (defn -main [& _]
   (refresh-runs!)

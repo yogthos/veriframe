@@ -69,6 +69,19 @@
                          (assoc opts :socket-timeout 45000)))
        (catch Throwable e {:ok false :error (ex-message e)})))
 
+(defn start-run!
+  "Start a fresh run and return its id in the body.
+
+  The server answers 200 with an `{:error ...}` body when the beam fails to
+  come up inside its 30s window, so a plain 2xx is not proof a run exists;
+  that case is folded to {:ok false} here rather than left for each caller
+  to remember."
+  [base body]
+  (let [r (POST base "/v1/runs" body)]
+    (if (and (:ok r) (get-in r [:body :error]))
+      {:ok false :error (get-in r [:body :error])}
+      r)))
+
 (defn intervene!
   "A human directive, applied at the branch's next turn boundary. `branch-id`
   nil targets the whole run."
