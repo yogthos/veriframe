@@ -281,6 +281,52 @@ mathematics would be: a floor the density argument cannot see. Together
 with the $\{3,5,7\}$ row, where density stops deciding entirely, it is what
 the remaining generations are pointed at.
 
+## Finding 8 — into $\{3,5,7\}$, where density stops deciding
+
+*Run `94452de2` (generation 9, seeded from `74abc803`), 8 confirmed
+artifacts, one at slow tier. The first run with the evolutionary loop:
+`forked: 2`, the first non-zero fork count in the campaign.*
+
+Every earlier finding was $\{3,5\}$-supported, where Finding 7 shows density
+alone decides. This one is on $\{3,5,7\}$ — the first support where the
+density bound permits a covering — and it is settled by a **combinatorial**
+argument rather than by enumeration or by density.
+
+**Theorem.** $S = \{3,5,7,9,15,21,25,27,35\}$ is density-feasible
+($\sum 1/m = \tfrac{4759}{4725} \approx 1.0072 \ge 1$) and **cannot cover**.
+
+**Proof.** Split $S$ by divisibility by 3. The moduli coprime to 3,
+$D = \{5,7,25,35\}$, supply density
+$\tfrac15+\tfrac17+\tfrac1{25}+\tfrac1{35} = \tfrac{72}{175}$, so each of the
+three residue classes mod 3 needs relative density at least
+$1 - \tfrac{72}{175} = \tfrac{103}{175}$ from elsewhere. (That $D$ cannot
+cover the class $1 \bmod 3$ on its own was confirmed independently in Z3 and
+in Prolog.)
+
+The remaining moduli $\{3,9,15,21,27\}$ are each divisible by 3, so each
+lives **entirely inside one** mod-3 layer, contributing relative density
+$1, \tfrac13, \tfrac15, \tfrac17, \tfrac19$ respectively to whichever layer
+it lands in. Covering therefore requires a *partition* of these five into
+three layers with every layer reaching $\tfrac{103}{175}$.
+
+The total available is $\tfrac{563}{315} \approx 1.787$ and the total
+required is $3 \cdot \tfrac{103}{175} \approx 1.766$, so **density permits
+it**. No partition achieves it: whichever layer receives the modulus 3 is
+covered outright, and the other two must split
+$\{\tfrac13,\tfrac15,\tfrac17,\tfrac19\}$, total $\approx 0.787$, between
+them while needing $\approx 1.177$. Machine-checked in Lean at slow tier,
+over all partitions. $\blacksquare$
+
+**Why this one matters.** The set has $3 \cdot 5 \cdot 7 \cdot 9 \cdot 15
+\cdot 21 \cdot 25 \cdot 27 \cdot 35 \approx 1.7 \times 10^{9}$ residue
+assignments — far past exhaustive search, which every earlier finding relied
+on. The obstruction is that prime-power moduli are **indivisible**: a modulus
+divisible by 3 must commit its whole density to a single layer, and
+granularity, not scarcity, is what defeats the covering. That is an argument
+about structure rather than counting, it works where density is satisfied,
+and it is the first tool this campaign has that could plausibly scale to the
+general $\{3,5,7\}$ case.
+
 ## Frontier table
 
 | Odd distinct modulus set   | $\sum 1/m$              | Density-feasible | Max coverage / $L$      | Verdict                  |
@@ -296,6 +342,7 @@ the remaining generations are pointed at.
 | $\{3,5,9,11,13,15,17,21,27\}$ | $2348807/2297295 \ge 1$ | **yes**       | $1717455/2297295$ (exact) | **cannot cover**       |
 | $\{3,5,7,9,11,15,27,45\}$ | $\approx 1.0041 \ge 1$  | **yes**          | $7755/10395$ (exact)    | **cannot cover**         |
 | $\{3,5,7,9,11,13,15,27,45\}$ | $\approx 1.0811 \ge 1$ | **yes**       | $103455/135135$ (exact) | **cannot cover**         |
+| $\{3,5,7,9,15,21,25,27,35\}$ | $4759/4725 \ge 1$   | **yes**          | — (partition argument)  | **cannot cover** ($\{3,5,7\}$-supported) |
 
 **Next targets** (Pareto-minimal density-feasible sets: maximize density
 slack, minimize $\operatorname{lcm}$, minimize modulus count): supersets of
@@ -316,7 +363,9 @@ these exhaustive bounds show.
   `c5dcc35f-3e05-45e0-bc9f-1a9e8d76fee4`,
   `7f4af6b7-f494-4303-9fac-39b5927e3032`,
   `8cb4083d-8eec-4b2e-be7d-8152a86f5a4a`,
-  `394a26d5-5270-4bc8-a513-28ace2e7ae08` (2026-08-07), each after the first
+  `394a26d5-5270-4bc8-a513-28ace2e7ae08`,
+  `74abc803-705c-486b-8f85-baaad08c6c8d`,
+  `94452de2-0dfd-442a-bc4d-596ede4a1fc9` (2026-08-07), each after the first
   seeded from the run before it, all `deepseek-v4-flash` with artifact
   sharing on, beam width 2 through generation 4 and 3 thereafter.
 - Every claim above sits in the run journal as a confirmed artifact with
