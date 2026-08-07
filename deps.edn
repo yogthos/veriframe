@@ -66,12 +66,14 @@
            ;; load a native toolkit.
            :gui  {:extra-paths ["gui"]
                   :extra-deps
-                  {;; Local checkout: carries the :scroll-top prop on :scrolled,
-                   ;; added for the inspector panel (a scrolled window keeps its
-                   ;; offset across content changes, so a new selection opened
-                   ;; part-way down the previous one). Re-pin to a published sha
-                   ;; once that lands upstream.
-                   jolt-lang/glimmer {:local/root "../jolt-lang/glimmer"}
+                  {;; Pinned past v0.0.5 for two fixes the GUI needs: the
+                   ;; swap! nil-argument fix, and :scroll-top on :scrolled (a
+                   ;; scrolled window keeps its offset across content changes,
+                   ;; so the inspector opened part-way down the previous
+                   ;; selection).
+                   jolt-lang/glimmer
+                   {:git/url "https://github.com/jolt-lang/glimmer.git"
+                    :git/sha "18d64356a0438465521df2eac7bfdde4d2876ad8"}
                    jolt-lang/glimmer-gl
                    {:git/url "https://github.com/jolt-lang/glimmer-gl.git"
                     :git/sha "05a27d378a542cc0f32ff2b2682e0e47ffb83599"}}
