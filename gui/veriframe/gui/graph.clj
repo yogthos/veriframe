@@ -77,3 +77,65 @@
        (for [{:keys [id parent status]} (vals nodes)
              :when (and (nil? parent) (not= :seed status))]
          ["seed" id])))))
+
+;; --- layout and the view transform -------------------------------------------
+;; Pure math, kept out of the GL pane so the headless suite covers it: node
+;; placement, world<->pixel mapping, and click picking are exactly the parts
+;; whose bugs are invisible in a screenshot and obvious in a test.
+
+(defn layout
+  "id -> [x y] in world units: generations in columns left to right (the
+  seed, when present, is its own column 0), siblings stacked and centered
+  within their column in insertion order."
+  [{:keys [nodes order]}]
+  (let [seed? (contains? nodes "seed")
+        depth (fn depth [id]
+                (cond
+                  (= id "seed") 0
+                  (get-in nodes [id :parent]) (inc (depth (get-in nodes [id :parent])))
+                  :else (if seed? 1 0)))
+        ids (concat (when seed? ["seed"]) order)
+        by-col (group-by depth ids)]
+    (into {}
+          (for [[col members] by-col
+                :let [n (count members)]
+                [i id] (map-indexed vector members)]
+            [id [(double col)
+                 (double (- i (/ (dec n) 2.0)))]]))))
+
+(defn fit
+  "The world->pixel affine {:s :ox :oy} that places every position inside a
+  `w`x`h` viewport with `pad` pixels of margin, preserving aspect. A
+  single-node (degenerate) bounding box maps to the viewport center."
+  [positions w h pad]
+  (let [xs (map first (vals positions))
+        ys (map second (vals positions))
+        [x0 x1] [(reduce min xs) (reduce max xs)]
+        [y0 y1] [(reduce min ys) (reduce max ys)]
+        dx (max 1e-9 (- x1 x0))
+        dy (max 1e-9 (- y1 y0))
+        s (min (/ (- w (* 2 pad)) dx)
+               (/ (- h (* 2 pad)) dy))
+        ;; center the graph in the viewport
+        cx (/ (+ x0 x1) 2.0)
+        cy (/ (+ y0 y1) 2.0)]
+    {:s s :ox (- (/ w 2.0) (* s cx)) :oy (- (/ h 2.0) (* s cy))}))
+
+(defn world->px [{:keys [s ox oy]} [x y]]
+  [(+ ox (* s x)) (+ oy (* s y))])
+
+(defn px->world [{:keys [s ox oy]} [px py]]
+  [(/ (- px ox) s) (/ (- py oy) s)])
+
+(defn nearest
+  "The node whose projected position is closest to pixel [px py], when it is
+  within `max-d` pixels; nil otherwise. Picking is exact because the same
+  transform that drew the node answers the click."
+  [positions t [px py] max-d]
+  (let [scored (for [[id p] positions
+                     :let [[nx ny] (world->px t p)
+                           d (Math/sqrt (+ (Math/pow (- nx px) 2)
+                                           (Math/pow (- ny py) 2)))]]
+                 [d id])
+        [d id] (first (sort-by first scored))]
+    (when (and d (<= d max-d)) id)))

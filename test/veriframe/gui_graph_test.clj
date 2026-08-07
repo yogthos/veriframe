@@ -60,6 +60,42 @@
     (testing "insertion order is stable for layout"
       (is (= ["B1" "B2" "B1.2"] (:order g))))))
 
+(deftest layout-places-generations-in-columns
+  (let [g (graph/fold events)
+        pos (graph/layout g)]
+    (testing "seed at depth 0, roots at 1, children at 2"
+      (is (= 0.0 (first (pos "seed"))))
+      (is (= 1.0 (first (pos "B1"))))
+      (is (= 1.0 (first (pos "B2"))))
+      (is (= 2.0 (first (pos "B1.2")))))
+    (testing "siblings in one column get distinct y"
+      (is (not= (second (pos "B1")) (second (pos "B2")))))
+    (testing "without a seed, roots sit at depth 0"
+      (let [pos (graph/layout (graph/fold (remove #(= "run-seeded" (:kind %))
+                                                  events)))]
+        (is (= 0.0 (first (pos "B1"))))))))
+
+(deftest view-transform-round-trips-and-picks
+  (let [positions {"a" [0.0 0.0] "b" [2.0 1.0] "c" [1.0 -1.0]}
+        t (graph/fit positions 800 600 40)]
+    (testing "every node lands inside the padded viewport"
+      (doseq [[_ p] positions]
+        (let [[px py] (graph/world->px t p)]
+          (is (<= 40 px 760))
+          (is (<= 40 py 560)))))
+    (testing "px->world inverts world->px"
+      (let [[wx wy] (graph/px->world t (graph/world->px t [2.0 1.0]))]
+        (is (< (abs (- wx 2.0)) 1e-9))
+        (is (< (abs (- wy 1.0)) 1e-9))))
+    (testing "nearest node within radius, nil beyond it"
+      (let [[px py] (graph/world->px t [2.0 1.0])]
+        (is (= "b" (graph/nearest positions t [px py] 30)))
+        (is (nil? (graph/nearest positions t [(+ px 500) py] 30)))))
+    (testing "one node degenerate bbox still yields a usable transform"
+      (let [t1 (graph/fit {"only" [0.0 0.0]} 800 600 40)
+            [px py] (graph/world->px t1 [0.0 0.0])]
+        (is (and (<= 0 px 800) (<= 0 py 600)))))))
+
 (deftest fold-is-defensive-about-order-and-unknown-kinds
   (testing "an event for a branch never opened still lands somewhere"
     (let [g (graph/fold [{:id 1 :branch_id "BX" :turn 2 :kind "thesis"

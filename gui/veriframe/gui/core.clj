@@ -11,78 +11,210 @@
   "The optional GUI: a live scene graph of a run's solution space.
 
   Strictly an HTTP client of the server — this process holds no engines, no
-  database handle, and no run state of its own. Everything it shows is read
-  back through the same REST API any other client uses, with the journal
-  cursor endpoint doing the tailing, and everything it does (interventions,
-  abort, resume) goes through a POST. The server neither knows nor cares
-  that a GUI exists, which is what keeps `jolt serve` headless.
-
-  This namespace is the window shell: header bar (run picker and controls
-  land here, vf-se8), the graph pane (a placeholder until the :gl-area
-  lands, vf-yls), the branch log panel (vf-bku), and the intervention input
-  bar (vf-bsc). The layout is real so each later issue fills a hole rather
-  than reflowing the window."
-  (:require [glimmer.core :as ui]
+  database handle, and no run state of its own. Everything it shows arrives
+  through veriframe.gui.api (the journal cursor doing the tailing), the
+  event stream folds through veriframe.gui.graph into the node graph the
+  GL pane draws, and everything it does (interventions, abort, resume)
+  goes back through a POST. The server neither knows nor cares that a GUI
+  exists, which is what keeps `jolt serve` headless."
+  (:require [clojure.string :as str]
+            [glimmer.core :as ui]
             [glimmer.ratom :as r]
-            [veriframe.gui.api :as api]))
+            [veriframe.gui.api :as api]
+            [veriframe.gui.glpane :as glpane]
+            [veriframe.gui.graph :as graph]))
 
 (def default-base-url "http://127.0.0.1:3999")
 
 (defonce state
   (r/atom {:base-url default-base-url
-           :run nil          ; selected run id (vf-se8 adds the picker)
-           :selected nil     ; selected branch node (vf-bku)
+           :runs []                     ; known runs, newest first
+           :run nil                     ; selected run id
+           :graph (graph/empty-graph)   ; folded scene graph
+           :event-count 0
+           :selected nil                ; selected branch node
+           :branch-log nil              ; branch-detail body for :selected
            :connected? false
-           :events []        ; raw journal events; vf-cht folds these
-           :draft ""}))      ; intervention input text (vf-bsc)
+           :notice nil                  ; transient feedback line
+           :budget ""                   ; resume budget-extension entry
+           :draft ""}))                 ; intervention input text
 
 (defonce poller (atom nil))
 
-(defn- connect!
-  "Pick the newest run and tail it. vf-se8 replaces the auto-pick with a
-  run picker; the poll wiring stays exactly this."
-  []
-  (let [base (:base-url @state)
-        runs (api/list-runs base)
-        run-id (some-> runs :body :runs first :id)]
+;; --- selection and the branch log --------------------------------------------
+
+(defn- refresh-branch-log! []
+  (let [{:keys [base-url run selected]} @state]
+    (when (and run selected (not= "seed" selected))
+      (future
+        (let [r (api/branch-detail base-url run selected)]
+          (when (and (:ok r) (= selected (:selected @state)))
+            (swap! state assoc :branch-log (:body r))))))))
+
+(defn- select-node! [id]
+  (swap! state assoc :selected id :branch-log nil)
+  (refresh-branch-log!)
+  (glpane/request-render!))
+
+;; --- run selection and the poll loop -----------------------------------------
+
+(defn- connect-to!
+  "Tail `run-id`, replacing any current tail. The cursor starts at zero so
+  the fold sees the run from its first event."
+  [run-id]
+  (let [base (:base-url @state)]
     (when-let [{:keys [stop!]} @poller] (stop!))
-    (swap! state assoc :run run-id :events [])
+    (swap! state assoc :run run-id :graph (graph/empty-graph) :event-count 0
+           :selected nil :branch-log nil :notice nil)
+    (glpane/request-render!)
     (when run-id
       (reset! poller
               (api/start-poller!
                {:base base :run-id run-id
-                :on-events (fn [evs] (swap! state update :events into evs))
-                :on-status (fn [s] (swap! state assoc
-                                          :connected? (:connected? s)))})))))
+                :on-events
+                (fn [evs]
+                  (swap! state
+                         (fn [s] (-> s
+                                     (update :graph #(reduce graph/apply-event % evs))
+                                     (update :event-count + (count evs)))))
+                  (let [sel (:selected @state)]
+                    (when (some #(= sel (:branch_id %)) evs)
+                      (refresh-branch-log!)))
+                  (glpane/request-render!))
+                :on-status
+                (fn [s] (swap! state assoc :connected? (:connected? s)))})))))
+
+(defn- refresh-runs!
+  "Re-fetch the run list; keep the current selection when it still exists,
+  else tail the newest run."
+  []
+  (let [base (:base-url @state)
+        runs (vec (some-> (api/list-runs base) :body :runs))]
+    (swap! state assoc :runs runs)
+    (let [current (:run @state)]
+      (if (and current (some #(= current (:id %)) runs))
+        (swap! state assoc :run-status
+               (:status (first (filter #(= current (:id %)) runs))))
+        (connect-to! (some-> runs first :id))))))
+
+(defn- cycle-run!
+  "Step through the known runs; the picker with no dropdown widget."
+  [delta]
+  (let [{:keys [runs run]} @state
+        n (count runs)]
+    (when (pos? n)
+      (let [i (or (first (keep-indexed #(when (= run (:id %2)) %1) runs)) 0)
+            j (mod (+ i delta) n)]
+        (connect-to! (:id (nth runs j)))))))
+
+;; --- actions ------------------------------------------------------------------
+
+(defn- notice! [msg] (swap! state assoc :notice msg))
+
+(defn- send-intervention!
+  "The interjection path: a message for the selected branch (or the whole
+  run), applied by the server at the next turn boundary."
+  []
+  (let [{:keys [base-url run selected draft]} @state
+        branch (when (and selected (not= "seed" selected)) selected)]
+    (cond
+      (str/blank? draft) nil
+      (nil? run) (notice! "no run selected")
+      :else
+      (let [r (api/intervene! base-url run
+                              {:branch-id branch :kind "message"
+                               :payload draft})]
+        (if (:ok r)
+          (do (swap! state assoc :draft "")
+              (notice! (str "queued for " (or branch "the run")
+                            " — applies at the next turn boundary")))
+          (notice! (str "failed: " (:error r))))))))
+
+(defn- abort-run! []
+  (when-let [run (:run @state)]
+    (let [r (api/abort! (:base-url @state) run)]
+      (notice! (if (:ok r) "abort requested" (str "abort failed: " (:error r)))))))
+
+(defn- resume-run! []
+  (when-let [run (:run @state)]
+    (let [budget (parse-long (str (:budget @state)))
+          r (api/resume! (:base-url @state) run budget)]
+      (notice! (if (:ok r)
+                 (str "resuming" (when budget (str " with budget " budget)))
+                 (str "resume failed: " (:error r)))))))
+
+;; --- components ---------------------------------------------------------------
 
 (defn- header []
-  [:hbox {:spacing 8}
-   [:label {:markup "<b>veriframe</b>"}]
-   [:label {:label (str "  " (:base-url @state))}]
-   [:label {:label (str "  •  "
-                        (cond
-                          (not (:run @state)) "no run found"
-                          (:connected? @state) (str "tailing " (subs (str (:run @state)) 0 8))
-                          :else "disconnected — retrying"))
-            :xalign 0.0}]])
+  (let [{:keys [runs run connected? notice budget]} @state
+        row (first (filter #(= run (:id %)) runs))]
+    [:hbox {:spacing 8}
+     [:label {:markup "<b>veriframe</b>"}]
+     [:button {:label "⟳" :tooltip "refresh runs" :on-click refresh-runs!}]
+     [:button {:label "◀" :on-click #(cycle-run! 1)}]
+     [:label {:label (if run
+                       (str (subs (str run) 0 8) " · " (or (:status row) "?"))
+                       "no run")}]
+     [:button {:label "▶" :on-click #(cycle-run! -1)}]
+     [:button {:label "abort" :on-click abort-run!}]
+     [:button {:label "resume" :on-click resume-run!}]
+     [:entry {:text budget :placeholder "turns" :width-request 70
+              :on-change #(swap! state assoc :budget %)}]
+     [:label {:label (cond
+                       notice (str "  " notice)
+                       (not run) ""
+                       connected? "  tailing"
+                       :else "  disconnected — retrying")
+              :xalign 0.0 :hexpand true}]]))
 
-(defn- graph-pane []
-  (let [evs (:events @state)]
-    [:frame {:label "solution space" :hexpand true :vexpand true}
-     [:label {:label (str "graph pane (vf-yls renders this)\n\n"
-                          (count evs) " journal events\n"
-                          (when-let [e (peek evs)]
-                            (str "latest: [" (or (:branch_id e) "run") "] "
-                                 (:kind e))))
-              :wrap true}]]))
+(defn- scene-source []
+  {:graph (:graph @state) :selected (:selected @state)})
+
+(defn- graph-pane
+  "Deref-free on purpose: the :gl-area widget mounts once and repaints via
+  request-render!, not via reconciliation."
+  []
+  [:frame {:label "solution space" :hexpand true :vexpand true}
+   [glpane/pane scene-source select-node!]])
+
+(defn- branch-text [node detail]
+  (str "status: " (name (or (:status node) :unknown))
+       (when-let [reason (:reason node)] (str "\n" reason))
+       "\nconfirmed artifacts: " (or (:confirmed node) 0)
+       (when-let [c (:critic node)]
+         (str "\ncritic: progress " (:progress c) " · momentum " (:momentum c)
+              " · distinctness " (:distinctness c) " · viability " (:viability c)
+              (when (:spared? node) "\nspared by Pareto retention")))
+       (when-let [t (:thesis node)] (str "\n\nthesis: " t))
+       (when-let [turns (seq (:turns detail))]
+         (str "\n\n— turns —\n"
+              (->> (take-last 14 turns)
+                   (map #(str "T" (:turn %) " " (:tool_name %)
+                              " [" (:category %) "]"))
+                   (str/join "\n"))))
+       (when-let [arts (seq (filter #(= "confirmed" (:claim_status %))
+                                    (:artifacts detail)))]
+         (str "\n\n— confirmed —\n"
+              (->> (take-last 6 arts)
+                   (map #(let [c (str (:claim %))]
+                           (str "✓ [" (:kind %) "] "
+                                (subs c 0 (min 110 (count c)))
+                                (when (> (count c) 110) "…"))))
+                   (str/join "\n"))))))
 
 (defn- log-panel []
-  [:frame {:label "branch log" :vexpand true :width-request 360}
-   [:scrolled {:vexpand true}
-    [:label {:label (if-let [b (:selected @state)]
-                      (str "log for " b)
-                      "click a node to inspect its branch\n(vf-bku)")
-             :wrap true :xalign 0.0 :margin 8}]]])
+  (let [{:keys [graph selected branch-log]} @state
+        node (get-in graph [:nodes selected])]
+    [:frame {:label (if selected (str "branch " selected) "branch log")
+             :vexpand true :width-request 400}
+     [:scrolled {:vexpand true}
+      [:label {:text (cond
+                       (nil? selected)
+                       "click a node to inspect its branch"
+                       (= "seed" selected)
+                       (str "inherited artifacts\n" (:label node))
+                       :else (branch-text node branch-log))
+               :wrap true :xalign 0.0 :margin 8}]]]))
 
 (defn- input-bar []
   [:hbox {:spacing 8}
@@ -90,10 +222,8 @@
             :hexpand true
             :placeholder "interject: a message for the selected branch, applied at its next turn boundary"
             :on-change #(swap! state assoc :draft %)
-            :on-activate #(swap! state assoc :draft "")}]
-   [:button {:label "send"
-             ;; vf-bsc wires this to POST /v1/runs/:id/interventions.
-             :on-click #(swap! state assoc :draft "")}]])
+            :on-activate send-intervention!}]
+   [:button {:label "send" :on-click send-intervention!}]])
 
 (defn root []
   [:vbox {:spacing 8 :margin 8}
@@ -106,5 +236,5 @@
    [input-bar]])
 
 (defn -main [& _]
-  (connect!)
+  (refresh-runs!)
   (ui/run root :title "veriframe" :width 1100 :height 720))
