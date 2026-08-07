@@ -17,8 +17,8 @@ Nothing the model asserts ships unless an engine confirmed it, and the harness
 checks that what the engine confirmed is actually what the answer claims.
 
 This is a port of an earlier TypeScript version, and deliberately not a
-transliteration: the control layer was rebuilt. `PLAN.md` has the reasoning, the
-measurements, and every bug found along the way.
+transliteration: the control layer was rebuilt around a catalog of the ways
+models fake progress.
 
 ## Install
 
@@ -247,7 +247,7 @@ screenshot are tested without a display. Only the GL calls sit behind GTK.
 
 ```bash
 jolt -M:test      # offline and deterministic, GUI logic included
-jolt smoke        # platform probes, one per stated risk in PLAN.md
+jolt smoke        # platform probes, one per stated risk
 jolt build -m veriframe.core -o veriframe
 ```
 
@@ -265,7 +265,7 @@ plus what the harness must *not* do — a probe that expected a gate and did not
 get one is reported as INERT rather than as a pass, because a silent guard and a
 working guard look identical from outside.
 
-Read `PLAN.md` before trusting a number from any of these. The short version:
+Treat any number from these with suspicion:
 run-to-run variance is around 2x, so nothing sized under that is a result, and
 what survives at n=1 is structural — did the mechanism fire when it should and
 stay silent otherwise.
@@ -281,7 +281,7 @@ stay silent otherwise.
 | `HARNESS_NREPL_PORT` | `7888` | |
 | `HARNESS_DB` | `veriframe.sqlite3` | |
 | `HARNESS_MAX_TURNS` | `80` | per branch |
-| `HARNESS_BEAM_WIDTH` | `5` | treat as unjustified; see PLAN.md |
+| `HARNESS_BEAM_WIDTH` | `5` | treat as unjustified; the width sweep is inconclusive |
 | `HARNESS_MAX_TOKENS` | `16384` | a correctness parameter, not a cost knob |
 | `HARNESS_TIMEOUT_MS` | `300000` | per-read inactivity bound on a provider call |
 | `HARNESS_CONN_TIMEOUT_MS` | `15000` | bound on the TCP handshake alone, so an unreachable provider fails fast |

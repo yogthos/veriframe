@@ -29,3 +29,7 @@ octave-workspace
 
 # A draft blog post about the project, kept locally rather than shipped.
 blog.md
+
+# The design log: reasoning, measurements, and every bug found along the way.
+# Kept locally rather than shipped.
+PLAN.md
