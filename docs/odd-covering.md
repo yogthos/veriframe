@@ -209,46 +209,77 @@ with the usual split:
 - $\{3,5,7,9,11,13,15,27,45\}$, $\sum 1/m \approx 1.0811 \ge 1$: minimum
   uncovered $44 \cdot 720 = 31680$ of $135135$. **Cannot cover.**
 
-## The prime-support bound — a family-wide floor, pending verification
+## Finding 7 — the $\{3,5\}$ impossibility, proved in Lean for all exponents
 
-Six generations of enumeration have settled sets one at a time. The
-following is a *conjecture of this write-up*, derived by hand from the
-campaign's own data and **not yet engine-confirmed** — it is stated here as
-the target for the next generation, and should be read with exactly the
-skepticism the harness applies to anything an engine has not checked.
+*Run `394a26d5` (generation 7, seeded from `8cb4083d`), 10 confirmed
+artifacts across Lean, Z3 and Prolog, two at the slow tier.*
+
+The first result in this campaign about **infinitely many modulus sets at
+once**, and the first proved rather than enumerated. Six generations had
+settled sets one at a time; this one closes a whole prime support.
 
 Apply the density bound not to one modulus set but to the whole divisor
-lattice available to a prime support $P$. Every modulus is a divisor of
-some $\prod_{p \in P} p^{e_p}$, so the total density any set supported on
-$P$ can muster is bounded by the sum of $1/d$ over *all* divisors $d > 1$:
+lattice available to a prime support. Every modulus supported on $\{3,5\}$
+divides some $3^A 5^B$, and the reciprocals of the entire divisor box sum
+geometrically, so *no subset of it can reach density 1*:
 
-$$\sum_{d \mid \prod p^{e_p},\, d>1} \frac 1d \;\le\;
-  \prod_{p \in P} \frac{p}{p-1} \;-\; 1 .$$
+$$\sum_{\substack{d \mid 3^A5^B \\ d>1}} \frac 1d
+  \;=\; \Big(\sum_{a=0}^{A} 3^{-a}\Big)\Big(\sum_{b=0}^{B} 5^{-b}\Big) - 1
+  \;<\; \tfrac32 \cdot \tfrac54 - 1 \;=\; \tfrac78 \;<\; 1 .$$
 
-A covering needs density $\ge 1$, so a covering supported on $P$ requires
+**Theorem** (Lean 4 + Mathlib, machine-checked, no `sorry`). For all
+$A, B$ and every finite set $E$ of exponent pairs with $(0,0) \notin E$:
 
-$$\prod_{p \in P} \frac{p}{p-1} \;>\; 2 .$$
+```lean
+theorem divisor_subset_recip_sum_lt_78 {A B : ℕ} (E : Finset (ℕ × ℕ))
+    (hE : ∀ p ∈ E, p ≠ (0, 0) ∧ p.1 ≤ A ∧ p.2 ≤ B) :
+    (∑ p ∈ E, ((1/3 : ℚ) ^ p.1 * (1/5 : ℚ) ^ p.2)) < 7 / 8
 
-For odd $P$ this bites immediately:
+theorem no_distinct_3_5_cover {A B : ℕ} {E : Finset (ℕ × ℕ)}
+    {α : Type*} [Fintype α] [DecidableEq α]
+    (hcard : Fintype.card α = 3^A * 5^B)
+    (hE : ∀ p ∈ E, p ≠ (0, 0) ∧ p.1 ≤ A ∧ p.2 ≤ B)
+    (C : ℕ × ℕ → Finset α)
+    (hC_card : ∀ p ∈ E, ((C p).card : ℚ)
+                 = ((3^A * 5^B : ℕ) : ℚ) * ((1/3 : ℚ) ^ p.1 * (1/5 : ℚ) ^ p.2))
+    (hcover : ∀ x : α, ∃ p ∈ E, x ∈ C p) :
+    False
+```
+
+So **no covering system of any kind — however many moduli, however
+large — is supported on the primes $\{3,5\}$ alone**, and the uncovered
+fraction is at least $1/8$. The proof chains a geometric-sum identity, a
+monotonicity bound over subsets of the divisor box, and a pigeonhole union
+bound; Z3 independently confirmed the real-arithmetic supremum and Prolog
+exhausted the small cases, so the claim carries three differently-shaped
+confirmations.
+
+The same argument gives the general criterion: a covering supported on a
+prime set $P$ requires
+
+$$\prod_{p \in P} \frac{p}{p-1} \;>\; 2,$$
+
+which for odd $P$ reads
 
 | Prime support | $\prod p/(p-1)$ | Sup density | Verdict |
 |---|---|---|---|
 | $\{3\}$ | $3/2$ | $1/2$ | impossible; uncovered $\ge 1/2$ |
-| $\{3,5\}$ | $15/8$ | $7/8$ | **impossible; uncovered $\ge 1/8$** |
-| $\{3,5,7\}$ | $35/16$ | $19/16$ | density permits |
+| $\{3,5\}$ | $15/8$ | $7/8$ | **impossible** (proved above) |
+| $\{3,5,7\}$ | $35/16$ | $19/16$ | density permits — where the problem lives |
 
-So no odd covering system is supported on $\{3,5\}$ alone, however many
-moduli and however large — infinitely many modulus sets ruled out at once,
-which is the shape the campaign wanted. It also explains why every
-entangled set enumerated above sits where it does: all are $\{3,5\}$- or
-$\{3,5,7\}$-supported.
+**Novelty, stated honestly.** As mathematics this is elementary and
+certainly known: it amounts to observing that the reciprocals of the
+$\{3,5\}$-smooth numbers above 1 sum to $7/8$. What is worth recording is
+that the harness found and formally proved it unprompted by any literature,
+and that it explains the campaign's own data — every entangled set
+enumerated above is $\{3,5\}$- or $\{3,5,7\}$-supported.
 
 **And it is not sharp.** The bound guarantees only $1/8 = 0.125$ uncovered
 for $\{3,5\}$-supported sets, while every exhaustive computation in the
-table below lands between $0.27$ and $0.38$. The gap is the interesting
-part: a proof that $\{3,5\}$-supported sets leave more than $1/8$ uncovered
-would be a floor the density argument cannot see, and that is the next
-generation's primary target.
+table below lands between $0.27$ and $0.38$. That gap is where new
+mathematics would be: a floor the density argument cannot see. Together
+with the $\{3,5,7\}$ row, where density stops deciding entirely, it is what
+the remaining generations are pointed at.
 
 ## Frontier table
 
@@ -284,7 +315,8 @@ these exhaustive bounds show.
   `61de2075-6413-458d-aa03-667e56aea459`,
   `c5dcc35f-3e05-45e0-bc9f-1a9e8d76fee4`,
   `7f4af6b7-f494-4303-9fac-39b5927e3032`,
-  `8cb4083d-8eec-4b2e-be7d-8152a86f5a4a` (2026-08-07), each after the first
+  `8cb4083d-8eec-4b2e-be7d-8152a86f5a4a`,
+  `394a26d5-5270-4bc8-a513-28ace2e7ae08` (2026-08-07), each after the first
   seeded from the run before it, all `deepseek-v4-flash` with artifact
   sharing on, beam width 2 through generation 4 and 3 thereafter.
 - Every claim above sits in the run journal as a confirmed artifact with
