@@ -103,10 +103,10 @@ shared prime factors to *cooperate*, not merely to accumulate density.
 
 ## Frontier table
 
-| Odd distinct modulus set | $\sum 1/m$ | Density-feasible | Max coverage / $L$ | Verdict |
-|---|---|---|---|---|
-| $\{3,5,7,9\}$ | $248/315 < 1$ | no | $195/315$ (exact) | cannot cover (trivially) |
-| $\{3,5,7,9,11,13,15\}$ | $46027/45045 \ge 1$ | **yes** | $32805/45045$ (exact) | **cannot cover** |
+| Odd distinct modulus set | $\sum 1/m$          | Density-feasible | Max coverage / $L$    | Verdict                  |
+| ------------------------ | ------------------- | ---------------- | --------------------- | ------------------------ |
+| $\{3,5,7,9\}$            | $248/315 < 1$       | no               | $195/315$ (exact)     | cannot cover (trivially) |
+| $\{3,5,7,9,11,13,15\}$   | $46027/45045 \ge 1$ | **yes**          | $32805/45045$ (exact) | **cannot cover**         |
 
 **Next targets** (Pareto-minimal density-feasible sets: maximize density
 slack, minimize $\operatorname{lcm}$, minimize modulus count): replace 13

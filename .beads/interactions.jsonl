@@ -32,3 +32,4 @@
 {"id":"int-ce93c15a","kind":"field_change","created_at":"2026-08-06T23:16:53.039529Z","actor":"Yogthos","issue_id":"vf-691","extra":{"field":"status","new_value":"closed","old_value":"open","reason":"done with no answer ships the last passing audit's approved text; explicit answers keep the verbatim rule"}}
 {"id":"int-4738cede","kind":"field_change","created_at":"2026-08-07T01:12:13.816102Z","actor":"Yogthos","issue_id":"vf-huj","extra":{"field":"status","new_value":"closed","old_value":"open","reason":"Closed"}}
 {"id":"int-001940af","kind":"field_change","created_at":"2026-08-07T01:12:14.053779Z","actor":"Yogthos","issue_id":"vf-b1f","extra":{"field":"status","new_value":"closed","old_value":"open","reason":"Closed"}}
+{"id":"int-17d9b66f","kind":"field_change","created_at":"2026-08-07T01:44:46.075668Z","actor":"Yogthos","issue_id":"vf-doq","extra":{"field":"status","new_value":"closed","old_value":"open","reason":"landed with tests; 129 tests green"}}

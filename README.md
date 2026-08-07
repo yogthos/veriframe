@@ -230,33 +230,6 @@ stay silent otherwise.
 | `HARNESS_LEAN_WARM_SESSIONS` | `1` | warmed sessions to prepare at boot |
 | `DEEPSEEK_API_KEY` / `ZHIPU_API_KEY` / `OPENAI_API_KEY` | — | whichever provider |
 
-## Known limitations
-
-Tracked in `bd list`. The three that used to be listed here were all fixed on
-2026-08-05, upstream in `jolt-lang/http-client`, and two of them turned out to be
-the same bug.
-
-A hung provider call could not be bounded because `connect-stream` applied the
-caller's read timeout only on the plaintext branch, so `:socket-timeout` did
-nothing on https and every provider call is https. And https broke both after
-loading `jolt.nrepl` and inside a `jolt build` binary because Chez resolves
-foreign symbols most-recent-loaded-first: on macOS the process image links
-LibreSSL, so anything that loaded the process's own symbols took `SSL_*` away
-from OpenSSL, and the mismatched `SSL_CTX` layouts faulted. `jolt.http.tls` now
-loads its own libraries immediately before its bindings resolve. A built binary
-now completes a handshake, starts nREPL, and runs the full loop.
-
-A provider call is now bounded from both ends. `SO_RCVTIMEO` covers silence,
-and a total deadline in the read loop covers a peer that trickles a byte at a
-time and would otherwise reset that timer forever. The total is deliberately
-below the turn deadline, so the HTTP layer gives up first and unwinds the thread
-rather than the scheduler abandoning a branch that stays parked in a read.
-
-What remains is `:conn-timeout`, which is still ignored: setting `O_NONBLOCK`
-needs variadic `fcntl`, and Apple arm64 passes variadic arguments on the stack,
-so a fixed-arity binding corrupts them silently. `connect` is at least bounded by
-the kernel's SYN retry limit, unlike `recv`.
-
 ## License
 
 EPL-2.0, matching `jolt` and Clojure convention.
