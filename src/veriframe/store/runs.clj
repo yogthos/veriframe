@@ -75,6 +75,27 @@
   (journal/note! conn run-id :branch-closed
                  {:branch-id branch-id :data {:status status :reason reason}}))
 
+(defn extend-budget!
+  "Raise a run's max_turns. Only ever called with an explicitly requested
+  value: the resume path keeps the original budget unless one is passed, so
+  a crash cannot re-grant turns — extension is a human act, journaled as one."
+  [conn run-id max-turns]
+  (db/with-writer
+    (db/execute! conn ["UPDATE runs SET max_turns = ? WHERE id = ?"
+                       max-turns run-id]))
+  (journal/note! conn run-id :budget-extended {:data {:max-turns max-turns}}))
+
+(defn reopen-branch!
+  "An exhausted branch back to active — the budget-extension path. Branches
+  closed for cause (culled, abandoned, done) are never reopened; exhaustion
+  is the one closing reason that names the budget rather than the branch."
+  [conn run-id branch-id]
+  (db/with-writer
+    (db/execute! conn ["UPDATE branches SET status = 'active', inactive_reason = NULL
+                        WHERE run_id = ? AND id = ? AND status = 'exhausted'"
+                       run-id branch-id]))
+  (journal/note! conn run-id :branch-reopened {:branch-id branch-id}))
+
 (defn set-thesis!
   "The branch's current structural plan. Overwriting is allowed — committing to
   a different route is a legitimate move — and the change is journalled."

@@ -38,7 +38,8 @@
   [{:keys [conn config]} body]
   (let [problem (or (:problem body) (get body "problem"))
         max-turns (or (:max_turns body) (:max-turns body))
-        beam-width (or (:beam_width body) (:beam-width body))]
+        beam-width (or (:beam_width body) (:beam-width body))
+        seed-run (or (:seed_run body) (:seed-run body))]
   (let [llm-config (:llm config)
         adapter (registry/adapter-for (:provider llm-config))
         abort (atom false)
@@ -50,6 +51,7 @@
                                     :problem problem
                                     :max-turns max-turns
                                     :beam-width beam-width
+                                    :seed-run seed-run
                                     :abort abort
                                     :on-start #(deliver promised %)})]
                   (swap! active dissoc (:run-id r))
@@ -82,20 +84,25 @@
   Returns {:status 409 :body ...} when the run is not resumable — aborted runs
   stay aborted, completed runs shipped — else a success map the caller turns
   into an HTTP 200. The resumed run is registered under `active` with a fresh
-  abort flag, so abort! can stop it like any other."
-  [{:keys [conn config]} run-id]
+  abort flag, so abort! can stop it like any other.
+
+  `body` may carry max_turns: an explicit budget extension that reopens
+  branches closed as exhausted. Omitted, the original budget stands."
+  [{:keys [conn config]} run-id body]
   (if-not (resume/resumable? conn run-id)
     {:status 409 :body {:error {:message (str "run " run-id " is not resumable")
                                 :run_id run-id}}}
     (let [llm-config (:llm config)
           adapter (registry/adapter-for (:provider llm-config))
           abort (atom false)
+          max-turns (or (:max_turns body) (:max-turns body))
           fut (future
                 (try
                   (let [r (resume/resume! {:conn conn :config config
                                            :llm-adapter adapter
                                            :llm-config llm-config
-                                           :run-id run-id :abort abort})]
+                                           :run-id run-id :abort abort
+                                           :max-turns max-turns})]
                     (swap! active dissoc run-id)
                     r)
                   (catch Throwable e

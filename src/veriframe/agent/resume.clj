@@ -170,18 +170,32 @@
   loop at the round after the last recorded turn, under the run's ORIGINAL
   max-turns.
 
+  `:max-turns` is the one exception to the anchor rule, and it is explicit:
+  when passed AND larger than the recorded budget, the runs row is raised to
+  it and branches closed as `exhausted` reopen — they closed because the
+  budget ran out, not for cause, so more budget un-closes them. Culled,
+  abandoned, and done branches stay closed. The extension is journaled
+  (budget-extended, branch-reopened) and the rows are updated BEFORE the
+  branches are read back, so a crash mid-extension replays correctly. A
+  crash still cannot re-grant budget; only a caller asking for more can.
+
   Pending interventions are already in their table; the existing
   pending-directives drain picks them up at the first resumed boundary — this
   function does not reimplement that path.
 
   Returns the beam/run-rounds result. Throws when the run is not resumable."
-  [{:keys [conn config llm-adapter llm-config run-id abort]}]
+  [{:keys [conn config llm-adapter llm-config run-id abort max-turns]}]
   (let [run (runs/get-run conn run-id)]
     (when-not (resumable? conn run-id)
       (throw (ex-info (str "run " run-id " is not resumable (status "
                            (:status run) ")")
                       {:run-id run-id :status (:status run)})))
-    (let [max-turns (:max_turns run)
+    (when (and max-turns (> max-turns (:max_turns run)))
+      (runs/extend-budget! conn run-id max-turns)
+      (doseq [b (runs/branches conn run-id)
+              :when (= "exhausted" (:status b))]
+        (runs/reopen-branch! conn run-id (:id b))))
+    (let [max-turns (max (or max-turns 0) (:max_turns run))
           width (:beam_width run)
           turn-rows (journal/turns conn run-id)
           turns (group-by :branch_id turn-rows)

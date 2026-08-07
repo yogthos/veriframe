@@ -1381,6 +1381,116 @@
       (is (resume/resumable? c rid) "an exhausted process that never tore down may continue"))
     (is (not (resume/resumable? c "no-such-run")))))
 
+(deftest resume-with-extended-budget-reopens-exhausted-branches
+  ;; vf-huj: exhaustion is terminal today, and the original-budget anchor
+  ;; exists so a CRASH cannot re-grant turns. A human explicitly extending
+  ;; the budget is a different act: the runs row is updated, branches closed
+  ;; as `exhausted` reopen — culled branches died for cause and stay closed —
+  ;; and the extension is journaled.
+  (with-db [c]
+    (let [rid (runs/start-run! c {:problem "p" :max-turns 2 :beam-width 2})]
+      (runs/open-branch! c rid {:branch-id "B1" :created-at-turn 0})
+      (runs/open-branch! c rid {:branch-id "B2" :created-at-turn 0})
+      (journal/record-turn! c rid {:branch-id "B1" :turn 1 :tool-name "verify"
+                                   :result "ok" :category "success"})
+      (journal/record-turn! c rid {:branch-id "B1" :turn 2 :tool-name "verify"
+                                   :result "ok" :category "success"})
+      (runs/close-branch! c rid "B1" :exhausted "turn cap of 2 reached")
+      (runs/close-branch! c rid "B2" :culled "culled after 3 consecutive failures")
+      (runs/finish-run! c rid :failed nil)
+      (let [handed (atom nil)]
+        (with-redefs [beam/run-rounds (fn [ctx branches start-turn]
+                                        (reset! handed {:ctx ctx :branches branches
+                                                        :start-turn start-turn})
+                                        {:status :captured})
+                      veriframe.engine.prolog/create-session (fn [_] nil)]
+          (resume/resume! {:conn c :config {} :run-id rid :max-turns 6}))
+        (let [{:keys [ctx branches start-turn]} @handed
+              by-id (into {} (map (juxt :id identity) branches))]
+          (is (= 3 start-turn))
+          (is (= 6 (:max-turns ctx)) "the extended budget reaches the loop")
+          (is (= :active (:status (by-id "B1"))) "the exhausted branch reopens")
+          (is (= :culled (:status (by-id "B2"))) "culled stays closed")
+          (is (= 6 (:max_turns (runs/get-run c rid)))
+              "the runs row records the new budget")
+          (is (= "active" (:status (first (filter #(= "B1" (:id %))
+                                                  (runs/branches c rid)))))
+              "the branches row reopens, so a crash mid-extension replays right")
+          (is (= 1 (count (filter #(= "budget-extended" (:kind %))
+                                  (journal/events-since c rid 0))))))))))
+
+(deftest resume-without-extension-keeps-exhausted-branches-closed
+  ;; The anchor rule stands when no extension is asked for.
+  (with-db [c]
+    (let [rid (runs/start-run! c {:problem "p" :max-turns 2 :beam-width 1})]
+      (runs/open-branch! c rid {:branch-id "B1" :created-at-turn 0})
+      (journal/record-turn! c rid {:branch-id "B1" :turn 2 :tool-name "verify"
+                                   :result "ok" :category "success"})
+      (runs/close-branch! c rid "B1" :exhausted "turn cap of 2 reached")
+      (runs/finish-run! c rid :failed nil)
+      (let [handed (atom nil)]
+        (with-redefs [beam/run-rounds (fn [_ branches _]
+                                        (reset! handed branches)
+                                        {:status :captured})
+                      veriframe.engine.prolog/create-session (fn [_] nil)]
+          (resume/resume! {:conn c :config {} :run-id rid}))
+        (is (= :exhausted (:status (first @handed)))
+            "no override, no reopening")
+        (is (= 2 (:max_turns (runs/get-run c rid))))))))
+
+(deftest seed-from-run-imports-confirmed-artifacts
+  ;; vf-b1f: cross-run campaigns. A prior run's engine-confirmed artifacts —
+  ;; claim AND verification code — enter the new run's shared log under a
+  ;; seed: branch id, so no live branch's own-branch exclusion hides them.
+  ;; Refuted and existential artifacts stay behind.
+  (with-db [c]
+    (let [old (runs/start-run! c {:problem "p"})
+          new (runs/start-run! c {:problem "p2"})]
+      (journal/record-artifact! c old {:branch-id "B1" :turn 3 :kind :smt
+                                       :claim "no covering with moduli 3 5 7 9 exists"
+                                       :code "(check-sat)"
+                                       :claim-status :confirmed :tier :fast})
+      (journal/record-artifact! c old {:branch-id "B2" :turn 4 :kind :prolog
+                                       :claim "a refuted claim about covering"
+                                       :code "x" :claim-status :refuted :tier :fast})
+      (is (= 1 (artifacts/seed-from-run! c new old)))
+      (let [rows (artifacts/recent c new)]
+        (is (= 1 (count rows)) "only confirmed artifacts cross over")
+        (is (= "seed:B1" (:branch_id (first rows))))
+        (is (= "(check-sat)" (:code (first rows)))
+            "the verification code rides along for cheap re-confirmation"))
+      (testing "a branch named like the source branch still sees the seed"
+        (let [{:keys [block]} (#'aloop/context-block c new (branch-with :id "B1")
+                                                     "covering moduli" true)]
+          (is (str/includes? block "no covering with moduli"))))
+      (is (= 1 (count (filter #(= "run-seeded" (:kind %))
+                              (journal/events-since c new 0))))))))
+
+(deftest beam-run-seeds-and-forces-sharing
+  ;; The wiring: run! with :seed-run imports before any branch takes a turn,
+  ;; and seeding forces share-artifacts? on for the run — seeds nobody reads
+  ;; would be dead rows.
+  (with-db [c]
+    (let [old (runs/start-run! c {:problem "p"})]
+      (journal/record-artifact! c old {:branch-id "B1" :turn 1 :kind :smt
+                                       :claim "an inherited lemma" :code "(y)"
+                                       :claim-status :confirmed :tier :fast})
+      (let [handed (atom nil)]
+        (with-redefs [beam/run-rounds (fn [ctx branches _]
+                                        (reset! handed {:ctx ctx :branches branches})
+                                        {:status :captured :run-id (:run-id ctx)})
+                      veriframe.engine.prolog/create-session (fn [_] nil)]
+          (beam/run! {:conn c :config {:run {:share-artifacts? false}}
+                      :llm-config {:provider :local :model "m"}
+                      :problem "p2" :max-turns 5 :beam-width 1
+                      :seed-run old}))
+        (let [{:keys [ctx]} @handed
+              new (:run-id ctx)]
+          (is (true? (get-in ctx [:config :run :share-artifacts?]))
+              "seeding forces sharing on")
+          (is (= 1 (count (artifacts/recent c new)))
+              "the seed landed before the first turn"))))))
+
 (deftest resume-replays-the-journal-under-the-original-budget
   ;; The anchor rule: a run recorded through turn 3 of 10 gets 7 more turns,
   ;; not 10. run-rounds is stubbed to capture what resume hands it, so the

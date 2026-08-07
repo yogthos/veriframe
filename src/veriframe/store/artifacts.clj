@@ -25,7 +25,8 @@
   every context. The FTS table is standalone, and sync is app-managed here."
   (:require [clojure.string :as str]
             [jdbc.core :as jdbc]
-            [veriframe.store.db :as db]))
+            [veriframe.store.db :as db]
+            [veriframe.store.journal :as journal]))
 
 (defn record!
   "A confirmed artifact into the shared log. Callers gate on claim-status and
@@ -42,6 +43,34 @@
       (db/execute! conn
                      ["INSERT INTO shared_artifacts_fts (rowid, claim) VALUES (?, ?)"
                       id (str claim)]))))
+
+(defn seed-from-run!
+  "Copy `source-run-id`'s engine-confirmed artifacts into `run-id`'s shared
+  log, for cross-run campaigns: a new run continues from a prior one's
+  verified results without inheriting its dead ends.
+
+  Claim AND code cross over — the code is what lets a branch re-confirm an
+  inherited lemma in one cheap turn instead of reconstructing the encoding.
+  The branch id is prefixed `seed:` so provenance is visible in the context
+  block and no live branch's own-branch exclusion hides a seed. Only
+  confirmed claim-statuses cross; refuted and existential stay behind. The
+  done gate still requires in-run re-verification, so nothing inherited can
+  ship on faith. Returns the number of artifacts seeded."
+  [conn run-id source-run-id]
+  (let [rows (db/fetch conn
+                       ["SELECT branch_id, kind, tier, claim, code FROM artifacts
+                         WHERE run_id = ? AND claim_status = 'confirmed' ORDER BY id"
+                        source-run-id])]
+    (doseq [r rows]
+      (record! conn run-id {:branch-id (str "seed:" (:branch_id r))
+                            :turn 0
+                            :kind (keyword (:kind r))
+                            :tier (keyword (:tier r))
+                            :claim (:claim r)
+                            :code (:code r)}))
+    (journal/note! conn run-id :run-seeded
+                   {:data {:source source-run-id :artifacts (count rows)}})
+    (count rows)))
 
 (defn- fts-query
   "Turn free text into an FTS5 OR query.

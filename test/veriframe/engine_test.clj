@@ -397,12 +397,15 @@ sidon(S) :- sums(S, Sums), sort(Sums, Sorted), length(Sums, N), length(Sorted, N
   ;; than assuming destroy worked. destroy-tree sends only SIGTERM; proc/run
   ;; escalates to SIGKILL because a process being killed for ignoring its
   ;; deadline is exactly the one that may ignore a polite signal.
-  (let [before (:out (proc/run {:timeout-ms 5000} "sh" "-c" "pgrep -x sleep | wc -l"))
+  ;; Counting `sleep 45` specifically, not every sleep on the machine: any
+  ;; unrelated process sleeping in the background (a shell watcher loop, say)
+  ;; starting or ending between the two counts flakes a system-wide tally.
+  (let [before (:out (proc/run {:timeout-ms 5000} "sh" "-c" "pgrep -f 'sleep 45' | wc -l"))
         t0 (System/currentTimeMillis)
         _ (dotimes [_ 3] (proc/run {:timeout-ms 500} "sleep" "45"))
         elapsed (- (System/currentTimeMillis) t0)]
     (Thread/sleep 1500)
-    (let [after (:out (proc/run {:timeout-ms 5000} "sh" "-c" "pgrep -x sleep | wc -l"))]
+    (let [after (:out (proc/run {:timeout-ms 5000} "sh" "-c" "pgrep -f 'sleep 45' | wc -l"))]
       (is (= (str/trim (str before)) (str/trim (str after)))
           (str "three killed `sleep 45` processes leaked; before=" before " after=" after))
       ;; Asserted explicitly because the count alone does not catch the original

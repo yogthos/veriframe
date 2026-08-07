@@ -34,6 +34,7 @@
             [veriframe.engine.lean-repl :as lean-repl]
             [veriframe.engine.octave :as octave]
             [veriframe.engine.prolog :as prolog]
+            [veriframe.store.artifacts :as artifacts]
             [veriframe.store.failures :as failures]
             [veriframe.store.interventions :as interventions]
             [veriframe.store.journal :as journal]
@@ -393,15 +394,23 @@
   land a `done` wins and the rest are abandoned, since paying for four more
   provider calls after the answer exists is pure waste."
   [{:keys [conn config llm-adapter llm-config problem max-turns beam-width
-           abort on-start] :as opts}]
+           abort on-start seed-run] :as opts}]
   (let [max-turns (or max-turns (get-in config [:run :max-turns]) 40)
         width (or beam-width (get-in config [:run :beam-width]) 5)
+        ;; Seeding forces sharing on for this run regardless of the config
+        ;; flag: seeds enter through the shared log's context blocks, and
+        ;; seeds nobody reads would be dead rows.
+        config (cond-> config
+                 seed-run (assoc-in [:run :share-artifacts?] true))
         run-id (runs/start-run! conn {:problem problem
                                       :provider (:provider llm-config)
                                       :model (:model llm-config)
                                       :max-turns max-turns
                                       :beam-width width
                                       :prompt-digest (branch-loop/prompt-digest)})
+        ;; Seeded before any branch opens, so the first context block a
+        ;; branch ever sees can already carry inherited lemmas.
+        _ (when seed-run (artifacts/seed-from-run! conn run-id seed-run))
         ;; Every session ever opened, including forked children, so the
         ;; supervisor can tear them all down regardless of how the run ended.
         ;; The stop path must not depend on the agent's state — the RAX
