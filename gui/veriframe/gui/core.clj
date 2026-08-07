@@ -41,23 +41,24 @@
    [:label {:label (str "  •  " (:status @state)) :xalign 0.0}]])
 
 (defn- graph-pane []
-  [:frame {:label "solution space"}
+  [:frame {:label "solution space" :hexpand true :vexpand true}
    [:label {:label (str "graph pane\n\n"
                         "branch nodes render here as the beam explores\n"
                         "(vf-yls: glimmer-gl :gl-area)")
             :wrap true}]])
 
 (defn- log-panel []
-  [:frame {:label "branch log"}
-   [:scrolled
+  [:frame {:label "branch log" :vexpand true :width-request 360}
+   [:scrolled {:vexpand true}
     [:label {:label (if-let [b (:selected @state)]
                       (str "log for " b)
                       "click a node to inspect its branch\n(vf-bku)")
-             :wrap true :xalign 0.0}]]])
+             :wrap true :xalign 0.0 :margin 8}]]])
 
 (defn- input-bar []
   [:hbox {:spacing 8}
    [:entry {:text (:draft @state)
+            :hexpand true
             :placeholder "interject: a message for the selected branch, applied at its next turn boundary"
             :on-change #(swap! state assoc :draft %)
             :on-activate #(swap! state assoc :draft "")}]
@@ -66,10 +67,10 @@
              :on-click #(swap! state assoc :draft "")}]])
 
 (defn root []
-  [:vbox {:spacing 8}
+  [:vbox {:spacing 8 :margin 8}
    [header]
    [:separator]
-   [:hbox {:spacing 8 :homogeneous false}
+   [:hbox {:spacing 8 :vexpand true}
     [graph-pane]
     [log-panel]]
    [:separator]
