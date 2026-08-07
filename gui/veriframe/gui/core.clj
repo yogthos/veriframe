@@ -218,8 +218,17 @@
 (defn- legend []
   (let [{:keys [selected graph event-count]} @state]
     [:hbox {:spacing 12}
-     [:label {:markup (str "<b>shape</b> = engine:  ■ prolog   ◆ smt"
-                           "   ▲ lean   ⬢ octave   ● harness")}]
+     ;; U+2666 rather than U+25C6 for the diamond: the BLACK DIAMOND is
+     ;; absent from the default system font here and rendered as a tofu box
+     ;; showing its own codepoint, while the card-suit diamond has near
+     ;; universal coverage. The glyphs are sized up because they are the
+     ;; legend for the graph, not decoration.
+     [:label {:markup (str "<b>shape</b> = engine:  "
+                           "<span size=\"large\">■</span> prolog   "
+                           "<span size=\"large\">♦</span> smt   "
+                           "<span size=\"large\">▲</span> lean   "
+                           "<span size=\"large\">⬢</span> octave   "
+                           "<span size=\"large\">●</span> harness")}]
      [:label {:markup "<b>ring</b> = status"}]
      [:button {:label "recenter" :on-click glpane/reset-pan!}]
      [:label {:label (str (count (:nodes graph)) " nodes · "
