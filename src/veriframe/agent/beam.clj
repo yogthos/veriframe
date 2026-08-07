@@ -42,6 +42,27 @@
             [veriframe.store.runs :as runs])
   (:refer-clojure :exclude [run!]))
 
+(defn- crossover-block
+  "What OTHER lineages have proved, for a newly forked child's opening
+  context.
+
+  This is the recombination half. A child that inherits only its parent's
+  history is mutation: it deepens one line. Opening it holding the results
+  its aunts and uncles confirmed lets a fork COMBINE lineages — the branch
+  that proved a bound in Prolog and the branch that proved a structure in
+  Lean can have a child that uses both. Own-lineage results are excluded
+  because the child already carries them in its inherited history."
+  [conn run-id parent-id]
+  (let [others (remove #(= parent-id (:branch_id %))
+                       (journal/artifacts conn run-id))
+        confirmed (filter #(= "confirmed" (:claim_status %)) others)]
+    (when (seq confirmed)
+      (str "\n\n**Confirmed by other lineages in this run** — engine-verified,"
+           " and yours to build on or combine with:\n"
+           (str/join "\n"
+                     (for [a (take-last 8 confirmed)]
+                       (str "- [" (:branch_id a) " " (:kind a) "] " (:claim a))))))))
+
 (defn- open-branch!
   [{:keys [conn run-id config problem sessions]} id parent-id thesis turn]
   (let [session (prolog/create-session (get-in config [:engines :swipl]))
@@ -61,6 +82,7 @@
                (str "You were forked from " parent-id " to pursue one specific"
                     " approach:\n\n**" (:goal thesis) "**"
                     (when (:technique thesis) (str "\nTechnique: " (:technique thesis)))
+                    (crossover-block conn run-id parent-id)
                     "\n\nOther branches are pursuing the alternatives, so commit to"
                     " this one rather than hedging. Issue your first tool call."))))
       b)))
@@ -360,6 +382,24 @@
   (when (:octave b) (try (octave/dispose! (:octave b)) (catch Throwable _ nil)))
   (when (:prolog b) (try (prolog/dispose! (:prolog b)) (catch Throwable _ nil))))
 
+(defn- finish-now?
+  "Should a shipped branch end the run? Returns the winning branch, or nil to
+  keep exploring.
+
+  Winner-takes-all is right for a question with one answer and wrong for a
+  research campaign: the first branch to clear the bar terminates every other
+  line, so the run returns the cheapest qualifying result rather than the best
+  one. With `:stop-on-first-done?` false a shipped branch goes inactive
+  holding its answer and the rest keep working; the run ends when nobody is
+  left to explore, and select-done-branch ranks every finished branch on the
+  evidence it carries."
+  [ctx done-branch branches]
+  (when done-branch
+    (if (get-in ctx [:config :run :stop-on-first-done?] true)
+      done-branch
+      (when-not (some #(and (state/active? %) (not (:final-answer %))) branches)
+        done-branch))))
+
 (defn select-done-branch
   "The winner among branches that landed :final-answer this round.
 
@@ -404,7 +444,10 @@
         (let [active (filterv state/active? branches)
               done-candidates (filterv :final-answer branches)
               multi-candidate? (< 1 (count done-candidates))
-              done-branch (select-done-branch ctx done-candidates)]
+              ;; A shipped branch always stops working; whether it stops the
+              ;; RUN is the campaign question finish-now? answers.
+              done-branch (finish-now? ctx (select-done-branch ctx done-candidates)
+                                       branches)]
           (cond
             ;; Checked at the top of every round. An abort must not need the
             ;; run's cooperation, so it is a flag the scheduler reads rather
@@ -449,7 +492,9 @@
             :else
             (let [directives (interventions/pending conn run-id)
                   active (drain-directives! ctx active directives turn)
-                  advanced (advance-all ctx (filterv state/active? active) turn)
+                  advanced (advance-all
+                            (assoc ctx :branch-count (count branches))
+                            (filterv state/active? active) turn)
                   ;; Critic scores refresh on post-turn state, before any
                   ;; retention decision reads them.
                   advanced (ensure-scored ctx advanced turn)

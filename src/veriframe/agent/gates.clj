@@ -153,8 +153,33 @@
     :prediction (fn [_] "the branch calls review or done within two turns")
     :window 2}
 
-   {:gate :stuck
+   {:gate :branch-out
     :priority 6
+    :budget :max-branch-outs
+    :doc "A branch that just confirmed something, with room left in the beam.
+
+          This is the reproduction half of the loop. The beam had selection
+          (critic scores, Pareto retention) and no variation: `branch_theses`
+          existed, the scheduler invited forks, and across every live run
+          the count of forked children was zero — seven invitations went out
+          in one run and every one was declined. An invitation the model may
+          decline is not a mechanism; a gate with a settled prediction is.
+
+          Fires on evidence rather than on hope: a confirmation is the
+          fitness signal, so the branch worth reproducing from is the one
+          that just proved something. Silent once the run is winding down,
+          because a new line that late cannot finish."
+    :when (fn [{:keys [branch branch-count max-turns]}]
+            (and (state/has-confirmed? branch)
+                 (< (or branch-count 0) (threshold :max-total-branches))
+                 (< (state/turn-count branch)
+                    (* (threshold :wind-down-fraction) (max 1 (or max-turns 40))))))
+    :message (fn [_] (prompt "branch-out"))
+    :prediction (fn [_] "the branch calls branch_theses")
+    :window 3}
+
+   {:gate :stuck
+    :priority 7
     :budget :max-stuck-hints
     :doc "Consecutive failed or repetitive verifications. Keyed on failure,
           which is why the progress gate below exists as well."
@@ -165,7 +190,7 @@
     :window 3}
 
    {:gate :prologue-cap
-    :priority 7
+    :priority 8
     :budget nil
     :doc "The branch has produced nothing at all. Every other guard is
           principled-blind here: the stall counter arms on a progress event, the
@@ -182,7 +207,7 @@
     :window 3}
 
    {:gate :progress-stalled
-    :priority 8
+    :priority 9
     :budget :max-stall-nudges
     :doc "Turns passing with no progress event, after the branch has shown it
           can make progress. Arms only after the first, so exploration is never
@@ -199,7 +224,7 @@
     :window 3}
 
    {:gate :tier-escalation
-    :priority 9
+    :priority 10
     :budget :max-tier-escalations
     :doc "Artifacts exist but only from the fast tier. A one-shot check and a
           cross-checked template are not the same evidence, and at finalization
@@ -212,7 +237,7 @@
     :window 3}
 
    {:gate :turn-budget
-    :priority 10
+    :priority 11
     :budget nil
     :doc "The turn cap was enforced but invisible to the model, so it could not
           budget against it (dirge PR 738)."

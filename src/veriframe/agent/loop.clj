@@ -248,6 +248,10 @@
                       decision (arbiter/decide
                                 {:branch branch
                                  :max-turns max-turns
+                                 ;; How wide the beam already is, so the
+                                 ;; reproduction rung knows whether the run
+                                 ;; can afford offspring.
+                                 :branch-count (or (:branch-count ctx) 1)
                                  :done-block (:done-block result)
                                  :directive (or (:pending-directive branch)
                                                 (:directive ctx))

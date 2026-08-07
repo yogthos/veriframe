@@ -128,6 +128,14 @@
   :doc "Minimum critic scores before a branch is invited to fork. Below
         this, growth spends budget on lines not yet earning it."}
 
+ :max-branch-outs
+ {:value 3 :kind :re-fire-guard :capability-tunable? false
+  :doc "How often the branch-out rung may fire on one branch. This is the
+        reproduction half of the loop, so it is a guard rather than a cost
+        ceiling: each firing asks for offspring, and a branch that keeps
+        confirming should keep being asked, but not on every boundary while
+        it is busy complying."}
+
  :fork-invite-cooldown
  {:value 6 :kind :re-fire-guard :capability-tunable? true
   :doc "Turns before the same branch may be invited to fork again. The

@@ -144,6 +144,8 @@ Other branches are working the same problem right now with different hypotheses.
 branch_theses({theses: [{goal, subClaims, technique}, ...]})
 ```
 
-Use it when you can see two or three genuinely different routes and cannot tell which is right. The first thesis commits you; the rest become sibling branches exploring in parallel. Do not use it to hedge — a fork costs another engine process and another model call every turn, and three vague variations of one idea is worse than one committed attempt.
+**Forking is how the beam grows, and a confirmed result is what pays for it.** When you have verified something, the next move is usually to name the two or three genuinely different ways to build on it and call `branch_theses`: the first thesis commits you, the rest become sibling branches exploring in parallel, each with its own engines and history, each seeing what the others confirm. A child opens holding what every other lineage has proved, so a fork can combine two lines rather than only deepening one.
 
-The first branch to land a verified `done` ends the run for everyone.
+What counts as genuinely different: a different technique on the same claim, a generalisation versus a sharper special case, attacking an obstruction versus routing around it. What does not: three restatements of the plan you already have. Do not fork to hedge — a fork costs another engine process and another model call per turn — but do not decline out of caution either. On a hard problem the beam that widens where the evidence is beats the one that runs three fixed lines to exhaustion.
+
+On a single-answer problem the first branch to land a verified `done` ends the run for everyone. On an open-ended one the run keeps exploring after a branch ships, and the strongest answer is chosen at the end from the evidence each branch carries.

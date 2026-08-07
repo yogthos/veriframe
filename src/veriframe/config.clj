@@ -136,7 +136,15 @@
                   ;; Cross-branch sharing of engine-confirmed artifacts. Off by
                   ;; default: shared lemmas may cost the beam its diversity, and
                   ;; whether they earn it is exactly what sweep-widths measures.
-                  :share-artifacts? (= "1" (env "HARNESS_SHARE_ARTIFACTS"))}}
+                  :share-artifacts? (= "1" (env "HARNESS_SHARE_ARTIFACTS"))
+                  ;; Winner-takes-all: the first verified `done` ends the run.
+                  ;; Right for a question with one answer, wrong for a research
+                  ;; campaign, where it returns the cheapest qualifying result
+                  ;; and terminates every other line. Off means a shipped
+                  ;; branch goes inactive holding its answer while the rest
+                  ;; keep exploring, and the best is ranked at the end.
+                  :stop-on-first-done? (not= "0" (or (env "HARNESS_STOP_ON_FIRST_DONE")
+                                                     "1"))}}
       overrides))))
 
 (defn redacted

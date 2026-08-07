@@ -1079,6 +1079,91 @@
       ;; and is actually a rule fired outside the situation it was written for.
       (is (= :active (:status (#'beam/cull-or-keep {} failing 0 [])))))))
 
+;; --- the evolutionary loop --------------------------------------------------
+
+(deftest branch-out-fires-on-a-confirmation-with-room-to-grow
+  ;; Variation on success: a branch that just proved something is the one
+  ;; worth reproducing from. Selection without reproduction is half a
+  ;; genetic algorithm, and forked:0 across every live run was the symptom.
+  ;; Ordering matters and is deliberate: `milestone` outranks this rung, so
+  ;; the first confirmation sends the branch to review rather than straight
+  ;; to forking. Result, then review, THEN widen — reproduce from a result
+  ;; that survived a check, not from a raw one.
+  (let [fit (branch-with :artifacts [{:claim "c" :claim-status :confirmed :turn 5}]
+                         :turns (vec (repeat 6 {}))
+                         :gate-history [{:gate :milestone :turn 5}])]
+    (testing "the first confirmation goes to review, not to forking"
+      (is (= :milestone (:gate (arbiter/decide
+                                {:branch (dissoc fit :gate-history)
+                                 :max-turns 40 :branch-count 3})))))
+    (testing "fires when the beam has room"
+      (let [d (arbiter/decide {:branch fit :max-turns 40 :branch-count 3})]
+        (is (= :branch-out (:gate d)))
+        (is (str/includes? (:message d) "branch_theses"))
+        (is (str/includes? (:prediction d) "branch_theses"))))
+    (testing "stays silent with nothing confirmed"
+      (is (not-any? #{:branch-out}
+                    (map :gate (arbiter/eligible
+                                {:branch (branch-with) :max-turns 40
+                                 :branch-count 3})))))
+    (testing "stays silent when the beam is at its cap"
+      (is (not-any? #{:branch-out}
+                    (map :gate (arbiter/eligible
+                                {:branch fit :max-turns 40
+                                 :branch-count (gates/threshold :max-total-branches)})))))
+    (testing "stays silent once winding down — no new lines that late"
+      (is (not-any? #{:branch-out}
+                    (map :gate (arbiter/eligible
+                                {:branch (assoc fit :turns (vec (repeat 38 {})))
+                                 :max-turns 40 :branch-count 3})))))
+    (testing "the prediction settles when the branch actually forks"
+      (is (= :met (arbiter/settle {:gate :branch-out :turn 5 :window 3}
+                                  {:current-turn 6 :tools-called ["branch_theses"]
+                                   :branch-before fit :branch-after fit})))
+      (is (= :unmet (arbiter/settle {:gate :branch-out :turn 5 :window 3}
+                                    {:current-turn 9 :tools-called ["verify"]
+                                     :branch-before fit :branch-after fit}))))))
+
+(deftest a-forked-child-inherits-across-lineages
+  ;; Crossover. A child that only inherits its parent's line is mutation;
+  ;; recombination means it opens holding what the OTHER branches proved,
+  ;; so a fork can combine two lineages rather than deepening one.
+  (with-db [c]
+    (let [rid (runs/start-run! c {:problem "p"})]
+      (journal/record-artifact! c rid {:branch-id "B2" :turn 3 :kind :smt
+                                       :claim "sibling lemma about residues"
+                                       :code "(check-sat)"
+                                       :claim-status :confirmed :tier :fast})
+      (journal/record-artifact! c rid {:branch-id "B1" :turn 4 :kind :prolog
+                                       :claim "own lemma from the parent"
+                                       :code "x" :claim-status :confirmed :tier :fast})
+      (let [msg (#'beam/crossover-block c rid "B1")]
+        (is (str/includes? msg "sibling lemma about residues")
+            "the child opens holding what other lineages proved")
+        (is (not (str/includes? msg "own lemma from the parent"))
+            "its own line is already in its inherited history")))))
+
+(deftest a-run-can-keep-exploring-after-a-branch-ships
+  ;; Winner-takes-all ends a research run at the first qualifying answer.
+  ;; With the flag off, a shipped branch goes inactive holding its answer
+  ;; and the rest keep working; the best is chosen at the end.
+  (with-db [c]
+    (let [rid (runs/start-run! c {:problem "p" :beam-width 2})
+          shipped (assoc (branch-with :id "B1") :final-answer "first answer")
+          working (branch-with :id "B2")]
+      (runs/open-branch! c rid {:branch-id "B1"})
+      (runs/open-branch! c rid {:branch-id "B2"})
+      (testing "stop-on-first-done? true ends the run"
+        (is (some? (#'beam/finish-now? {:config {:run {:stop-on-first-done? true}}}
+                                       shipped [shipped working]))))
+      (testing "false keeps going while another branch is alive"
+        (is (nil? (#'beam/finish-now? {:config {:run {:stop-on-first-done? false}}}
+                                      shipped [shipped working]))))
+      (testing "false still ends once nobody is left to explore"
+        (is (some? (#'beam/finish-now?
+                    {:config {:run {:stop-on-first-done? false}}}
+                    shipped [shipped (assoc working :status :culled)])))))))
+
 ;; --- the critic and Pareto retention ----------------------------------------
 
 (deftest critic-score-parsing
