@@ -130,13 +130,32 @@
       (cull (str "culled after " fails
                  " consecutive failures; the Pareto reprieve was spent"))
 
+      ;; A dead end is a dead end at any age; the critic's own verdict is
+      ;; the one judgement that does not depend on how long the branch has
+      ;; had to accumulate anything.
+      (and scores (<= (:viability scores) 1))
+      (cull (str "culled after " fails
+                 " consecutive failures; the critic scored the line a dead end"))
+
+      ;; Juvenile grace. Progress and momentum are age-correlated, so a
+      ;; newborn is dominated by its own parent one turn after being forked.
+      ;; Let it express itself first.
+      (< (state/turn-count branch) (gates/threshold :juvenile-grace))
+      (do (when (and conn run-id)
+            (journal/note! conn run-id :cull-spared
+                           {:branch-id (:id branch)
+                            :data {:scores scores :failures fails :juvenile? true}}))
+          (state/add-message
+           branch "user"
+           (str "[harness] " fails " consecutive verifications have failed."
+                " A branch this new is not culled for it — you were forked to"
+                " explore a distinct line and have not had the turns to show"
+                " what it is worth yet. Change something concrete and keep"
+                " going.")))
+
       (nil? scores)
       (cull (str "culled after " fails
                  " consecutive failures with no recent confirmed work"))
-
-      (<= (:viability scores) 1)
-      (cull (str "culled after " fails
-                 " consecutive failures; the critic scored the line a dead end"))
 
       (critic/dominated? scores sibling-scores)
       (cull (str "culled after " fails

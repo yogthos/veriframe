@@ -128,6 +128,18 @@
   :doc "Minimum critic scores before a branch is invited to fork. Below
         this, growth spends budget on lines not yet earning it."}
 
+ :juvenile-grace
+ {:value 8 :kind :threshold :capability-tunable? false
+  :doc "Turns a newly forked branch may take before the cull rule applies to
+        it at all. Generation 9 forked for the first time and every child was
+        dead within twelve turns: progress and momentum are age-correlated,
+        so a branch born at turn 15 scores 1 on progress by definition and its
+        mature parent dominates it on every objective one turn later.
+        Selection that runs before an offspring can express itself culls on
+        age rather than on merit. Sized to fit a thesis, a first encoding and
+        a first verification — long enough to produce one confirmation, short
+        enough that a genuinely dead line does not linger."}
+
  :max-branch-outs
  {:value 3 :kind :re-fire-guard :capability-tunable? false
   :doc "How often the branch-out rung may fire on one branch. This is the

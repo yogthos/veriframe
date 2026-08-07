@@ -1063,8 +1063,10 @@
 (deftest cull-protects-a-recently-productive-branch
   ;; Incremental strategies look like verify N, fail at N+1, verify N+1.
   ;; Culling them throws away the most productive branch in the beam.
+  ;; Ten turns: past the juvenile grace period, so this exercises the
+  ;; ordinary cull path rather than the newborn protection.
   (let [failing (-> (branch-with :consecutive-failures 3)
-                    (assoc :turns (vec (repeat 6 {}))))
+                    (assoc :turns (vec (repeat 10 {}))))
         productive (assoc failing :artifacts [{:claim "c" :claim-status :confirmed
                                                :turn 5}])]
     (is (= :culled (:status (#'beam/cull-or-keep {} failing 2 []))))
@@ -1207,6 +1209,39 @@
     (with-redefs [llm/chat (fn [& _] (throw (ex-info "provider down" {})))]
       (is (nil? (critic/score! {} b [] 7))
           "a dead provider must not take the beam down"))))
+
+(deftest a-juvenile-branch-is-not-culled-against-its-elders
+  ;; Gen-9 forked for the first time and every child died within twelve
+  ;; turns. The reason was structural, not intellectual: progress and
+  ;; momentum are age-correlated, so a branch born at turn 15 scores 1 on
+  ;; progress by definition and its fifteen-turn-old parent dominates it on
+  ;; every objective one turn later. Selection that runs before an offspring
+  ;; can express itself is not selection. A branch gets a grace period of
+  ;; its own turns before the cull rule applies to it at all.
+  (with-db [c]
+    (let [rid (runs/start-run! c {:problem "p"})
+          ctx {:conn c :run-id rid}
+          mature {:progress 5 :momentum 5 :distinctness 5 :viability 4}
+          newborn (fn [turns]
+                    (-> (branch-with :id "B1.2" :consecutive-failures 3
+                                     :created-at-turn 15
+                                     :critic {:scores {:progress 1 :momentum 2
+                                                       :distinctness 5 :viability 4}
+                                              :turn 16})
+                        (assoc :turns (vec (repeat turns {})))))]
+      (testing "a branch inside its grace period survives a dominating elder"
+        (let [b (#'beam/cull-or-keep ctx (newborn 3) 2 [mature])]
+          (is (state/active? b))
+          (is (= 1 (count (filter #(= "cull-spared" (:kind %))
+                                  (journal/events-since c rid 0)))))))
+      (testing "past the grace period the ordinary rules resume"
+        (is (= :culled (:status (#'beam/cull-or-keep
+                                 ctx
+                                 (newborn (inc (gates/threshold :juvenile-grace)))
+                                 2 [mature])))))
+      (testing "grace does not save a branch the critic calls a dead end"
+        (let [doomed (assoc-in (newborn 3) [:critic :scores :viability] 1)]
+          (is (= :culled (:status (#'beam/cull-or-keep ctx doomed 2 [])))))))))
 
 (deftest pareto-retention-spares-non-dominated-branches
   ;; The scalar rule is the TRIGGER; domination is the verdict. Three runs in
