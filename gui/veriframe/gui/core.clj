@@ -17,7 +17,8 @@
   GL pane draws, and everything it does (interventions, abort, resume)
   goes back through a POST. The server neither knows nor cares that a GUI
   exists, which is what keeps `jolt serve` headless."
-  (:require [clojure.string :as str]
+  (:require [clojure.data.json :as json]
+            [clojure.string :as str]
             [glimmer.core :as ui]
             [glimmer.ratom :as r]
             [veriframe.gui.api :as api]
@@ -50,12 +51,21 @@
 
 ;; --- selection and the branch log --------------------------------------------
 
+(defn- selected-branch-id
+  "The branch a selection belongs to. An artifact node's id is
+  `<branch>@<turn>`, so it carries its branch explicitly."
+  [{:keys [graph selected]}]
+  (when (and selected (not= "seed" selected))
+    (or (get-in graph [:nodes selected :branch]) selected)))
+
 (defn- refresh-branch-log! []
-  (let [{:keys [base-url run selected]} @state]
-    (when (and run selected (not= "seed" selected))
+  (let [{:keys [base-url run] :as st} @state
+        branch (selected-branch-id st)
+        sel (:selected st)]
+    (when (and run branch)
       (future
-        (let [r (api/branch-detail base-url run selected)]
-          (when (and (:ok r) (= selected (:selected @state)))
+        (let [r (api/branch-detail base-url run branch)]
+          (when (and (:ok r) (= sel (:selected @state)))
             (swap! state assoc :branch-log (:body r))))))))
 
 (defn- select-node! [id]
@@ -136,8 +146,8 @@
   run), applied by the server at the next turn boundary. Bound to both the
   send button and Enter in the entry (:on-activate)."
   []
-  (let [{:keys [base-url run selected draft]} @state
-        branch (when (and selected (not= "seed" selected)) selected)]
+  (let [{:keys [base-url run draft] :as st} @state
+        branch (selected-branch-id st)]
     (cond
       (str/blank? draft) nil
       (nil? run) (notice! "no run selected")
@@ -231,6 +241,25 @@
                       :else "hover a node to identify it; drag to pan")
              :xalign 0.0}]))
 
+(defn- clip [s n]
+  (let [t (str s)]
+    (if (> (count t) n) (str (subs t 0 n) "\n… [" (- (count t) n) " more chars]") t)))
+
+(defn- thesis-text
+  "The branch's plan as it registered it: goal, technique, and the
+  sub-claims it committed to. This is the approach a reader follows."
+  [detail]
+  (let [t (:thesis (:branch detail))
+        t (if (string? t)
+            (try (json/read-str t :key-fn keyword) (catch Throwable _ nil))
+            t)]
+    (when t
+      (str "\n\nTHESIS\n" (:goal t)
+           (when-let [tech (:technique t)] (str "\nTechnique: " tech))
+           (when-let [subs (seq (:subClaims t))]
+             (str "\nSub-claims:\n"
+                  (str/join "\n" (map #(str "  " %) subs))))))))
+
 (defn- branch-text [node detail]
   (str "status: " (name (or (:status node) :unknown))
        (when-let [reason (:reason node)] (str "\n" reason))
@@ -239,34 +268,75 @@
          (str "\ncritic: progress " (:progress c) " · momentum " (:momentum c)
               " · distinctness " (:distinctness c) " · viability " (:viability c)
               (when (:spared? node) "\nspared by Pareto retention")))
-       (when-let [t (:thesis node)] (str "\n\nthesis: " t))
+       (or (thesis-text detail)
+           (when-let [t (:thesis node)] (str "\n\nTHESIS\n" t)))
        (when-let [turns (seq (:turns detail))]
-         (str "\n\n— turns —\n"
-              (->> (take-last 14 turns)
+         (str "\n\nRECENT TURNS\n"
+              (->> (take-last 12 turns)
                    (map #(str "T" (:turn %) " " (:tool_name %)
-                              " [" (:category %) "]"))
+                              " [" (:category %) "] "
+                              (clip (first (str/split-lines (str (:result %)))) 90)))
                    (str/join "\n"))))
        (when-let [arts (seq (filter #(= "confirmed" (:claim_status %))
                                     (:artifacts detail)))]
-         (str "\n\n— confirmed —\n"
-              (->> (take-last 6 arts)
-                   (map #(let [c (str (:claim %))]
-                           (str "✓ [" (:kind %) "] "
-                                (subs c 0 (min 110 (count c)))
-                                (when (> (count c) 110) "…"))))
+         (str "\n\nWHAT THIS BRANCH HAS PROVED (" (count arts) ")\n"
+              (->> (take-last 8 arts)
+                   (map #(str "✓ [" (:kind %) "/" (:tier %) " T" (:turn %) "] "
+                              (clip (:claim %) 220)))
+                   (str/join "\n\n"))))
+       (when-let [bad (seq (remove #(= "confirmed" (:claim_status %))
+                                   (:artifacts detail)))]
+         (str "\n\nATTEMPTS THAT DID NOT HOLD (" (count bad) ")\n"
+              (->> (take-last 4 bad)
+                   (map #(str "✗ [" (:claim_status %) " T" (:turn %) "] "
+                              (clip (:claim %) 160)))
                    (str/join "\n"))))))
+
+(defn- attempt-text
+  "One verification attempt in full: the claim, the engine and tier, the code
+  that was actually run, and the harness's own words about how it came out.
+  A graph of attempts is only useful if you can read what each one tried and
+  why it did or did not hold."
+  [node detail]
+  (let [turn (:turn node)
+        art (first (filter #(= turn (:turn %)) (:artifacts detail)))
+        trn (first (filter #(= turn (:turn %)) (:turns detail)))
+        status (or (:claim_status art) (some-> (:status node) name))]
+    (str (case status
+           "confirmed" "✓ CONFIRMED"
+           "refuted" "✗ REFUTED"
+           "existential" "∃ EXISTENTIAL — proves something exists, not which"
+           "ambiguous" "? AMBIGUOUS"
+           (str status))
+         "  ·  " (or (:kind art) (some-> (:engine node) name)) 
+         (when (:tier art) (str " / " (:tier art)))
+         "  ·  branch " (:branch node) ", turn " turn
+         "\n\nCLAIM\n" (clip (or (:claim art) (:claim node)) 900)
+         (when-let [v (:verdict art)]
+           (str "\n\nENGINE VERDICT\n" v))
+         (when-let [r (:result trn)]
+           (str "\n\nWHAT THE HARNESS SAID\n" (clip r 700)))
+         (when-let [w (:witness art)]
+           (str "\n\nWITNESS\n" (clip w 400)))
+         (when-let [c (:code art)]
+           (str "\n\nCODE THAT RAN\n" (clip c 1800))))))
 
 (defn- log-panel []
   (let [{:keys [graph selected branch-log]} @state
         node (get-in graph [:nodes selected])]
-    [:frame {:label (if selected (str "branch " selected) "branch log")
+    [:frame {:label (cond
+                      (= :artifact (:kind node)) (str "attempt " selected)
+                      selected (str "branch " selected)
+                      :else "inspector")
              :vexpand true :width-request 400}
      [:scrolled {:vexpand true}
       [:label {:text (cond
                        (nil? selected)
-                       "click a node to inspect its branch"
+                       "click a branch for its thesis and progress, or an attempt for what it tried"
                        (= "seed" selected)
                        (str "inherited artifacts\n" (:label node))
+                       (= :artifact (:kind node))
+                       (attempt-text node branch-log)
                        :else (branch-text node branch-log))
                :wrap true :xalign 0.0 :margin 8}]]]))
 
