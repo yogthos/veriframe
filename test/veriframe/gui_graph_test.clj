@@ -92,6 +92,31 @@
     (testing "branch nodes stay branch-kinded"
       (is (= :branch (get-in g [:nodes "B1" :kind]))))))
 
+(deftest live-activity-comes-from-the-event-stream
+  ;; What a branch is doing must be knowable from the events the GUI already
+  ;; has. The branch-detail endpoint returns every turn and artifact in full
+  ;; — 268KB and six seconds on a long run — so an inspector that waits for
+  ;; it shows nothing while a branch is most interesting.
+  (let [g (graph/fold events)]
+    (testing "each turn event lands in the branch's activity log"
+      (let [a (get-in g [:nodes "B1" :activity])]
+        (is (= 1 (count a)))
+        (is (= {:turn 1 :tool "verify" :category "success"} (first a)))))
+    (testing "the log is bounded so a long run cannot grow it without limit"
+      (let [many (reduce (fn [acc i]
+                           (graph/apply-event acc {:kind "turn" :branch_id "B1"
+                                                   :turn i
+                                                   :data {:tool "verify"
+                                                          :category "success"}}))
+                         g (range 100))]
+        (is (= 40 (count (get-in many [:nodes "B1" :activity]))))
+        (is (= 99 (:turn (last (get-in many [:nodes "B1" :activity]))))
+            "and keeps the most recent")))
+    (testing "a branch's attempts are readable off the graph, in turn order"
+      (let [cs (graph/branch-claims g "B1")]
+        (is (= ["c1" "c2"] (mapv :claim cs)))
+        (is (= [:confirmed :refuted] (mapv :status cs)))))))
+
 (deftest working-marks-the-live-frontier
   ;; Which nodes are being worked on right now: for each ACTIVE branch, the
   ;; tip of its chain. A branch node sits at the left end of its own chain,

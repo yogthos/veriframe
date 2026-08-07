@@ -58,8 +58,16 @@
    (GET base (str "/v1/runs/" run-id "/journal?since=" (or cursor 0)
                   "&limit=" limit))))
 
-(defn branch-detail [base run-id branch-id]
-  (GET base (str "/v1/runs/" run-id "/branches/" branch-id)))
+(defn branch-detail
+  "Every turn and artifact for a branch, in full. Deliberately given a
+  longer socket timeout than the rest: the response carries every result
+  string and every encoding, which on a long run is hundreds of kilobytes
+  and takes seconds. The GUI renders live activity from the event stream
+  meanwhile, so this arriving late costs nothing."
+  [base run-id branch-id]
+  (try (result (http/get (str base "/v1/runs/" run-id "/branches/" branch-id)
+                         (assoc opts :socket-timeout 45000)))
+       (catch Throwable e {:ok false :error (ex-message e)})))
 
 (defn intervene!
   "A human directive, applied at the branch's next turn boundary. `branch-id`

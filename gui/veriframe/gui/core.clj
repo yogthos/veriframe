@@ -280,7 +280,30 @@
              (str "\nSub-claims:\n"
                   (str/join "\n" (map #(str "  " %) subs))))))))
 
-(defn- branch-text [node detail]
+(defn- activity-text
+  "What the branch has been doing, from the event stream — available the
+  moment an event arrives, where the full detail fetch takes seconds."
+  [node]
+  (when-let [a (seq (:activity node))]
+    (str "\n\nLIVE ACTIVITY (most recent last)\n"
+         (str/join "\n"
+                   (for [{:keys [turn tool category]} (take-last 15 a)]
+                     (str "T" turn "  " tool
+                          "  [" (or category "?") "]"))))))
+
+(defn- claims-text
+  "Every attempt, read off the graph rather than the detail response."
+  [graph node]
+  (when-let [cs (seq (graph/branch-claims graph (:id node)))]
+    (str "\n\nATTEMPTS (" (count cs) ")\n"
+         (str/join "\n\n"
+                   (for [{:keys [turn status engine claim]} (take-last 10 cs)]
+                     (str (case status
+                            :confirmed "✓" :refuted "✗"
+                            :existential "∃" "?")
+                          " T" turn " [" (some-> engine name) "] " claim))))))
+
+(defn- branch-text [graph node detail]
   (str "status: " (name (or (:status node) :unknown))
        (when-let [reason (:reason node)] (str "\n" reason))
        "\nconfirmed artifacts: " (or (:confirmed node) 0)
@@ -290,8 +313,12 @@
               (when (:spared? node) "\nspared by Pareto retention")))
        (or (thesis-text detail)
            (when-let [t (:thesis node)] (str "\n\nTHESIS\n" t)))
+       (activity-text node)
+       (claims-text graph node)
+       (when-not detail
+         "\n\n(loading full turn results and encodings…)")
        (when-let [turns (seq (:turns detail))]
-         (str "\n\nRECENT TURNS\n"
+         (str "\n\nTURN RESULTS\n"
               (->> (take-last 12 turns)
                    (map #(str "T" (:turn %) " " (:tool_name %)
                               " [" (:category %) "] "
@@ -299,14 +326,14 @@
                    (str/join "\n"))))
        (when-let [arts (seq (filter #(= "confirmed" (:claim_status %))
                                     (:artifacts detail)))]
-         (str "\n\nWHAT THIS BRANCH HAS PROVED (" (count arts) ")\n"
+         (str "\n\nCONFIRMED, IN FULL (" (count arts) ")\n"
               (->> (take-last 8 arts)
                    (map #(str "✓ [" (:kind %) "/" (:tier %) " T" (:turn %) "] "
                               (clip (:claim %) 220)))
                    (str/join "\n\n"))))
        (when-let [bad (seq (remove #(= "confirmed" (:claim_status %))
                                    (:artifacts detail)))]
-         (str "\n\nATTEMPTS THAT DID NOT HOLD (" (count bad) ")\n"
+         (str "\n\nDID NOT HOLD, IN FULL (" (count bad) ")\n"
               (->> (take-last 4 bad)
                    (map #(str "✗ [" (:claim_status %) " T" (:turn %) "] "
                               (clip (:claim %) 160)))
@@ -357,7 +384,7 @@
                        (str "inherited artifacts\n" (:label node))
                        (= :artifact (:kind node))
                        (attempt-text node branch-log)
-                       :else (branch-text node branch-log))
+                       :else (branch-text graph node branch-log))
                :wrap true :xalign 0.0 :margin 8}]]]))
 
 (defn- input-bar []

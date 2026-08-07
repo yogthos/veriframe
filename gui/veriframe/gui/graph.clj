@@ -75,8 +75,21 @@
     "thesis"          (upd g branch_id {:thesis (:goal data)})
     ;; The tool is what the node's SHAPE encodes: which engine this branch is
     ;; working in right now, as distinct from its status.
-    "turn"            (upd g branch_id {:turn turn :tool (:tool data)
-                                        :category (:category data)})
+    ;; The tool is what the node's SHAPE encodes; the same event also feeds a
+    ;; bounded per-branch activity log. The journal already streams a turn
+    ;; event for every turn, so what a branch is doing right now is knowable
+    ;; without the 268KB branch-detail round-trip that takes six seconds on a
+    ;; long run — the inspector should render what it already has.
+    "turn"            (-> g
+                          (upd branch_id {:turn turn :tool (:tool data)
+                                          :category (:category data)})
+                          (update-in [:nodes branch_id :activity]
+                                     (fn [a]
+                                       (vec (take-last 40
+                                                       (conj (vec a)
+                                                             {:turn turn
+                                                              :tool (:tool data)
+                                                              :category (:category data)}))))))
     "artifact"        (let [g (add-artifact g branch_id turn data)]
                         (if (= "confirmed" (some-> (:claim-status data) name))
                           (update-in g [:nodes branch_id :confirmed] (fnil inc 0))
@@ -103,6 +116,16 @@
              :when (and (nil? parent) (not= :seed status)
                         (not= :artifact kind))]
          ["seed" id])))))
+
+(defn branch-claims
+  "Every attempt this branch made, newest last, read off the artifact nodes
+  the fold already built. Available the moment an event arrives, unlike the
+  branch-detail fetch."
+  [{:keys [nodes]} branch-id]
+  (->> (vals nodes)
+       (filter #(and (= :artifact (:kind %)) (= branch-id (:branch %))))
+       (sort-by :turn)
+       vec))
 
 (defn working
   "The ids where live work is actually happening: for each ACTIVE branch,
