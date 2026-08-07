@@ -26,3 +26,6 @@ rax-results-*/
 
 # Octave dumps its workspace here if a session exits without saving.
 octave-workspace
+
+# A draft blog post about the project, kept locally rather than shipped.
+blog.md
