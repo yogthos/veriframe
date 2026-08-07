@@ -62,21 +62,44 @@
       (#{"octave_eval" "verify_octave"} t) :octave
       :else :meta)))
 
+(def claim-color
+  "How a single verification attempt turned out. Distinct from branch
+  status: a refuted claim is a healthy branch doing its job."
+  {:confirmed  [0.30 0.78 0.42]
+   :refuted    [0.88 0.33 0.28]
+   :existential [0.93 0.68 0.24]
+   :ambiguous  [0.55 0.55 0.60]})
+
 (defn node-style
-  "{:shape :fill :ring} for a folded graph node."
-  [{:keys [status tool] :as node}]
-  (if (= :seed status)
+  "{:shape :fill :ring} for a folded graph node.
+
+  Branch nodes: shape and fill are the engine the branch is working in,
+  ring is its status. Artifact nodes: shape and fill are the engine that
+  produced the claim, ring is how the claim came out."
+  [{:keys [status tool kind engine] :as node}]
+  (cond
+    (= :seed status)
     {:shape :circle :fill (tool-color :seed) :ring (status-color :seed)}
-    (let [fam (if tool (engine tool) :meta)]
+
+    (= :artifact kind)
+    {:shape (tool-shape engine :circle)
+     :fill (tool-color engine [0.7 0.7 0.7])
+     :ring (claim-color (or status :confirmed) [0.6 0.6 0.6])}
+
+    :else
+    (let [fam (if tool (veriframe.gui.style/engine tool) :meta)]
       {:shape (tool-shape fam :circle)
        :fill (tool-color fam [0.7 0.7 0.7])
        :ring (status-color (or status :active) [0.6 0.6 0.6])})))
 
 (defn node-radius
-  "Bigger with each confirmed artifact, capped so one productive branch
-  cannot swallow the pane."
-  [{:keys [confirmed]}]
-  (+ 10.0 (* 1.8 (min 10 (or confirmed 0)))))
+  "Branch nodes grow with each confirmed artifact, capped so one productive
+  branch cannot swallow the pane. Artifact nodes are small and uniform —
+  they are events, not accumulations."
+  [{:keys [confirmed kind]}]
+  (if (= :artifact kind)
+    7.0
+    (+ 10.0 (* 1.8 (min 10 (or confirmed 0))))))
 
 (def ^:private sides {:circle 20 :hexagon 6 :square 4 :diamond 4 :triangle 3})
 (def ^:private rotation

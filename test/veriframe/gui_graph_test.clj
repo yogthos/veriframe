@@ -10,7 +10,8 @@
 (ns veriframe.gui-graph-test
   "The scene-graph fold: journal events in, {nodes edges run} out. Pure, so
   the whole model is testable against event shapes recorded from real runs."
-  (:require [clojure.test :refer [deftest testing is]]
+  (:require [clojure.string :as str]
+            [clojure.test :refer [deftest testing is]]
             [veriframe.gui.graph :as graph]))
 
 (def events
@@ -37,7 +38,10 @@
 (deftest fold-builds-the-scene-graph
   (let [g (graph/fold events)]
     (testing "nodes exist with status, thesis, confirmed counts"
-      (is (= #{"seed" "B1" "B2" "B1.2"} (set (keys (:nodes g)))))
+      (is (= #{"seed" "B1" "B2" "B1.2"}
+             (set (keep (fn [[id n]] (when (not= :artifact (:kind n)) id))
+                        (:nodes g))))
+          "the branch topology, with artifact nodes set aside")
       (is (= :active (get-in g [:nodes "B1" :status])))
       (is (= :culled (get-in g [:nodes "B2" :status])))
       (is (= "dominated by a sibling" (get-in g [:nodes "B2" :reason])))
@@ -54,13 +58,39 @@
       (is (true? (get-in g [:nodes "B2" :spared?])))
       (is (= 6 (get-in g [:nodes "B1" :invited]))))
     (testing "edges: parent links plus seed provenance into the roots"
-      (is (= #{["B1" "B1.2"] ["seed" "B1"] ["seed" "B2"]}
-             (set (graph/edges g)))))
+      (is (= #{["B1" "B1.2"] ["seed" "B1"] ["seed" "B2"]
+               ["B1" "B1@2"] ["B1@2" "B1@3"]}
+             (set (graph/edges g)))
+          "branch links, seed provenance, and the artifact chain"))
     (testing "run-level facts"
       (is (= "completed" (get-in g [:run :status])))
       (is (= 7 (get-in g [:run :seeded :artifacts]))))
     (testing "insertion order is stable for layout"
-      (is (= ["B1" "B2" "B1.2"] (:order g))))))
+      (is (= ["B1" "B2" "B1.2"]
+             (vec (remove #(str/includes? % "@") (:order g))))))))
+
+(deftest artifacts-chain-forward-off-their-branch
+  ;; The beam is flat — branches almost never fork — so a graph of branch
+  ;; topology alone never grows. The work does: each verification attempt
+  ;; hangs off the previous one, so the run's reasoning reads left to right.
+  (let [g (graph/fold events)
+        ids (set (keys (:nodes g)))]
+    (testing "each artifact is a node, chained to the previous on that branch"
+      (is (contains? ids "B1@2"))
+      (is (contains? ids "B1@3"))
+      (is (= "B1" (get-in g [:nodes "B1@2" :parent])) "the first hangs off the branch")
+      (is (= "B1@2" (get-in g [:nodes "B1@3" :parent])) "the next builds on it"))
+    (testing "an artifact node carries what it claimed and how it went"
+      (is (= :artifact (get-in g [:nodes "B1@2" :kind])))
+      (is (= :smt (get-in g [:nodes "B1@2" :engine])))
+      (is (= :confirmed (get-in g [:nodes "B1@2" :status])))
+      (is (= :refuted (get-in g [:nodes "B1@3" :status])))
+      (is (= "c1" (get-in g [:nodes "B1@2" :claim]))))
+    (testing "layout puts the chain in successive columns"
+      (let [pos (graph/layout g)]
+        (is (< (first (pos "B1")) (first (pos "B1@2")) (first (pos "B1@3"))))))
+    (testing "branch nodes stay branch-kinded"
+      (is (= :branch (get-in g [:nodes "B1" :kind]))))))
 
 (deftest layout-places-generations-in-columns
   (let [g (graph/fold events)

@@ -25,8 +25,30 @@
   (if (get-in g [:nodes id])
     g
     (-> g
-        (update :nodes assoc id {:id id :status :active :confirmed 0})
+        (update :nodes assoc id {:id id :kind :branch :status :active :confirmed 0})
         (update :order conj id))))
+
+(defn- add-artifact
+  "An artifact becomes a node chained onto the branch's previous artifact,
+  so the run's reasoning grows left to right instead of the beam's flat
+  topology staying flat. The beam almost never forks — seven fork
+  invitations went out in one run and every one was declined — so without
+  this the graph shows three branches and never changes shape again."
+  [g branch-id turn data]
+  (let [g (ensure-node g branch-id)
+        id (str branch-id "@" turn)
+        prev (get-in g [:nodes branch-id :last-artifact])
+        status (keyword (or (:claim-status data) "confirmed"))]
+    (-> g
+        (update :nodes assoc id
+                {:id id :kind :artifact :branch branch-id
+                 :parent (or prev branch-id)
+                 :engine (keyword (:kind data))
+                 :status status
+                 :claim (:claim data)
+                 :turn turn})
+        (update :order conj id)
+        (assoc-in [:nodes branch-id :last-artifact] id))))
 
 (defn- upd
   "Merge `m` into branch `id`'s node, creating it if the fold never saw its
@@ -55,10 +77,10 @@
     ;; working in right now, as distinct from its status.
     "turn"            (upd g branch_id {:turn turn :tool (:tool data)
                                         :category (:category data)})
-    "artifact"        (if (= "confirmed" (some-> (:claim-status data) name))
-                        (let [g (ensure-node g branch_id)]
-                          (update-in g [:nodes branch_id :confirmed] (fnil inc 0)))
-                        (ensure-node g branch_id))
+    "artifact"        (let [g (add-artifact g branch_id turn data)]
+                        (if (= "confirmed" (some-> (:claim-status data) name))
+                          (update-in g [:nodes branch_id :confirmed] (fnil inc 0))
+                          g))
     "critic-score"    (upd g branch_id {:critic data})
     "cull-spared"     (upd g branch_id {:spared? true})
     "fork-invite"     (upd g branch_id {:invited turn})
@@ -77,8 +99,9 @@
            :when parent]
        [parent id])
      (when seed?
-       (for [{:keys [id parent status]} (vals nodes)
-             :when (and (nil? parent) (not= :seed status))]
+       (for [{:keys [id parent status kind]} (vals nodes)
+             :when (and (nil? parent) (not= :seed status)
+                        (not= :artifact kind))]
          ["seed" id])))))
 
 ;; --- layout and the view transform -------------------------------------------
