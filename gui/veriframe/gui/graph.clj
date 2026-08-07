@@ -1,0 +1,79 @@
+;; veriframe - a claim-first verification harness
+;; Copyright (C) 2026 Dmitri Sotnikov
+;;
+;; This program and the accompanying materials are made available under
+;; the terms of the Eclipse Public License 2.0 which is available at
+;; https://www.eclipse.org/legal/epl-2.0/
+;;
+;; SPDX-License-Identifier: EPL-2.0
+
+(ns veriframe.gui.graph
+  "Journal events folded into the scene graph the GUI renders.
+
+  Pure and toolkit-free: {:nodes {id {...}} :order [ids] :run {...}} out of
+  the event stream, incrementally — `apply-event` is the per-event step the
+  poll loop feeds, `fold` the from-scratch rebuild a run switch uses. The
+  fold is deliberately defensive: an event for a branch it has not seen
+  opens the node rather than throwing, and unknown kinds are ignored, so a
+  server that grows new event kinds never breaks an older GUI."
+  (:require [clojure.string :as str]))
+
+(defn empty-graph []
+  {:nodes {} :order [] :run {}})
+
+(defn- ensure-node [g id]
+  (if (get-in g [:nodes id])
+    g
+    (-> g
+        (update :nodes assoc id {:id id :status :active :confirmed 0})
+        (update :order conj id))))
+
+(defn- upd
+  "Merge `m` into branch `id`'s node, creating it if the fold never saw its
+  branch-opened (resumed tails start mid-stream)."
+  [g id m]
+  (let [g (ensure-node g id)]
+    (update-in g [:nodes id] merge m)))
+
+(defn apply-event
+  "One journal event into the graph. Unknown kinds are a no-op."
+  [g {:keys [kind branch_id turn data]}]
+  (case kind
+    "run-started"  (update g :run merge {:problem (:problem data)})
+    "run-finished" (update g :run merge {:status (:status data)})
+    "run-seeded"   (-> g
+                       (update :run merge {:seeded data})
+                       (update :nodes assoc "seed"
+                               {:id "seed" :status :seed
+                                :label (str (:artifacts data) " inherited artifacts")}))
+    "branch-opened"   (upd g branch_id {:parent (:parent data)})
+    "branch-closed"   (upd g branch_id {:status (keyword (:status data))
+                                        :reason (:reason data)})
+    "branch-reopened" (upd g branch_id {:status :active :reason nil})
+    "thesis"          (upd g branch_id {:thesis (:goal data)})
+    "turn"            (upd g branch_id {:turn turn})
+    "artifact"        (if (= "confirmed" (some-> (:claim-status data) name))
+                        (let [g (ensure-node g branch_id)]
+                          (update-in g [:nodes branch_id :confirmed] (fnil inc 0)))
+                        (ensure-node g branch_id))
+    "critic-score"    (upd g branch_id {:critic data})
+    "cull-spared"     (upd g branch_id {:spared? true})
+    "fork-invite"     (upd g branch_id {:invited turn})
+    g))
+
+(defn fold [events]
+  (reduce apply-event (empty-graph) events))
+
+(defn edges
+  "Parent->child links, plus seed provenance into every root when the run
+  was seeded: inherited lemmas flow into the whole beam, not one branch."
+  [{:keys [nodes]}]
+  (let [seed? (contains? nodes "seed")]
+    (concat
+     (for [{:keys [id parent]} (vals nodes)
+           :when parent]
+       [parent id])
+     (when seed?
+       (for [{:keys [id parent status]} (vals nodes)
+             :when (and (nil? parent) (not= :seed status))]
+         ["seed" id])))))

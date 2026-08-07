@@ -129,6 +129,28 @@ residue assignments gives maximum coverage exactly $207$ of $315$
 ($u \ge 108$). This is the $u_E$ ingredient for any future superset whose
 coprime part avoids $\{3,5,7\}$, e.g. $\{3,5,7,9,21,11,13,\dots\}$.
 
+## Finding 4 — richer entangled parts: 25 and 27
+
+*Run `c5dcc35f` (generation 4, seeded from `61de2075`), 8 confirmed
+artifacts, all confirmed, none existential.*
+
+Two new exhaustive entangled-part bounds, each settling a density-feasible
+superset with the standard factorization ($C = \{7,11,13\}$, $u_C = 720$):
+
+- $u_E(\{3,5,9,15,25\}) = 80$ of $225$ (no assignment covers $\ge 146$), so
+  $\{3,5,7,9,11,13,15,25\}$ has minimum uncovered
+  $80 \cdot 720 = 57600$ mod $225225$: **cannot cover**.
+- $u_E(\{3,5,9,15,27\}) = 47$ of $135$ (no assignment covers $\ge 89$), so
+  $\{3,5,7,9,11,13,15,27\}$ has minimum uncovered
+  $47 \cdot 720 = 33840$ mod $135135$: **cannot cover**.
+
+Note the trend in entangled efficiency: adding $25$ leaves uncovered
+fraction $80/225 \approx 0.356$; adding $27$ leaves $47/135 \approx 0.348$;
+the original $\{3,5,9,15\}$ leaves $17/45 \approx 0.378$. Deeper prime
+powers chip away at the entangled gap slowly — quantifying that decay
+across richer entangled parts is the empirical curve the conjecture's
+truth or falsity lives on.
+
 ## Frontier table
 
 | Odd distinct modulus set   | $\sum 1/m$              | Density-feasible | Max coverage / $L$      | Verdict                  |
@@ -138,6 +160,8 @@ coprime part avoids $\{3,5,7\}$, e.g. $\{3,5,7,9,21,11,13,\dots\}$.
 | $\{3,5,7,9,11,13,15\}$     | $46027/45045 \ge 1$     | **yes**          | $32805/45045$ (exact)   | **cannot cover**         |
 | $\{3,5,7,9,11,15,17\}$     | $\approx 1.0037 \ge 1$  | **yes**          | $42585/58905$ (exact)   | **cannot cover**         |
 | $\{3,5,7,9,11,13,15,17\}$  | $827504/765765 \ge 1$   | **yes**          | $569925/765765$ (exact) | **cannot cover**         |
+| $\{3,5,7,9,11,13,15,25\}$  | $\ge 1$                 | **yes**          | $167625/225225$ (exact) | **cannot cover**         |
+| $\{3,5,7,9,11,13,15,27\}$  | $\ge 1$                 | **yes**          | $101295/135135$ (exact) | **cannot cover**         |
 
 **Next targets** (Pareto-minimal density-feasible sets: maximize density
 slack, minimize $\operatorname{lcm}$, minimize modulus count): supersets of
