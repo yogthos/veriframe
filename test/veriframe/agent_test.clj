@@ -1327,35 +1327,47 @@
                                              :distinctness 5 :viability 5})
                                  1 []))))))))
 
-(deftest fork-invite-goes-to-the-strongest-branch-with-room
+(deftest the-beam-repopulates-when-it-falls-below-width
+  ;; The blocker for a genuine frontier: culls remove width permanently and
+  ;; the only route back up was a fork gated on a confirmation AND a
+  ;; cooldown, so every run in the campaign decayed toward one line — five
+  ;; runs, five collapses to a single branch. A population that only ever
+  ;; shrinks is not a frontier. When the beam drops below its target width
+  ;; and the cap allows, the strongest survivor is told to reseed it.
   (with-db [c]
     (let [rid (runs/start-run! c {:problem "p"})
-          ctx {:conn c :run-id rid}
-          strong (branch-with :id "B1"
-                              :critic {:scores {:progress 4 :momentum 4
-                                                :distinctness 3 :viability 5}
-                                       :turn 6})
-          weak (branch-with :id "B2"
-                            :critic {:scores {:progress 2 :momentum 2
-                                              :distinctness 2 :viability 3}
-                                     :turn 6})]
-      (let [bs (#'beam/invite-fork ctx [strong weak] 2 7)
-            b1 (first (filter #(= "B1" (:id %)) bs))
-            b2 (first (filter #(= "B2" (:id %)) bs))]
-        (is (= 7 (:fork-invited b1)))
-        (is (some #(str/includes? (:content %) "branch_theses") (:messages b1)))
-        (is (nil? (:fork-invited b2)) "below the floor is not invited")
-        (is (= 1 (count (filter #(= "fork-invite" (:kind %))
-                                (journal/events-since c rid 0))))))
-      (testing "cooldown: a recent invite is not repeated"
-        (let [bs (#'beam/invite-fork ctx [(assoc strong :fork-invited 6) weak] 2 7)]
-          (is (= 6 (:fork-invited (first bs))) "unchanged")))
-      (testing "no room at the cap, no invitation"
-        (let [bs (#'beam/invite-fork ctx [strong weak]
-                                     (gates/threshold :max-total-branches) 7)]
-          (is (nil? (:fork-invited (first bs)))))))))
-
-;; --- every gate must be able to speak ---------------------------------------
+          ctx {:conn c :run-id rid :beam-width 3}
+          scored (fn [id sc turns]
+                   (-> (branch-with :id id :critic {:scores sc :turn 6})
+                       (assoc :turns (vec (repeat turns {})))))
+          strong (scored "B1" {:progress 4 :momentum 4 :distinctness 3 :viability 5} 12)
+          weak (scored "B2" {:progress 1 :momentum 2 :distinctness 2 :viability 2} 12)
+          dead (assoc (scored "B3" {:progress 1 :momentum 1 :distinctness 1 :viability 1} 12)
+                      :status :culled)]
+      (testing "below target width, the strongest survivor is asked to reseed"
+        (let [bs (#'beam/repopulate ctx [strong weak dead] 3 20)
+              b1 (first (filter #(= "B1" (:id %)) bs))
+              b2 (first (filter #(= "B2" (:id %)) bs))]
+          (is (= 20 (:fork-invited b1)))
+          (is (str/includes? (str (last (map :content (:messages b1))))
+                             "branch_theses"))
+          (is (nil? (:fork-invited b2)) "one ask, to the strongest")
+          (is (= 1 (count (filter #(= "repopulate" (:kind %))
+                                  (journal/events-since c rid 0)))))))
+      (testing "at or above target width it stays quiet"
+        (is (nil? (:fork-invited
+                   (first (#'beam/repopulate ctx [strong weak
+                                                  (scored "B4" {:progress 2 :momentum 2
+                                                                :distinctness 2 :viability 2} 12)]
+                                             3 20))))))
+      (testing "no room under the cap, no ask"
+        (is (nil? (:fork-invited
+                   (first (#'beam/repopulate ctx [strong dead]
+                                             (gates/threshold :max-total-branches) 20))))))
+      (testing "a recent ask is not repeated"
+        (is (= 18 (:fork-invited
+                   (first (#'beam/repopulate ctx [(assoc strong :fork-invited 18) dead]
+                                             3 20)))))))))
 
 (deftest every-gate-renders-its-message
   ;; The progress-stalled gate referenced resources/prompts/progress-stalled.md,

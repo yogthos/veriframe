@@ -195,48 +195,60 @@
             b))
         branches))
 
-(defn- invite-fork
-  "When the beam has room under the total cap and a branch's critic scores
-  clear the fork floor, invite the strongest such branch to fork.
+(defn- repopulate
+  "Refill the beam when it has fallen below its target width.
 
-  The frontier grows on evidence rather than starting wide: a run may open
-  at width 1 or 2 and widen only where verified progress is happening. The
-  invitation is a plain harness message — the model decides whether it has
-  a genuinely distinct sub-approach, and branch_theses does the spawning
-  under the existing total cap. No prediction is recorded; declining is a
-  legitimate answer and not a settled miss."
-  [{:keys [conn run-id]} branches total-count turn]
+  This is the blocker that kept the frontier from being a frontier. Culling
+  removes width permanently, while the only route back up — the branch-out
+  rung — is gated on a confirmation AND a cooldown. So the population
+  monotonically decayed: five campaign runs, five collapses to a single
+  surviving line, whatever the cap allowed. A genetic algorithm maintains
+  its population; death without replacement is just attrition.
+
+  When fewer branches are alive than the run asked for and the cap has
+  room, the strongest survivor is told to reseed. Deliberately NOT gated on
+  a fresh confirmation: refilling an empty slot is a different act from
+  asking a busy branch for more, and the alternative is a beam that spends
+  the rest of the run at width one. The per-branch cooldown still applies,
+  so one death does not produce a stampede of asks at the same branch."
+  [{:keys [conn run-id beam-width]} branches total-count turn]
   (let [cap (gates/threshold :max-total-branches)
-        floor (gates/threshold :fork-invite-floor)
         cooldown (gates/threshold :fork-invite-cooldown)
-        candidate (when (< total-count cap)
-                    (->> branches
-                         (filter state/active?)
-                         (filter #(when-let [s (get-in % [:critic :scores])]
-                                    (and (>= (:viability s) (:viability floor))
-                                         (>= (:progress s) (:progress floor)))))
+        alive (filterv state/active? branches)
+        target (or beam-width 1)
+        strength (fn [b]
+                   (let [sc (get-in b [:critic :scores])]
+                     [(reduce + 0 (vals (select-keys sc critic/survival-objectives)))
+                      (count (state/confirmed-artifacts b))]))
+        candidate (when (and (< (count alive) target) (< total-count cap))
+                    (->> alive
                          (remove #(when-let [t (:fork-invited %)]
                                     (< (- turn t) cooldown)))
-                         (sort-by #(- (reduce + (vals (get-in % [:critic :scores])))))
+                         (sort-by strength)
+                         reverse
                          first))]
     (if-not candidate
       branches
       (do (when (and conn run-id)
-            (journal/note! conn run-id :fork-invite
+            (journal/note! conn run-id :repopulate
                            {:branch-id (:id candidate) :turn turn
-                            :data (get-in candidate [:critic :scores])}))
+                            :data {:alive (count alive) :target target}}))
           (mapv #(if (= (:id %) (:id candidate))
                    (-> %
                        (assoc :fork-invited turn)
                        (state/add-message
                         "user"
-                        (str "[harness] Your line is showing verified progress"
-                             " and the beam has room. If you can name a"
-                             " genuinely distinct sub-approach worth exploring"
-                             " in parallel, call branch_theses — your current"
-                             " thesis first, the alternatives after. If you"
-                             " cannot, continue as you were; this is an"
-                             " invitation, not an instruction.")))
+                        (str "[harness] The beam is down to " (count alive)
+                             " active branch(es) of " target ". You are the"
+                             " strongest line still running, so you are the one"
+                             " that can repopulate it: name the distinct"
+                             " directions still worth exploring and call"
+                             " branch_theses. The first commits you and the"
+                             " rest become siblings, each opening with what"
+                             " every lineage here has confirmed. If you truly"
+                             " see only one route left, say so by continuing —"
+                             " but a beam at width one is exploring nothing in"
+                             " parallel.")))
                    %)
                 branches)))))
 
@@ -550,7 +562,7 @@
                   all-now (into (vec inactive) culled)
                   ;; Grow the frontier where the evidence is: after the cull,
                   ;; so a freed slot can be refilled the same round.
-                  culled (invite-fork ctx culled (count all-now) turn)
+                  culled (repopulate ctx culled (count all-now) turn)
                   [children updated]
                   (reduce (fn [[acc bs] b]
                             (if (and (state/active? b) (seq (:pending-branch-theses b)))
@@ -600,7 +612,8 @@
         sessions (atom [])
         ctx {:conn conn :run-id run-id :config config :problem problem
              :llm-adapter llm-adapter :llm-config llm-config
-             :max-turns max-turns :beam? (> width 1) :sessions sessions
+             :max-turns max-turns :beam? (> width 1) :beam-width width
+             :sessions sessions
              :abort abort
              ;; One claim registry per run: two branches reaching the same
              ;; claim share one slow verification instead of racing it.

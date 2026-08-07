@@ -207,7 +207,8 @@
           sessions (atom [])
           ctx {:conn conn :run-id run-id :config config :problem (:problem run)
                :llm-adapter llm-adapter :llm-config llm-config
-               :max-turns max-turns :beam? (> width 1) :sessions sessions
+               :max-turns max-turns :beam? (> width 1) :beam-width width
+               :sessions sessions
                :abort abort
                ;; One claim registry per run: two branches reaching the same
                ;; claim share one slow verification instead of racing it.
