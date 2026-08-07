@@ -194,6 +194,62 @@ $c$, which is infinitely many modulus sets at once. Nothing here yet proves
 a floor exists; it is an empirical curve over seven exhaustively-verified
 points.
 
+## Finding 6 — the 45 family
+
+*Run `8cb4083d` (generation 6, seeded from `7f4af6b7`), 7 confirmed
+artifacts. The run took the campaign's secondary target; the primary
+(a family-wide lower bound) did not move — see the next section.*
+
+$u_E(\{3,5,9,15,27,45\}) = 44$ of $135$ (fraction $0.3259$), confirmed by
+independent Prolog enumeration, settling two more density-feasible sets
+with the usual split:
+
+- $\{3,5,7,9,11,15,27,45\}$, $\sum 1/m \approx 1.0041 \ge 1$: minimum
+  uncovered $44 \cdot 60 = 2640$ of $10395$. **Cannot cover.**
+- $\{3,5,7,9,11,13,15,27,45\}$, $\sum 1/m \approx 1.0811 \ge 1$: minimum
+  uncovered $44 \cdot 720 = 31680$ of $135135$. **Cannot cover.**
+
+## The prime-support bound — a family-wide floor, pending verification
+
+Six generations of enumeration have settled sets one at a time. The
+following is a *conjecture of this write-up*, derived by hand from the
+campaign's own data and **not yet engine-confirmed** — it is stated here as
+the target for the next generation, and should be read with exactly the
+skepticism the harness applies to anything an engine has not checked.
+
+Apply the density bound not to one modulus set but to the whole divisor
+lattice available to a prime support $P$. Every modulus is a divisor of
+some $\prod_{p \in P} p^{e_p}$, so the total density any set supported on
+$P$ can muster is bounded by the sum of $1/d$ over *all* divisors $d > 1$:
+
+$$\sum_{d \mid \prod p^{e_p},\, d>1} \frac 1d \;\le\;
+  \prod_{p \in P} \frac{p}{p-1} \;-\; 1 .$$
+
+A covering needs density $\ge 1$, so a covering supported on $P$ requires
+
+$$\prod_{p \in P} \frac{p}{p-1} \;>\; 2 .$$
+
+For odd $P$ this bites immediately:
+
+| Prime support | $\prod p/(p-1)$ | Sup density | Verdict |
+|---|---|---|---|
+| $\{3\}$ | $3/2$ | $1/2$ | impossible; uncovered $\ge 1/2$ |
+| $\{3,5\}$ | $15/8$ | $7/8$ | **impossible; uncovered $\ge 1/8$** |
+| $\{3,5,7\}$ | $35/16$ | $19/16$ | density permits |
+
+So no odd covering system is supported on $\{3,5\}$ alone, however many
+moduli and however large — infinitely many modulus sets ruled out at once,
+which is the shape the campaign wanted. It also explains why every
+entangled set enumerated above sits where it does: all are $\{3,5\}$- or
+$\{3,5,7\}$-supported.
+
+**And it is not sharp.** The bound guarantees only $1/8 = 0.125$ uncovered
+for $\{3,5\}$-supported sets, while every exhaustive computation in the
+table below lands between $0.27$ and $0.38$. The gap is the interesting
+part: a proof that $\{3,5\}$-supported sets leave more than $1/8$ uncovered
+would be a floor the density argument cannot see, and that is the next
+generation's primary target.
+
 ## Frontier table
 
 | Odd distinct modulus set   | $\sum 1/m$              | Density-feasible | Max coverage / $L$      | Verdict                  |
@@ -207,6 +263,8 @@ points.
 | $\{3,5,7,9,11,13,15,27\}$  | $\ge 1$                 | **yes**          | $101295/135135$ (exact) | **cannot cover**         |
 | $\{3,5,7,9,11,15,25,27\}$  | $53114/51975 \ge 1$     | **yes**          | $38715/51975$ (exact)   | **cannot cover**         |
 | $\{3,5,9,11,13,15,17,21,27\}$ | $2348807/2297295 \ge 1$ | **yes**       | $1717455/2297295$ (exact) | **cannot cover**       |
+| $\{3,5,7,9,11,15,27,45\}$ | $\approx 1.0041 \ge 1$  | **yes**          | $7755/10395$ (exact)    | **cannot cover**         |
+| $\{3,5,7,9,11,13,15,27,45\}$ | $\approx 1.0811 \ge 1$ | **yes**       | $103455/135135$ (exact) | **cannot cover**         |
 
 **Next targets** (Pareto-minimal density-feasible sets: maximize density
 slack, minimize $\operatorname{lcm}$, minimize modulus count): supersets of
@@ -225,7 +283,8 @@ these exhaustive bounds show.
   `b84d2263-d8f6-4144-81bd-f5ef0e3b6dd1` (2026-08-07),
   `61de2075-6413-458d-aa03-667e56aea459`,
   `c5dcc35f-3e05-45e0-bc9f-1a9e8d76fee4`,
-  `7f4af6b7-f494-4303-9fac-39b5927e3032` (2026-08-07), each after the first
+  `7f4af6b7-f494-4303-9fac-39b5927e3032`,
+  `8cb4083d-8eec-4b2e-be7d-8152a86f5a4a` (2026-08-07), each after the first
   seeded from the run before it, all `deepseek-v4-flash` with artifact
   sharing on, beam width 2 through generation 4 and 3 thereafter.
 - Every claim above sits in the run journal as a confirmed artifact with
