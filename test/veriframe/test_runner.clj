@@ -19,7 +19,8 @@
             [veriframe.pool-test]
             [veriframe.prompt-test]
             [veriframe.server-test]
-            [veriframe.store-test]))
+            [veriframe.store-test]
+            [veriframe.gui-api-test]))
 
 (def namespaces
   '[veriframe.store-test
@@ -28,6 +29,7 @@
     veriframe.pool-test
     veriframe.prompt-test
     veriframe.server-test
+    veriframe.gui-api-test
     veriframe.engine-test])
 
 (defn run []

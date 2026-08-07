@@ -23,29 +23,58 @@
   bar (vf-bsc). The layout is real so each later issue fills a hole rather
   than reflowing the window."
   (:require [glimmer.core :as ui]
-            [glimmer.ratom :as r]))
+            [glimmer.ratom :as r]
+            [veriframe.gui.api :as api]))
 
 (def default-base-url "http://127.0.0.1:3999")
 
 (defonce state
   (r/atom {:base-url default-base-url
-           :run nil          ; selected run id (vf-se8)
+           :run nil          ; selected run id (vf-se8 adds the picker)
            :selected nil     ; selected branch node (vf-bku)
-           :status "not connected"
+           :connected? false
+           :events []        ; raw journal events; vf-cht folds these
            :draft ""}))      ; intervention input text (vf-bsc)
+
+(defonce poller (atom nil))
+
+(defn- connect!
+  "Pick the newest run and tail it. vf-se8 replaces the auto-pick with a
+  run picker; the poll wiring stays exactly this."
+  []
+  (let [base (:base-url @state)
+        runs (api/list-runs base)
+        run-id (some-> runs :body :runs first :id)]
+    (when-let [{:keys [stop!]} @poller] (stop!))
+    (swap! state assoc :run run-id :events [])
+    (when run-id
+      (reset! poller
+              (api/start-poller!
+               {:base base :run-id run-id
+                :on-events (fn [evs] (swap! state update :events into evs))
+                :on-status (fn [s] (swap! state assoc
+                                          :connected? (:connected? s)))})))))
 
 (defn- header []
   [:hbox {:spacing 8}
    [:label {:markup "<b>veriframe</b>"}]
    [:label {:label (str "  " (:base-url @state))}]
-   [:label {:label (str "  •  " (:status @state)) :xalign 0.0}]])
+   [:label {:label (str "  •  "
+                        (cond
+                          (not (:run @state)) "no run found"
+                          (:connected? @state) (str "tailing " (subs (str (:run @state)) 0 8))
+                          :else "disconnected — retrying"))
+            :xalign 0.0}]])
 
 (defn- graph-pane []
-  [:frame {:label "solution space" :hexpand true :vexpand true}
-   [:label {:label (str "graph pane\n\n"
-                        "branch nodes render here as the beam explores\n"
-                        "(vf-yls: glimmer-gl :gl-area)")
-            :wrap true}]])
+  (let [evs (:events @state)]
+    [:frame {:label "solution space" :hexpand true :vexpand true}
+     [:label {:label (str "graph pane (vf-yls renders this)\n\n"
+                          (count evs) " journal events\n"
+                          (when-let [e (peek evs)]
+                            (str "latest: [" (or (:branch_id e) "run") "] "
+                                 (:kind e))))
+              :wrap true}]]))
 
 (defn- log-panel []
   [:frame {:label "branch log" :vexpand true :width-request 360}
@@ -77,4 +106,5 @@
    [input-bar]])
 
 (defn -main [& _]
+  (connect!)
   (ui/run root :title "veriframe" :width 1100 :height 720))

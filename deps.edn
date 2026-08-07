@@ -47,7 +47,7 @@
 
  :nrepl/middleware [nrepl.middleware/default-middleware]
 
- :aliases {:test {:extra-paths ["test"]
+ :aliases {:test {:extra-paths ["test" "gui"]
                   :main-opts ["-m" "veriframe.test-runner"]}
            ;; command-line nREPL client, plus the test tree, so the live
            ;; process can run the suite over nREPL without paying startup:
