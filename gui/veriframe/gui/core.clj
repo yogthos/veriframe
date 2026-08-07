@@ -230,12 +230,11 @@
                            "<span size=\"large\">▲</span> lean   "
                            "<span size=\"large\">⬢</span> octave   "
                            "<span size=\"large\">●</span> harness")}]
-     ;; Deliberately words, not a glyph. U+25CE BULLSEYE and U+25C6 BLACK
-     ;; DIAMOND are both absent from the default system font here and render
-     ;; as tofu boxes showing their own codepoints, so the legend says what
-     ;; the marker looks like instead of trying to draw it.
-     [:label {:markup (str "<span foreground=\"#4CE6F2\"><b>cyan ring</b></span>"
-                           " = working now")}]
+     ;; A capital O for the ring. U+25CE BULLSEYE and U+25C6 BLACK DIAMOND
+     ;; were both absent from the default system font here and rendered as
+     ;; tofu boxes showing their own codepoints; ASCII cannot do that.
+     [:label {:markup (str "<span size=\"large\" foreground=\"#4CE6F2\">"
+                           "<b>O</b></span> working")}]
      [:label {:markup "<b>ring</b> = status"}]
      [:button {:label "recenter" :on-click glpane/reset-pan!}]
      [:label {:label (str (count (:nodes graph)) " nodes · "
