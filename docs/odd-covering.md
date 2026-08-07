@@ -101,25 +101,61 @@ This factorized structure is the shape any impossibility argument for the
 general problem would need to defeat: a hypothetical odd covering must use
 shared prime factors to *cooperate*, not merely to accumulate density.
 
+## Finding 3 — two more density-feasible sets fall to the same factorization
+
+*Run `61de2075` (generation 3, seeded from run `b84d2263` via `seed_run`),
+20 confirmed artifacts.*
+
+The factorization method generalizes exactly as the Finding 2 remark
+predicted, with the inherited entangled bound $u_E \ge 17$ for
+$E = \{3,5,9,15\}$ re-verified and reused:
+
+**Theorem.** Neither $\{3,5,7,9,11,15,17\}$ nor $\{3,5,7,9,11,13,15,17\}$
+— both density-feasible — can form a covering system. Exactly:
+
+- $\{3,5,7,9,11,15,17\}$: $L = 45 \cdot 1309$ with $C = \{7,11,17\}$
+  covering exactly $349$ of $1309$ classes for every residue choice
+  ($u_C = 6\cdot10\cdot16 = 960$), so maximum coverage
+  $= 58905 - 17\cdot960 = \mathbf{42585}$ of $58905$.
+- $\{3,5,7,9,11,13,15,17\}$: $L = 45 \cdot 17017$ with
+  $C = \{7,11,13,17\}$ covering exactly $5497$ of $17017$
+  ($u_C = 6\cdot10\cdot12\cdot16 = 11520$), so maximum coverage
+  $= 765765 - 17\cdot11520 = \mathbf{569925}$ of $765765$. $\blacksquare$
+
+**Building block** (branch B2, same run): for the entangled set
+$\{3,5,7,9,21\}$ — where $21$ shares factors with both $3$ and $7$, so the
+$E \times C$ split does not apply — exhaustive search over all $19845$
+residue assignments gives maximum coverage exactly $207$ of $315$
+($u \ge 108$). This is the $u_E$ ingredient for any future superset whose
+coprime part avoids $\{3,5,7\}$, e.g. $\{3,5,7,9,21,11,13,\dots\}$.
+
 ## Frontier table
 
-| Odd distinct modulus set | $\sum 1/m$          | Density-feasible | Max coverage / $L$    | Verdict                  |
-| ------------------------ | ------------------- | ---------------- | --------------------- | ------------------------ |
-| $\{3,5,7,9\}$            | $248/315 < 1$       | no               | $195/315$ (exact)     | cannot cover (trivially) |
-| $\{3,5,7,9,11,13,15\}$   | $46027/45045 \ge 1$ | **yes**          | $32805/45045$ (exact) | **cannot cover**         |
+| Odd distinct modulus set   | $\sum 1/m$              | Density-feasible | Max coverage / $L$      | Verdict                  |
+| -------------------------- | ----------------------- | ---------------- | ----------------------- | ------------------------ |
+| $\{3,5,7,9\}$              | $248/315 < 1$           | no               | $195/315$ (exact)       | cannot cover (trivially) |
+| $\{3,5,7,9,21\}$           | $263/315 < 1$           | no               | $207/315$ (exact)       | cannot cover (trivially); building-block $u_E$ |
+| $\{3,5,7,9,11,13,15\}$     | $46027/45045 \ge 1$     | **yes**          | $32805/45045$ (exact)   | **cannot cover**         |
+| $\{3,5,7,9,11,15,17\}$     | $\approx 1.0037 \ge 1$  | **yes**          | $42585/58905$ (exact)   | **cannot cover**         |
+| $\{3,5,7,9,11,13,15,17\}$  | $827504/765765 \ge 1$   | **yes**          | $569925/765765$ (exact) | **cannot cover**         |
 
 **Next targets** (Pareto-minimal density-feasible sets: maximize density
-slack, minimize $\operatorname{lcm}$, minimize modulus count): replace 13
-or 11 with 21, 25, 27, 33, 35 and neighbours; sets mixing more powers of 3
-and 5 (the 9-or-15 lcm condition says the entangled part is where the
-action is). Each verified set extends the empirical wall the conjecture
-lives behind.
+slack, minimize $\operatorname{lcm}$, minimize modulus count): supersets of
+the $\{3,5,7,9,21\}$ building block with coprime parts from
+$\{11,13,17,19\}$; sets with richer entangled parts ($25$, $27$, $33$, $35$
+— the 9-or-15 lcm condition says the entangled part is where the action
+is). The emerging pattern: in every settled case the coprime part's
+coverage is exactly its independence value with no way to aim it at the
+entangled part's gaps, so the search for a covering (or an impossibility
+proof) reduces to whether entangled moduli can *cooperate* beyond what
+these exhaustive bounds show.
 
 ## Provenance
 
 - Runs: `c45ac428-182f-4cd3-876e-686acc1e9f2c` (2026-08-06),
-  `b84d2263-d8f6-4144-81bd-f5ef0e3b6dd1` (2026-08-07), both
-  `deepseek-v4-flash`, beam width 2, artifact sharing on.
+  `b84d2263-d8f6-4144-81bd-f5ef0e3b6dd1` (2026-08-07),
+  `61de2075-6413-458d-aa03-667e56aea459` (2026-08-07, seeded from the
+  previous run), all `deepseek-v4-flash`, beam width 2, artifact sharing on.
 - Every claim above sits in the run journal as a confirmed artifact with
   the exact engine code that verified it (`GET /v1/runs/:id/journal`).
   Cross-run continuation can import them with `seed_run`.
