@@ -25,7 +25,8 @@
   (:require [glimmer-gl.gl :as gl]
             [glimmer-gl.gtk :as glx]
             [jolt.ffi :as ffi]
-            [veriframe.gui.graph :as graph]))
+            [veriframe.gui.graph :as graph]
+            [veriframe.gui.style :as style]))
 
 (def ^:private vs-src
   (str "#version 150\n"
@@ -38,51 +39,29 @@
        "in vec3 vcol; out vec4 frag;\n"
        "void main() { frag = vec4(vcol, 1.0); }"))
 
-(defonce ^:private st (atom {:w 1 :h 1}))
+(defonce ^:private st (atom {:w 1 :h 1 :pan [0.0 0.0]}))
 
-(def status-color
-  {:active    [0.28 0.72 0.38]
-   :done      [0.25 0.55 0.95]
-   :culled    [0.85 0.35 0.30]
-   :exhausted [0.90 0.65 0.25]
-   :abandoned [0.55 0.55 0.55]
-   :seed      [0.65 0.45 0.85]})
-
-(def ^:private edge-color [0.45 0.45 0.50])
-(def ^:private select-color [0.97 0.97 0.97])
-(def pick-radius 24.0)
-
-(defn node-radius [node]
-  (+ 9.0 (* 2.0 (min 8 (or (:confirmed node) 0)))))
+(def pick-radius 26.0)
+(def ^:private drag-slop-px 5.0)
 
 ;; --- geometry (pure) ---------------------------------------------------------
-
-(defn- quad-verts [cx cy r [cr cg cb]]
-  (let [x0 (- cx r) x1 (+ cx r) y0 (- cy r) y1 (+ cy r)]
-    [x0 y0 cr cg cb, x1 y0 cr cg cb, x1 y1 cr cg cb
-     x0 y0 cr cg cb, x1 y1 cr cg cb, x0 y1 cr cg cb]))
 
 (defn- line-verts [[x0 y0] [x1 y1] [cr cg cb]]
   [x0 y0 cr cg cb, x1 y1 cr cg cb])
 
 (defn scene-verts
-  "{:lines [floats] :tris [floats]} for the whole scene, in pixel space."
+  "{:lines [floats] :tris [floats]} for the whole scene, in pixel space.
+  Nodes draw last so an edge never crosses a node body."
   [g positions t selected]
   (let [px (fn [id] (graph/world->px t (positions id)))]
     {:lines (vec (mapcat (fn [[from to]]
                            (when (and (positions from) (positions to))
-                             (line-verts (px from) (px to) edge-color)))
+                             (line-verts (px from) (px to) style/edge-color)))
                          (graph/edges g)))
      :tris (vec (mapcat (fn [id]
-                          (let [node (get-in g [:nodes id])
-                                [cx cy] (px id)
-                                r (node-radius node)
-                                color (status-color (:status node)
-                                                    [0.7 0.7 0.7])]
-                            (concat
-                             (when (= id selected)
-                               (quad-verts cx cy (+ r 4.0) select-color))
-                             (quad-verts cx cy r color))))
+                          (let [[cx cy] (px id)]
+                            (style/node-verts cx cy (get-in g [:nodes id])
+                                              (= id selected))))
                         (keys positions)))}))
 
 ;; --- GL lifecycle ------------------------------------------------------------
@@ -126,14 +105,14 @@
 
 (defn- view
   "The current graph, positions, and world->px transform for `source`'s
-  output at the pane's present size. Shared by render and pick, which is
-  the whole point."
+  output at the pane's present size, including the drag offset. Shared by
+  render and pick, which is the whole point: what you see is what you hit."
   [{:keys [graph selected]}]
-  (let [{:keys [w h]} @st
+  (let [{:keys [w h pan]} @st
         positions (graph/layout graph)]
     (when (seq positions)
       {:g graph :positions positions :selected selected
-       :t (graph/fit positions w h 60)})))
+       :t (graph/with-pan (graph/fit positions w h 70) pan)})))
 
 (defn- render! [source]
   (gl/gl-clear-color 0.11 0.11 0.13 1.0)
@@ -151,10 +130,44 @@
   (when-let [area (:area @st)]
     (glx/queue-render area)))
 
+(defn reset-pan! []
+  (swap! st assoc :pan [0.0 0.0])
+  (request-render!))
+
+;; --- drag to pan --------------------------------------------------------------
+;; Press starts a candidate drag; motion past a few pixels of slop turns it
+;; into a real one and stops it from also being a click. Release picks only
+;; when the pointer never left that slop, so dragging the graph around never
+;; changes the selection by accident.
+
+(defn- press! [x y]
+  (swap! st assoc :drag {:from [x y] :pan0 (:pan @st) :moved? false}))
+
+(defn- motion! [x y]
+  (when-let [{:keys [from pan0]} (:drag @st)]
+    (let [[fx fy] from
+          [px py] pan0
+          dx (- x fx)
+          dy (- y fy)]
+      (swap! st (fn [s]
+                  (-> s
+                      (assoc :pan [(+ px dx) (+ py dy)])
+                      (assoc-in [:drag :moved?]
+                                (or (get-in s [:drag :moved?])
+                                    (> (Math/sqrt (+ (* dx dx) (* dy dy)))
+                                       drag-slop-px))))))
+      (request-render!))))
+
+(defn- release! [source on-pick x y]
+  (let [moved? (get-in @st [:drag :moved?])]
+    (swap! st dissoc :drag)
+    (when-not moved?
+      (on-pick (pick source x y)))))
+
 (defn pane
   "The :gl-area hiccup. `source` is a zero-arg fn returning
   {:graph <folded> :selected <id|nil>}; `on-pick` receives the picked node
-  id (or nil for a background click) on every press."
+  id (or nil when the click landed on empty space)."
   [source on-pick]
   [:gl-area {:version [3 2] :depth-buffer false :hexpand true :vexpand true
              :on-realize realize!
@@ -162,6 +175,8 @@
              :on-resize (fn [_area w h]
                           (swap! st assoc :w (max 1 w) :h (max 1 h))
                           (gl/gl-viewport 0 0 w h))
+             :on-motion (fn [_area x y] (motion! x y))
              :on-button (fn [_area _btn pressed? x y]
-                          (when pressed?
-                            (on-pick (pick source x y))))}])
+                          (if pressed?
+                            (press! x y)
+                            (release! source on-pick x y)))}])

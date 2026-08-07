@@ -21,7 +21,8 @@
             [veriframe.server-test]
             [veriframe.store-test]
             [veriframe.gui-api-test]
-            [veriframe.gui-graph-test]))
+            [veriframe.gui-graph-test]
+            [veriframe.gui-style-test]))
 
 (def namespaces
   '[veriframe.store-test
@@ -32,6 +33,7 @@
     veriframe.server-test
     veriframe.gui-api-test
     veriframe.gui-graph-test
+    veriframe.gui-style-test
     veriframe.engine-test])
 
 (defn run []

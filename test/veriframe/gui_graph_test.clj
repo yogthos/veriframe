@@ -49,6 +49,8 @@
       (is (= 1 (get-in g [:nodes "B1" :turn]))))
     (testing "critic scores and retention markers attach"
       (is (= 5 (get-in g [:nodes "B1" :critic :momentum])))
+      (is (= "verify" (get-in g [:nodes "B1" :tool]))
+          "the tool drives the node's shape")
       (is (true? (get-in g [:nodes "B2" :spared?])))
       (is (= 6 (get-in g [:nodes "B1" :invited]))))
     (testing "edges: parent links plus seed provenance into the roots"
@@ -87,6 +89,19 @@
       (let [[wx wy] (graph/px->world t (graph/world->px t [2.0 1.0]))]
         (is (< (abs (- wx 2.0)) 1e-9))
         (is (< (abs (- wy 1.0)) 1e-9))))
+    (testing "pan shifts every projection by the drag, and picking follows"
+      (let [p (graph/with-pan t [120.0 -40.0])
+            [x0 y0] (graph/world->px t [2.0 1.0])
+            [x1 y1] (graph/world->px p [2.0 1.0])]
+        (is (< (abs (- (- x1 x0) 120.0)) 1e-9))
+        (is (< (abs (- (- y1 y0) -40.0)) 1e-9))
+        (is (= "b" (graph/nearest positions p [x1 y1] 30))
+            "a dragged node is picked at its new position")
+        (is (nil? (graph/nearest positions p [x0 y0] 10))
+            "and no longer at its old one")
+        (let [[wx wy] (graph/px->world p (graph/world->px p [2.0 1.0]))]
+          (is (< (abs (- wx 2.0)) 1e-9))
+          (is (< (abs (- wy 1.0)) 1e-9)))))
     (testing "nearest node within radius, nil beyond it"
       (let [[px py] (graph/world->px t [2.0 1.0])]
         (is (= "b" (graph/nearest positions t [px py] 30)))

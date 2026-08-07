@@ -51,7 +51,10 @@
                                         :reason (:reason data)})
     "branch-reopened" (upd g branch_id {:status :active :reason nil})
     "thesis"          (upd g branch_id {:thesis (:goal data)})
-    "turn"            (upd g branch_id {:turn turn})
+    ;; The tool is what the node's SHAPE encodes: which engine this branch is
+    ;; working in right now, as distinct from its status.
+    "turn"            (upd g branch_id {:turn turn :tool (:tool data)
+                                        :category (:category data)})
     "artifact"        (if (= "confirmed" (some-> (:claim-status data) name))
                         (let [g (ensure-node g branch_id)]
                           (update-in g [:nodes branch_id :confirmed] (fnil inc 0)))
@@ -120,6 +123,14 @@
         cx (/ (+ x0 x1) 2.0)
         cy (/ (+ y0 y1) 2.0)]
     {:s s :ox (- (/ w 2.0) (* s cx)) :oy (- (/ h 2.0) (* s cy))}))
+
+(defn with-pan
+  "Shift a transform by a pixel offset — the drag. Applied after `fit`, so
+  auto-fit keeps the graph framed and the pan moves the frame."
+  [t [dx dy]]
+  (-> t
+      (update :ox + (or dx 0.0))
+      (update :oy + (or dy 0.0))))
 
 (defn world->px [{:keys [s ox oy]} [x y]]
   [(+ ox (* s x)) (+ oy (* s y))])

@@ -86,16 +86,23 @@
 
 (defn- refresh-runs!
   "Re-fetch the run list; keep the current selection when it still exists,
-  else tail the newest run."
+  else tail the newest run.
+
+  Off the main thread, like every other call here: GTK's loop owns this
+  thread, and a synchronous request would freeze the window for as long as
+  the server took to answer — up to the socket timeout when it is down.
+  glimmer marshals ratom writes made off the main thread back onto the
+  loop, so the swap! is safe from here."
   []
-  (let [base (:base-url @state)
-        runs (vec (some-> (api/list-runs base) :body :runs))]
-    (swap! state assoc :runs runs)
-    (let [current (:run @state)]
-      (if (and current (some #(= current (:id %)) runs))
-        (swap! state assoc :run-status
-               (:status (first (filter #(= current (:id %)) runs))))
-        (connect-to! (some-> runs first :id))))))
+  (future
+    (let [base (:base-url @state)
+          runs (vec (some-> (api/list-runs base) :body :runs))]
+      (swap! state assoc :runs runs)
+      (let [current (:run @state)]
+        (if (and current (some #(= current (:id %)) runs))
+          (swap! state assoc :run-status
+                 (:status (first (filter #(= current (:id %)) runs))))
+          (connect-to! (some-> runs first :id)))))))
 
 (defn- cycle-run!
   "Step through the known runs; the picker with no dropdown widget."
@@ -113,7 +120,8 @@
 
 (defn- send-intervention!
   "The interjection path: a message for the selected branch (or the whole
-  run), applied by the server at the next turn boundary."
+  run), applied by the server at the next turn boundary. Bound to both the
+  send button and Enter in the entry (:on-activate)."
   []
   (let [{:keys [base-url run selected draft]} @state
         branch (when (and selected (not= "seed" selected)) selected)]
@@ -121,27 +129,34 @@
       (str/blank? draft) nil
       (nil? run) (notice! "no run selected")
       :else
-      (let [r (api/intervene! base-url run
-                              {:branch-id branch :kind "message"
-                               :payload draft})]
-        (if (:ok r)
-          (do (swap! state assoc :draft "")
-              (notice! (str "queued for " (or branch "the run")
-                            " — applies at the next turn boundary")))
-          (notice! (str "failed: " (:error r))))))))
+      ;; Clear the entry immediately so Enter feels instant; the POST
+      ;; reports back when it lands.
+      (do (swap! state assoc :draft "")
+          (notice! (str "sending to " (or branch "the run") "…"))
+          (future
+            (let [r (api/intervene! base-url run
+                                    {:branch-id branch :kind "message"
+                                     :payload draft})]
+              (notice! (if (:ok r)
+                         (str "queued for " (or branch "the run")
+                              " — applies at the next turn boundary")
+                         (str "failed: " (:error r))))))))))
 
 (defn- abort-run! []
   (when-let [run (:run @state)]
-    (let [r (api/abort! (:base-url @state) run)]
-      (notice! (if (:ok r) "abort requested" (str "abort failed: " (:error r)))))))
+    (future
+      (let [r (api/abort! (:base-url @state) run)]
+        (notice! (if (:ok r) "abort requested"
+                     (str "abort failed: " (:error r))))))))
 
 (defn- resume-run! []
   (when-let [run (:run @state)]
-    (let [budget (parse-long (str (:budget @state)))
-          r (api/resume! (:base-url @state) run budget)]
-      (notice! (if (:ok r)
-                 (str "resuming" (when budget (str " with budget " budget)))
-                 (str "resume failed: " (:error r)))))))
+    (future
+      (let [budget (parse-long (str (:budget @state)))
+            r (api/resume! (:base-url @state) run budget)]
+        (notice! (if (:ok r)
+                   (str "resuming" (when budget (str " with budget " budget)))
+                   (str "resume failed: " (:error r))))))))
 
 ;; --- components ---------------------------------------------------------------
 
@@ -176,6 +191,18 @@
   []
   [:frame {:label "solution space" :hexpand true :vexpand true}
    [glpane/pane scene-source select-node!]])
+
+(defn- legend []
+  (let [{:keys [selected graph event-count]} @state]
+    [:hbox {:spacing 12}
+     [:label {:markup (str "<b>shape</b> = engine:  ■ prolog   ◆ smt"
+                           "   ▲ lean   ⬢ octave   ● harness")}]
+     [:label {:markup "<b>ring</b> = status"}]
+     [:button {:label "recenter" :on-click glpane/reset-pan!}]
+     [:label {:label (str (count (:nodes graph)) " nodes · "
+                          event-count " events"
+                          (when selected (str " · selected " selected)))
+              :xalign 1.0 :hexpand true}]]))
 
 (defn- branch-text [node detail]
   (str "status: " (name (or (:status node) :unknown))
@@ -228,6 +255,7 @@
 (defn root []
   [:vbox {:spacing 8 :margin 8}
    [header]
+   [legend]
    [:separator]
    [:hbox {:spacing 8 :vexpand true}
     [graph-pane]
