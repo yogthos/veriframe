@@ -22,6 +22,7 @@
             [veriframe.agent.beam :as beam]
             [veriframe.agent.claims :as claims]
             [veriframe.agent.consensus :as consensus]
+            [veriframe.agent.critic :as critic]
             [veriframe.engine.prolog]
             [veriframe.agent.gates :as gates]
             [veriframe.agent.loop :as aloop]
@@ -1066,17 +1067,135 @@
                     (assoc :turns (vec (repeat 6 {}))))
         productive (assoc failing :artifacts [{:claim "c" :claim-status :confirmed
                                                :turn 5}])]
-    (is (= :culled (:status (#'beam/cull-or-keep failing 2))))
-    (is (= :active (:status (#'beam/cull-or-keep productive 2))))
+    (is (= :culled (:status (#'beam/cull-or-keep {} failing 2 []))))
+    (is (= :active (:status (#'beam/cull-or-keep {} productive 2 []))))
     (testing "a stale confirmation does not protect it forever"
       (let [stale (assoc failing :artifacts [{:claim "c" :claim-status :confirmed
                                               :turn 0}])]
-        (is (= :culled (:status (#'beam/cull-or-keep stale 2))))))
+        (is (= :culled (:status (#'beam/cull-or-keep {} stale 2 []))))))
     (testing "the last branch standing is never culled"
       ;; Found by the width sweep: the width-1 arm was culled at turn 9 of 12
       ;; and the run ended there, which reads as evidence against narrow beams
       ;; and is actually a rule fired outside the situation it was written for.
-      (is (= :active (:status (#'beam/cull-or-keep failing 0)))))))
+      (is (= :active (:status (#'beam/cull-or-keep {} failing 0 [])))))))
+
+;; --- the critic and Pareto retention ----------------------------------------
+
+(deftest critic-score-parsing
+  (testing "all four objectives, line-anchored, reasoning stripped"
+    (is (= {:progress 4 :momentum 3 :distinctness 5 :viability 4}
+           (critic/parse-scores
+            (str "<think>SCORE progress: 1 maybe</think>\n"
+                 "SCORE progress: 4\nSCORE momentum: 3\n"
+                 "SCORE distinctness: 5\nSCORE viability: 4")))))
+  (testing "a missing objective fails closed"
+    (is (nil? (critic/parse-scores "SCORE progress: 4\nSCORE momentum: 3"))))
+  (testing "out of range is not a score"
+    (is (nil? (critic/parse-scores
+               (str "SCORE progress: 7\nSCORE momentum: 3\n"
+                    "SCORE distinctness: 5\nSCORE viability: 4")))))
+  (testing "drafts: the last line wins"
+    (is (= 2 (:progress (critic/parse-scores
+                         (str "SCORE progress: 4\nSCORE momentum: 3\n"
+                              "SCORE distinctness: 5\nSCORE viability: 4\n"
+                              "SCORE progress: 2")))))))
+
+(deftest critic-domination
+  (let [a {:progress 4 :momentum 3 :distinctness 3 :viability 4}
+        b {:progress 3 :momentum 3 :distinctness 3 :viability 4}
+        c {:progress 1 :momentum 1 :distinctness 5 :viability 2}]
+    (is (critic/dominated? b [a]) "worse somewhere, better nowhere: dominated")
+    (is (not (critic/dominated? a [b])))
+    (is (not (critic/dominated? c [a b])) "a unique strength survives")
+    (is (not (critic/dominated? a [a])) "an equal vector does not dominate")))
+
+(deftest critic-scoring-is-fail-closed
+  (let [b (branch-with :thesis {:goal "g" :technique "t" :subClaims []})]
+    (with-redefs [llm/chat (fn [& _]
+                             {:content (str "SCORE progress: 4\nSCORE momentum: 3\n"
+                                            "SCORE distinctness: 5\nSCORE viability: 4")})]
+      (is (= {:progress 4 :momentum 3 :distinctness 5 :viability 4}
+             (:scores (critic/score! {} b [] 7)))))
+    (with-redefs [llm/chat (fn [& _] {:content "the branch seems fine to me"})]
+      (is (nil? (critic/score! {} b [] 7))
+          "an unusable critic answer is no information, not a random vector"))
+    (with-redefs [llm/chat (fn [& _] (throw (ex-info "provider down" {})))]
+      (is (nil? (critic/score! {} b [] 7))
+          "a dead provider must not take the beam down"))))
+
+(deftest pareto-retention-spares-non-dominated-branches
+  ;; The scalar rule is the TRIGGER; domination is the verdict. Three runs in
+  ;; a row culled a branch at 3 consecutive failures — including one whose
+  ;; mathematics was right and whose Lean proofs merely kept failing. A
+  ;; failing branch that no sibling dominates keeps exploring, on a clock.
+  (with-db [c]
+    (let [rid (runs/start-run! c {:problem "p"})
+          ctx {:conn c :run-id rid}
+          failing (fn [fails scores]
+                    (-> (branch-with :id "BF" :consecutive-failures fails
+                                     :critic {:scores scores :turn 6})
+                        (assoc :turns (vec (repeat 8 {})))))]
+      (testing "failing and dominated: culled"
+        (is (= :culled (:status (#'beam/cull-or-keep
+                                 ctx
+                                 (failing 3 {:progress 2 :momentum 2
+                                             :distinctness 2 :viability 3})
+                                 1
+                                 [{:progress 3 :momentum 2
+                                   :distinctness 2 :viability 3}])))))
+      (testing "failing but non-dominated: spared, journaled, and told"
+        (let [b (#'beam/cull-or-keep
+                 ctx
+                 (failing 3 {:progress 2 :momentum 2
+                             :distinctness 5 :viability 3})
+                 1
+                 [{:progress 3 :momentum 2 :distinctness 2 :viability 3}])]
+          (is (state/active? b))
+          (is (some #(and (= "user" (:role %))
+                          (str/includes? (:content %) "no sibling dominates"))
+                    (:messages b)))
+          (is (= 1 (count (filter #(= "cull-spared" (:kind %))
+                                  (journal/events-since c rid 0)))))))
+      (testing "the critic's own dead-end verdict culls"
+        (is (= :culled (:status (#'beam/cull-or-keep
+                                 ctx
+                                 (failing 3 {:progress 2 :momentum 2
+                                             :distinctness 5 :viability 1})
+                                 1 [])))))
+      (testing "the hard floor: double the threshold ends the reprieve"
+        (is (= :culled (:status (#'beam/cull-or-keep
+                                 ctx
+                                 (failing 6 {:progress 2 :momentum 2
+                                             :distinctness 5 :viability 5})
+                                 1 []))))))))
+
+(deftest fork-invite-goes-to-the-strongest-branch-with-room
+  (with-db [c]
+    (let [rid (runs/start-run! c {:problem "p"})
+          ctx {:conn c :run-id rid}
+          strong (branch-with :id "B1"
+                              :critic {:scores {:progress 4 :momentum 4
+                                                :distinctness 3 :viability 5}
+                                       :turn 6})
+          weak (branch-with :id "B2"
+                            :critic {:scores {:progress 2 :momentum 2
+                                              :distinctness 2 :viability 3}
+                                     :turn 6})]
+      (let [bs (#'beam/invite-fork ctx [strong weak] 2 7)
+            b1 (first (filter #(= "B1" (:id %)) bs))
+            b2 (first (filter #(= "B2" (:id %)) bs))]
+        (is (= 7 (:fork-invited b1)))
+        (is (some #(str/includes? (:content %) "branch_theses") (:messages b1)))
+        (is (nil? (:fork-invited b2)) "below the floor is not invited")
+        (is (= 1 (count (filter #(= "fork-invite" (:kind %))
+                                (journal/events-since c rid 0))))))
+      (testing "cooldown: a recent invite is not repeated"
+        (let [bs (#'beam/invite-fork ctx [(assoc strong :fork-invited 6) weak] 2 7)]
+          (is (= 6 (:fork-invited (first bs))) "unchanged")))
+      (testing "no room at the cap, no invitation"
+        (let [bs (#'beam/invite-fork ctx [strong weak]
+                                     (gates/threshold :max-total-branches) 7)]
+          (is (nil? (:fork-invited (first bs)))))))))
 
 ;; --- every gate must be able to speak ---------------------------------------
 

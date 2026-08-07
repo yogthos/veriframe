@@ -110,4 +110,26 @@
  :prediction-window
  {:value 3 :kind :threshold :capability-tunable? false
   :doc "Turns a gate's declared prediction has to come true in before it
-        settles as unmet."}}
+        settles as unmet."}
+
+ :critic-every
+ {:value 5 :kind :cost-ceiling :capability-tunable? false
+  :doc "Turns between critic scorings of one branch. Every scoring is a
+        sub-LLM call, so this is spend, and it is per active branch."}
+
+ :cull-hard-multiple
+ {:value 2 :kind :threshold :capability-tunable? false
+  :doc "Multiple of cull-threshold at which a Pareto-spared branch is culled
+        regardless of its scores. The reprieve is a loan with a clock, not an
+        exemption — Pareto's known weakness is permissiveness."}
+
+ :fork-invite-floor
+ {:value {:viability 4 :progress 3} :kind :threshold :capability-tunable? false
+  :doc "Minimum critic scores before a branch is invited to fork. Below
+        this, growth spends budget on lines not yet earning it."}
+
+ :fork-invite-cooldown
+ {:value 6 :kind :re-fire-guard :capability-tunable? true
+  :doc "Turns before the same branch may be invited to fork again. The
+        invitation predicate cannot tell 'strong' from 'strong and already
+        asked', which is the shape re-fire guards exist for."}}

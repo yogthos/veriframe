@@ -57,7 +57,10 @@
     because the worst case is one duplicate slow verification.
   - :shared-served (which shared artifacts a branch was already told about)
     is branch memory; resume starts it empty, so each artifact-branch pair
-    can journal one duplicate shared-artifact-hit after a resume."
+    can journal one duplicate shared-artifact-hit after a resume.
+  - :critic scores and :fork-invited markers are branch memory; a resumed
+    branch is re-scored at its next boundary, and may be re-invited to fork
+    sooner than the cooldown would otherwise allow."
   (:require [clojure.data.json :as json]
             [veriframe.agent.beam :as beam]
             [veriframe.agent.claims :as claims]

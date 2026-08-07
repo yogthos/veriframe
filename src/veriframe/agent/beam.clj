@@ -28,6 +28,7 @@
   (:require [clojure.string :as str]
             [clojure.tools.logging :as log]
             [veriframe.agent.claims :as claims]
+            [veriframe.agent.critic :as critic]
             [veriframe.agent.gates :as gates]
             [veriframe.agent.loop :as branch-loop]
             [veriframe.agent.state :as state]
@@ -65,7 +66,7 @@
       b)))
 
 (defn- cull-or-keep
-  "Apply the cull rule to a branch that just failed.
+  "Apply the retention rule to a branch that just failed.
 
   A branch holding a recent confirmation is never culled — incremental
   strategies naturally look like verify size N, fail at N+1, verify N+1, and
@@ -73,23 +74,130 @@
   emergency-review gate is what talks to it instead, and the arbiter has
   already had its say by the time this runs.
 
-  `survivors` is how many other branches would still be running. Culling exists
-  to reallocate the beam's budget to branches doing better; when there is
-  nobody to reallocate to, culling is just an early exit with turns left on the
-  clock. The width sweep found this the direct way: the width-1 arm was culled
-  at turn 9 of 12 and the run ended there, which reads as evidence against
-  narrow beams and is actually a rule applied outside the situation it was
-  written for. The last branch standing is never culled; the stuck and
-  emergency-review gates keep talking to it instead."
-  [branch survivors]
-  (if (and (>= (:consecutive-failures branch) (gates/threshold :cull-threshold))
-           (not (state/confirmed-in-last branch (gates/threshold :cull-recent-window)))
-           (pos? survivors))
-    (assoc branch
-           :status :culled
-           :inactive-reason (str "culled after " (:consecutive-failures branch)
-                                 " consecutive failures with no recent confirmed work"))
-    branch))
+  The scalar rule (consecutive failures, no recent confirmation) is the
+  TRIGGER; the critic's Pareto frontier is the verdict. A triggered branch
+  is culled when a living sibling dominates it on every critic objective,
+  when the critic itself scored the line a dead end, or when no scores
+  exist (the critic is advisory — absent, the scalar rule stands). A
+  triggered branch that is NOT dominated keeps its distinct strengths and
+  survives, journaled and on a clock: at cull-hard-multiple times the
+  threshold the reprieve ends unconditionally, because Pareto's known
+  weakness is permissiveness and a zombie beam is the failure mode.
+
+  `survivors` is how many other branches would still be running. Culling
+  exists to reallocate the beam's budget to branches doing better; when
+  there is nobody to reallocate to, culling is just an early exit with turns
+  left on the clock. The width sweep found this the direct way: the width-1
+  arm was culled at turn 9 of 12 and the run ended there. The last branch
+  standing is never culled; the stuck and emergency-review gates keep
+  talking to it instead."
+  [{:keys [conn run-id]} branch survivors sibling-scores]
+  (let [threshold (gates/threshold :cull-threshold)
+        fails (or (:consecutive-failures branch) 0)
+        cull (fn [why] (assoc branch :status :culled :inactive-reason why))
+        scores (get-in branch [:critic :scores])
+        hard-floor (* (gates/threshold :cull-hard-multiple) threshold)]
+    (cond
+      (not (and (>= fails threshold)
+                (not (state/confirmed-in-last branch
+                                              (gates/threshold :cull-recent-window)))
+                (pos? survivors)))
+      branch
+
+      (>= fails hard-floor)
+      (cull (str "culled after " fails
+                 " consecutive failures; the Pareto reprieve was spent"))
+
+      (nil? scores)
+      (cull (str "culled after " fails
+                 " consecutive failures with no recent confirmed work"))
+
+      (<= (:viability scores) 1)
+      (cull (str "culled after " fails
+                 " consecutive failures; the critic scored the line a dead end"))
+
+      (critic/dominated? scores sibling-scores)
+      (cull (str "culled after " fails
+                 " consecutive failures; dominated by a sibling on every"
+                 " critic objective"))
+
+      :else
+      (do (when (and conn run-id)
+            (journal/note! conn run-id :cull-spared
+                           {:branch-id (:id branch)
+                            :data {:scores scores :failures fails}}))
+          (state/add-message
+           branch "user"
+           (str "[harness] " fails " consecutive verifications have failed,"
+                " which normally culls a branch, but no sibling dominates"
+                " your line on the critic's objectives — it survives on its"
+                " distinct strengths. Change something concrete about the"
+                " approach; the reprieve ends unconditionally at " hard-floor
+                " consecutive failures."))))))
+
+(defn- ensure-scored
+  "Fresh critic scores for every active branch, at most one sub-LLM call per
+  branch per :critic-every window. A scoring that fails leaves the previous
+  scores in place — stale information beats invented information."
+  [ctx branches turn]
+  (mapv (fn [b]
+          (if (and (state/active? b)
+                   (or (nil? (get-in b [:critic :turn]))
+                       (>= (- turn (get-in b [:critic :turn]))
+                           (gates/threshold :critic-every))))
+            (let [siblings (filterv #(and (state/active? %)
+                                          (not= (:id %) (:id b)))
+                                    branches)]
+              (if-let [s (critic/score! ctx b siblings turn)]
+                (assoc b :critic s)
+                b))
+            b))
+        branches))
+
+(defn- invite-fork
+  "When the beam has room under the total cap and a branch's critic scores
+  clear the fork floor, invite the strongest such branch to fork.
+
+  The frontier grows on evidence rather than starting wide: a run may open
+  at width 1 or 2 and widen only where verified progress is happening. The
+  invitation is a plain harness message — the model decides whether it has
+  a genuinely distinct sub-approach, and branch_theses does the spawning
+  under the existing total cap. No prediction is recorded; declining is a
+  legitimate answer and not a settled miss."
+  [{:keys [conn run-id]} branches total-count turn]
+  (let [cap (gates/threshold :max-total-branches)
+        floor (gates/threshold :fork-invite-floor)
+        cooldown (gates/threshold :fork-invite-cooldown)
+        candidate (when (< total-count cap)
+                    (->> branches
+                         (filter state/active?)
+                         (filter #(when-let [s (get-in % [:critic :scores])]
+                                    (and (>= (:viability s) (:viability floor))
+                                         (>= (:progress s) (:progress floor)))))
+                         (remove #(when-let [t (:fork-invited %)]
+                                    (< (- turn t) cooldown)))
+                         (sort-by #(- (reduce + (vals (get-in % [:critic :scores])))))
+                         first))]
+    (if-not candidate
+      branches
+      (do (when (and conn run-id)
+            (journal/note! conn run-id :fork-invite
+                           {:branch-id (:id candidate) :turn turn
+                            :data (get-in candidate [:critic :scores])}))
+          (mapv #(if (= (:id %) (:id candidate))
+                   (-> %
+                       (assoc :fork-invited turn)
+                       (state/add-message
+                        "user"
+                        (str "[harness] Your line is showing verified progress"
+                             " and the beam has room. If you can name a"
+                             " genuinely distinct sub-approach worth exploring"
+                             " in parallel, call branch_theses — your current"
+                             " thesis first, the alternatives after. If you"
+                             " cannot, continue as you were; this is an"
+                             " invitation, not an instruction.")))
+                   %)
+                branches)))))
 
 (defn- spawn-children!
   "Turn a branch's pending theses into sibling branches, under the total cap.
@@ -342,6 +450,9 @@
             (let [directives (interventions/pending conn run-id)
                   active (drain-directives! ctx active directives turn)
                   advanced (advance-all ctx (filterv state/active? active) turn)
+                  ;; Critic scores refresh on post-turn state, before any
+                  ;; retention decision reads them.
+                  advanced (ensure-scored ctx advanced turn)
                   ;; Cull before forking, so a branch culled this turn does not
                   ;; also get to spend the branch budget on children.
                   ;; A branch is only culled if someone else would still be
@@ -349,7 +460,11 @@
                   ;; branches that survive the decision so far.
                   culled (first
                           (reduce (fn [[acc alive] b]
-                                    (let [b' (cull-or-keep b (dec alive))]
+                                    (let [sibs (keep #(when (and (state/active? %)
+                                                                 (not= (:id %) (:id b)))
+                                                        (get-in % [:critic :scores]))
+                                                     advanced)
+                                          b' (cull-or-keep ctx b (dec alive) sibs)]
                                       [(conj acc b')
                                        (if (state/active? b') alive (dec alive))]))
                                   [[] (count advanced)]
@@ -369,6 +484,9 @@
                       (dispose-branch-engines! b))
                   inactive (filterv (complement state/active?) branches)
                   all-now (into (vec inactive) culled)
+                  ;; Grow the frontier where the evidence is: after the cull,
+                  ;; so a freed slot can be refilled the same round.
+                  culled (invite-fork ctx culled (count all-now) turn)
                   [children updated]
                   (reduce (fn [[acc bs] b]
                             (if (and (state/active? b) (seq (:pending-branch-theses b)))
