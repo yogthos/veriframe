@@ -188,7 +188,8 @@
         row (first (filter #(= run (:id %)) runs))]
     [:hbox {:spacing 8}
      [:label {:markup "<b>veriframe</b>"}]
-     [:button {:label "⟳" :tooltip "refresh runs" :on-click refresh-runs!}]
+     [:button {:label "refresh" :tooltip "re-fetch the run list"
+               :on-click refresh-runs!}]
      [:button {:label "◀" :on-click #(cycle-run! 1)}]
      [:label {:label (if run
                        (str (subs (str run) 0 8) " · " (or (:status row) "?"))
@@ -229,7 +230,12 @@
                            "<span size=\"large\">▲</span> lean   "
                            "<span size=\"large\">⬢</span> octave   "
                            "<span size=\"large\">●</span> harness")}]
-     [:label {:markup "<span foreground=\"#4CE6F2\">◎</span> working"}]
+     ;; Deliberately words, not a glyph. U+25CE BULLSEYE and U+25C6 BLACK
+     ;; DIAMOND are both absent from the default system font here and render
+     ;; as tofu boxes showing their own codepoints, so the legend says what
+     ;; the marker looks like instead of trying to draw it.
+     [:label {:markup (str "<span foreground=\"#4CE6F2\"><b>cyan ring</b></span>"
+                           " = working now")}]
      [:label {:markup "<b>ring</b> = status"}]
      [:button {:label "recenter" :on-click glpane/reset-pan!}]
      [:label {:label (str (count (:nodes graph)) " nodes · "
