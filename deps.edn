@@ -53,7 +53,22 @@
            ;; process can run the suite over nREPL without paying startup:
            ;;   (require 'veriframe.test-runner :reload-all)
            ;;   (veriframe.test-runner/run)
-           :dev  {:extra-paths ["dev" "test"]}}
+           :dev  {:extra-paths ["dev" "test"]}
+
+           ;; The GUI is an optional component and a strict HTTP client of the
+           ;; server: its source root and its GTK/GL deps live ONLY under this
+           ;; alias, so `jolt serve` and `jolt -M:test` stay headless and never
+           ;; load a native toolkit. glimmer is pinned one commit past v0.0.5
+           ;; for the swap! nil-argument fix.
+           :gui  {:extra-paths ["gui"]
+                  :extra-deps
+                  {jolt-lang/glimmer
+                   {:git/url "https://github.com/jolt-lang/glimmer.git"
+                    :git/sha "a0133572c5c00011489647277753b2eb18925912"}
+                   jolt-lang/glimmer-gl
+                   {:git/url "https://github.com/jolt-lang/glimmer-gl.git"
+                    :git/sha "05a27d378a542cc0f32ff2b2682e0e47ffb83599"}}
+                  :main-opts ["-m" "veriframe.gui.core"]}}
 
  :tasks {serve {:doc "start the harness (HTTP + nREPL) and park"
                 :main-opts ["-m" "veriframe.core"]}
@@ -62,4 +77,5 @@
          dev   "jolt -A:dev -m veriframe.core"
          smoke {:doc "Phase 0 platform probes: z3, swipl, sqlite, https, server"
                 :main-opts ["-m" "veriframe.smoke"]}
-         test  "jolt -M:test"}}
+         test  "jolt -M:test"
+         gui   "jolt -M:gui"}}
