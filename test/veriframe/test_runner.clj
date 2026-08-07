@@ -23,7 +23,8 @@
             [veriframe.gui-api-test]
             [veriframe.gui-graph-test]
             [veriframe.gui-style-test]
-            [veriframe.gui-input-test]))
+            [veriframe.gui-input-test]
+            [veriframe.gui-mathtext-test]))
 
 (def namespaces
   '[veriframe.store-test
@@ -36,6 +37,7 @@
     veriframe.gui-graph-test
     veriframe.gui-style-test
     veriframe.gui-input-test
+    veriframe.gui-mathtext-test
     veriframe.engine-test])
 
 (defn run []

@@ -23,7 +23,8 @@
             [glimmer.ratom :as r]
             [veriframe.gui.api :as api]
             [veriframe.gui.glpane :as glpane]
-            [veriframe.gui.graph :as graph]))
+            [veriframe.gui.graph :as graph]
+            [veriframe.gui.mathtext :as mt]))
 
 (defn default-base-url
   "Where the server is. Defaults to the same port `jolt serve` does, so the
@@ -274,69 +275,72 @@
             (try (json/read-str t :key-fn keyword) (catch Throwable _ nil))
             t)]
     (when t
-      (str "\n\nTHESIS\n" (:goal t)
-           (when-let [tech (:technique t)] (str "\nTechnique: " tech))
+      (str "\n\n" (mt/heading "THESIS") "\n" (mt/math (:goal t))
+           (when-let [tech (:technique t)]
+             (str "\n" (mt/dim "Technique: ") (mt/math tech)))
            (when-let [subs (seq (:subClaims t))]
-             (str "\nSub-claims:\n"
-                  (str/join "\n" (map #(str "  " %) subs))))))))
+             (str "\n" (mt/dim "Sub-claims:") "\n"
+                  (str/join "\n" (map #(str "  " (mt/math %)) subs))))))))
 
 (defn- activity-text
   "What the branch has been doing, from the event stream — available the
   moment an event arrives, where the full detail fetch takes seconds."
   [node]
   (when-let [a (seq (:activity node))]
-    (str "\n\nLIVE ACTIVITY (most recent last)\n"
+    (str "\n\n" (mt/heading "LIVE ACTIVITY (most recent last)") "\n"
          (str/join "\n"
                    (for [{:keys [turn tool category]} (take-last 15 a)]
-                     (str "T" turn "  " tool
-                          "  [" (or category "?") "]"))))))
+                     (str "T" turn "  " (mt/plain tool) "  "
+                          (mt/dim (str "[" (or category "?") "]"))))))))
 
 (defn- claims-text
   "Every attempt, read off the graph rather than the detail response."
   [graph node]
   (when-let [cs (seq (graph/branch-claims graph (:id node)))]
-    (str "\n\nATTEMPTS (" (count cs) ")\n"
+    (str "\n\n" (mt/heading (str "ATTEMPTS (" (count cs) ")")) "\n"
          (str/join "\n\n"
                    (for [{:keys [turn status engine claim]} (take-last 10 cs)]
                      (str (case status
                             :confirmed "✓" :refuted "✗"
                             :existential "∃" "?")
-                          " T" turn " [" (some-> engine name) "] " claim))))))
+                          " T" turn " " (mt/dim (str "[" (some-> engine name) "]")) " " (mt/math claim)))))))
 
 (defn- branch-text [graph node detail]
   (str "status: " (name (or (:status node) :unknown))
-       (when-let [reason (:reason node)] (str "\n" reason))
+       (when-let [reason (:reason node)] (str "\n" (mt/plain reason)))
        "\nconfirmed artifacts: " (or (:confirmed node) 0)
        (when-let [c (:critic node)]
          (str "\ncritic: progress " (:progress c) " · momentum " (:momentum c)
               " · distinctness " (:distinctness c) " · viability " (:viability c)
               (when (:spared? node) "\nspared by Pareto retention")))
        (or (thesis-text detail)
-           (when-let [t (:thesis node)] (str "\n\nTHESIS\n" t)))
+           (when-let [t (:thesis node)] (str "\n\n" (mt/heading "THESIS") "\n" (mt/math t))))
        (activity-text node)
        (claims-text graph node)
        (when-not detail
-         "\n\n(loading full turn results and encodings…)")
+         (str "\n\n" (mt/dim "(loading full turn results and encodings…)")))
        (when-let [turns (seq (:turns detail))]
-         (str "\n\nTURN RESULTS\n"
+         (str "\n\n" (mt/heading "TURN RESULTS") "\n"
               (->> (take-last 12 turns)
-                   (map #(str "T" (:turn %) " " (:tool_name %)
-                              " [" (:category %) "] "
-                              (clip (first (str/split-lines (str (:result %)))) 90)))
+                   (map #(str "T" (:turn %) " " (mt/plain (:tool_name %)) " "
+                              (mt/dim (str "[" (:category %) "]")) " "
+                              (mt/math (first (str/split-lines (str (:result %)))))))
                    (str/join "\n"))))
        (when-let [arts (seq (filter #(= "confirmed" (:claim_status %))
                                     (:artifacts detail)))]
-         (str "\n\nCONFIRMED, IN FULL (" (count arts) ")\n"
+         (str "\n\n" (mt/heading (str "CONFIRMED, IN FULL (" (count arts) ")")) "\n"
               (->> (take-last 8 arts)
-                   (map #(str "✓ [" (:kind %) "/" (:tier %) " T" (:turn %) "] "
-                              (clip (:claim %) 220)))
+                   (map #(str "✓ " (mt/dim (str "[" (:kind %) "/" (:tier %)
+                                                 " T" (:turn %) "]")) " "
+                              (mt/math (:claim %))))
                    (str/join "\n\n"))))
        (when-let [bad (seq (remove #(= "confirmed" (:claim_status %))
                                    (:artifacts detail)))]
-         (str "\n\nDID NOT HOLD, IN FULL (" (count bad) ")\n"
+         (str "\n\n" (mt/heading (str "DID NOT HOLD, IN FULL (" (count bad) ")")) "\n"
               (->> (take-last 4 bad)
-                   (map #(str "✗ [" (:claim_status %) " T" (:turn %) "] "
-                              (clip (:claim %) 160)))
+                   (map #(str "✗ " (mt/dim (str "[" (:claim_status %)
+                                                 " T" (:turn %) "]")) " "
+                              (mt/math (:claim %))))
                    (str/join "\n"))))))
 
 (defn- attempt-text
@@ -355,18 +359,21 @@
            "existential" "∃ EXISTENTIAL — proves something exists, not which"
            "ambiguous" "? AMBIGUOUS"
            (str status))
-         "  ·  " (or (:kind art) (some-> (:engine node) name)) 
-         (when (:tier art) (str " / " (:tier art)))
-         "  ·  branch " (:branch node) ", turn " turn
-         "\n\nCLAIM\n" (clip (or (:claim art) (:claim node)) 900)
+         "  ·  " (mt/plain (or (:kind art) (some-> (:engine node) name)))
+         (when (:tier art) (mt/plain (str " / " (:tier art))))
+         (mt/dim (str "  ·  branch " (:branch node) ", turn " turn))
+         "\n\n" (mt/heading "CLAIM") "\n"
+         (mt/math (or (:claim art) (:claim node)))
          (when-let [v (:verdict art)]
-           (str "\n\nENGINE VERDICT\n" v))
+           (str "\n\n" (mt/heading "ENGINE VERDICT") "\n" (mt/plain v)))
          (when-let [r (:result trn)]
-           (str "\n\nWHAT THE HARNESS SAID\n" (clip r 700)))
+           (str "\n\n" (mt/heading "WHAT THE HARNESS SAID") "\n" (mt/math r)))
          (when-let [w (:witness art)]
-           (str "\n\nWITNESS\n" (clip w 400)))
+           (str "\n\n" (mt/heading "WITNESS") "\n" (mt/mono w)))
+         ;; Code is escaped and monospaced but NEVER rewritten: an encoding
+         ;; must read as exactly what ran.
          (when-let [c (:code art)]
-           (str "\n\nCODE THAT RAN\n" (clip c 1800))))))
+           (str "\n\n" (mt/heading "CODE THAT RAN") "\n" (mt/mono c))))))
 
 (defn- log-panel []
   (let [{:keys [graph selected branch-log]} @state
@@ -377,11 +384,11 @@
                       :else "inspector")
              :vexpand true :width-request 620}
      [:scrolled {:vexpand true :scroll-top (str selected)}
-      [:label {:text (cond
+      [:label {:markup (cond
                        (nil? selected)
-                       "click a branch for its thesis and progress, or an attempt for what it tried"
+                       (mt/dim "click a branch for its thesis and progress, or an attempt for what it tried")
                        (= "seed" selected)
-                       (str "inherited artifacts\n" (:label node))
+                       (str (mt/heading "inherited artifacts") "\n" (mt/plain (:label node)))
                        (= :artifact (:kind node))
                        (attempt-text node branch-log)
                        :else (branch-text graph node branch-log))
