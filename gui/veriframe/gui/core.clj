@@ -229,10 +229,12 @@
                            "<span size=\"large\">▲</span> lean   "
                            "<span size=\"large\">⬢</span> octave   "
                            "<span size=\"large\">●</span> harness")}]
+     [:label {:markup "<span foreground=\"#4CE6F2\">◎</span> working"}]
      [:label {:markup "<b>ring</b> = status"}]
      [:button {:label "recenter" :on-click glpane/reset-pan!}]
      [:label {:label (str (count (:nodes graph)) " nodes · "
-                          event-count " events"
+                          event-count " events · "
+                          (count (graph/working graph)) " working"
                           (when selected (str " · selected " selected)))
               :xalign 1.0 :hexpand true}]]))
 

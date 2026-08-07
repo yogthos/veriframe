@@ -130,12 +130,17 @@
 
 (def hover-color [0.75 0.78 0.85])
 
+;; Deliberately not white: white is the selection halo, and the two must
+;; stay tellable apart when a node is both selected and working.
+(def working-color [0.30 0.90 0.95])
+
 (defn node-verts
   "Every triangle for one node, back to front: the hover or selection halo,
   then the status ring, then the engine body. Selection wins over hover —
   the pointer is transient, the selection is a decision."
   ([cx cy node selected?] (node-verts cx cy node selected? false))
-  ([cx cy node selected? hovered?]
+  ([cx cy node selected? hovered?] (node-verts cx cy node selected? hovered? false))
+  ([cx cy node selected? hovered? working?]
    (let [{:keys [shape fill ring]} (node-style node)
          r (node-radius node)]
      (vec (concat
@@ -143,5 +148,9 @@
              selected? (shape-verts cx cy (+ r 9.0) shape select-color)
              hovered?  (shape-verts cx cy (+ r 7.0) shape hover-color)
              :else nil)
+           ;; Between the halo and the status ring, so a node can be
+           ;; selected AND working and still read as both.
+           (when working?
+             (shape-verts cx cy (+ r 6.5) shape working-color))
            (shape-verts cx cy (+ r 4.0) shape ring)
            (shape-verts cx cy r shape fill))))))

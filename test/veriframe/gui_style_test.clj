@@ -67,6 +67,13 @@
     (let [v (style/shape-verts 0.0 0.0 10.0 :hexagon [1.0 0.0 0.0])]
       (is (= (* 6 3 5) (count v)))
       (is (every? number? v))))
+  (testing "a working node is marked, and distinctly from selection"
+    (let [node {:status :active :tool "verify" :confirmed 2}
+          plain (style/node-verts 0.0 0.0 node false false false)
+          working (style/node-verts 0.0 0.0 node false false true)]
+      (is (> (count working) (count plain)))
+      (is (not= style/working-color style/select-color)
+          "a node can be both selected and working; the two must stay distinct")))
   (testing "a selected node draws more geometry than an unselected one"
     (let [node {:status :active :tool "verify" :confirmed 2}]
       (is (> (count (style/node-verts 0.0 0.0 node true))

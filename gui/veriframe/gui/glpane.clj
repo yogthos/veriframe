@@ -78,12 +78,14 @@
                            (when (and (positions from) (positions to))
                              (line-verts (px from) (px to) style/edge-color)))
                          (graph/edges g)))
-     :tris (vec (mapcat (fn [id]
-                          (let [[cx cy] (px id)]
-                            (style/node-verts cx cy (get-in g [:nodes id])
-                                              (= id selected)
-                                              (= id (:hover @st)))))
-                        (keys positions)))}))
+     :tris (let [live (graph/working g)]
+             (vec (mapcat (fn [id]
+                            (let [[cx cy] (px id)]
+                              (style/node-verts cx cy (get-in g [:nodes id])
+                                                (= id selected)
+                                                (= id (:hover @st))
+                                                (contains? live id))))
+                          (keys positions))))}))
 
 ;; --- GL lifecycle ------------------------------------------------------------
 

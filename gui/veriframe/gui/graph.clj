@@ -104,6 +104,22 @@
                         (not= :artifact kind))]
          ["seed" id])))))
 
+(defn working
+  "The ids where live work is actually happening: for each ACTIVE branch,
+  the tip of its attempt chain — or the branch node itself when it has not
+  produced an attempt yet.
+
+  A branch node alone does not say where a line has got to, because the
+  chain grows rightward and the branch stays at its left end. Marking the
+  tip is what lets a reader see, at a glance, the current position of every
+  line still running."
+  [{:keys [nodes]}]
+  (into #{}
+        (keep (fn [{:keys [id kind status last-artifact]}]
+                (when (and (= :branch kind) (= :active status))
+                  (or last-artifact id))))
+        (vals nodes)))
+
 ;; --- layout and the view transform -------------------------------------------
 ;; Pure math, kept out of the GL pane so the headless suite covers it: node
 ;; placement, world<->pixel mapping, and click picking are exactly the parts

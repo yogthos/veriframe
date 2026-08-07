@@ -92,6 +92,25 @@
     (testing "branch nodes stay branch-kinded"
       (is (= :branch (get-in g [:nodes "B1" :kind]))))))
 
+(deftest working-marks-the-live-frontier
+  ;; Which nodes are being worked on right now: for each ACTIVE branch, the
+  ;; tip of its chain. A branch node sits at the left end of its own chain,
+  ;; so marking the branch alone never shows where a line has got to.
+  (let [g (graph/fold events)]
+    (testing "the tip of an active branch's chain, not the branch node"
+      (is (contains? (graph/working g) "B1@3"))
+      (is (not (contains? (graph/working g) "B1"))))
+    (testing "an active branch with no attempts yet marks itself"
+      (is (contains? (graph/working g) "B1.2")))
+    (testing "closed branches are not working"
+      (is (not (contains? (graph/working g) "B2"))))
+    (testing "nothing is working once every branch has closed"
+      (let [done (graph/apply-event g {:kind "branch-closed" :branch_id "B1"
+                                       :data {:status "exhausted"}})
+            done (graph/apply-event done {:kind "branch-closed" :branch_id "B1.2"
+                                          :data {:status "culled"}})]
+        (is (empty? (graph/working done)))))))
+
 (deftest layout-places-generations-in-columns
   (let [g (graph/fold events)
         pos (graph/layout g)]
