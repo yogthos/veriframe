@@ -241,9 +241,13 @@
                       :else "hover a node to identify it; drag to pan")
              :xalign 0.0}]))
 
-(defn- clip [s n]
-  (let [t (str s)]
-    (if (> (count t) n) (str (subs t 0 n) "\n… [" (- (count t) n) " more chars]") t)))
+(defn- clip
+  "Deliberately does NOT truncate. The inspector exists so a person can
+  read the whole claim, the whole engine answer and the whole encoding;
+  cutting them off defeats the point. The panel scrolls instead. Kept as a
+  function so call sites read as intentional rather than accidental."
+  [s _n]
+  (str s))
 
 (defn- thesis-text
   "The branch's plan as it registered it: goal, technique, and the
@@ -328,8 +332,8 @@
                       (= :artifact (:kind node)) (str "attempt " selected)
                       selected (str "branch " selected)
                       :else "inspector")
-             :vexpand true :width-request 400}
-     [:scrolled {:vexpand true}
+             :vexpand true :width-request 620}
+     [:scrolled {:vexpand true :scroll-top (str selected)}
       [:label {:text (cond
                        (nil? selected)
                        "click a branch for its thesis and progress, or an attempt for what it tried"
