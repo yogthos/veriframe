@@ -34,7 +34,7 @@ Point it at a provider. Any OpenAI-compatible endpoint works, including a local
 
 ```bash
 export DEEPSEEK_API_KEY=…        # or ZHIPU_API_KEY, OPENAI_API_KEY
-jolt serve                        # http on 3000, nREPL on 7888
+jolt serve                        # http on 3985, nREPL on 7888
 ```
 
 ### Lean, if you want the theorem-proving engine
@@ -81,7 +81,7 @@ cached.
 The standard OpenAI shape:
 
 ```bash
-curl -sS -X POST http://localhost:3000/v1/chat/completions \
+curl -sS -X POST http://localhost:3985/v1/chat/completions \
   -H 'Content-Type: application/json' \
   -d '{"messages": [{"role": "user", "content": "Prove that for every natural number n, n < 2^n."}]}'
 ```
@@ -95,20 +95,58 @@ Runs also have a life of their own, so you can watch and steer one:
 
 ```bash
 # start one without blocking
-curl -sS -X POST localhost:3000/v1/runs -d '{"problem": "…", "beam_width": 3}'
+curl -sS -X POST localhost:3985/v1/runs -d '{"problem": "…", "beam_width": 3}'
 
 # tail it by cursor; feed `next` back in
-curl -sS "localhost:3000/v1/runs/$ID/journal?since=0"
+curl -sS "localhost:3985/v1/runs/$ID/journal?since=0"
 
 # tell a branch something; it applies at that branch's next turn boundary
-curl -sS -X POST "localhost:3000/v1/runs/$ID/interventions" \
+curl -sS -X POST "localhost:3985/v1/runs/$ID/interventions" \
   -d '{"branch_id": "B1", "kind": "message", "payload": "Ship what you have."}'
 
-curl -sS -X POST "localhost:3000/v1/runs/$ID/abort"
+curl -sS -X POST "localhost:3985/v1/runs/$ID/abort"
 ```
 
 `GET /v1/harness/gates` returns the gate table and every threshold, which is the
 quickest way to see what the loop will do to you and why.
+
+## The GUI
+
+An optional native window that watches a run as a graph and lets you interject.
+It is a strict HTTP client of the server above — no engines, no database handle,
+no run state of its own — so the server keeps working headless and never loads a
+toolkit. Needs GTK4.
+
+```bash
+brew install gtk4        # apt install libgtk-4-dev on Linux
+jolt gui                 # or: jolt -M:gui
+```
+
+It connects to `http://127.0.0.1:3985` by default, the same port `jolt serve`
+uses. Set `VERIFRAME_URL` to point it somewhere else, or just `HARNESS_PORT`
+when only the port moved, since the server reads that variable too.
+
+```bash
+HARNESS_PORT=4100 jolt gui                  # server moved, same host
+VERIFRAME_URL=http://box.local:3985 jolt gui   # server on another machine
+```
+
+It opens on the newest run and tails its journal. Each branch is a node:
+
+- **shape and fill** are the engine the branch is working in right now — square
+  Prolog, diamond SMT, triangle Lean, hexagon Octave, circle for harness work
+  like `thesis` and `audit`
+- **ring** is the branch's status: alive, culled, exhausted, shipped
+- **size** grows with confirmed artifacts, and forks hang off their parent, so a
+  run that widened where the evidence was reads as a shape
+- a seeded run gets a provenance node for the artifacts it inherited
+
+Click a node for its thesis, critic scores, recent turns, and confirmed claims;
+drag to pan, `recenter` to reset. The entry at the bottom sends a message to the
+selected branch (or the whole run when nothing is selected) on Enter — the same
+intervention endpoint as the `curl` above, so it lands at that branch's next
+turn boundary. The header cycles runs, aborts, and resumes, including resuming
+an exhausted run with a larger budget.
 
 ## How the loop works
 
@@ -155,6 +193,29 @@ sqlite3 veriframe.sqlite3 "SELECT turn, tool_name, category FROM turns ORDER BY 
 sqlite3 veriframe.sqlite3 "SELECT gate, count(*), sum(outcome='met') FROM gate_firings GROUP BY gate"
 ```
 
+A crashed run resumes from its journal, continuing at the turn after the last
+one recorded and under the run's *original* budget — a crash must not re-grant
+the turns it already spent. Passing `max_turns` is the one exception, and it is
+explicit: it raises the budget and reopens branches that closed as `exhausted`
+(branches culled or abandoned for cause stay closed).
+
+```bash
+curl -sS -X POST "localhost:3985/v1/runs/$ID/resume"
+curl -sS -X POST "localhost:3985/v1/runs/$ID/resume" -d '{"max_turns": 400}'
+```
+
+A finished run can also seed the next one. `seed_run` copies the source run's
+engine-confirmed artifacts — claim *and* the code that verified it — into the
+new run's shared log, so a campaign continues from what was proven without
+inheriting the dead ends that surrounded it. Nothing is taken on faith: the
+`done` gate still requires every claim it ships to be re-confirmed in the run
+that ships it.
+
+```bash
+curl -sS -X POST localhost:3985/v1/runs \
+  -d '{"problem": "…", "seed_run": "'"$PREVIOUS_ID"'"}'
+```
+
 ## Development
 
 Leave the process running and work against it. The slow parts are exactly the
@@ -179,8 +240,13 @@ Prompts and gate thresholds live in `resources/` as files rather than as
 constants, so a run records a digest of the set it used and a pass-rate change
 localizes to one file.
 
+The GUI's logic is covered by that same suite: layout, the world↔pixel
+transform, click picking, the journal fold, and node styling are pure functions
+in `gui/veriframe/gui/{graph,style}.clj`, so the parts that fail invisibly in a
+screenshot are tested without a display. Only the GL calls sit behind GTK.
+
 ```bash
-jolt -M:test      # 80 tests, offline and deterministic
+jolt -M:test      # offline and deterministic, GUI logic included
 jolt smoke        # platform probes, one per stated risk in PLAN.md
 jolt build -m veriframe.core -o veriframe
 ```
@@ -211,7 +277,7 @@ stay silent otherwise.
 | `HARNESS_PROVIDER` | auto-detect | `deepseek`, `glm`, `openai`, `ollama`, `local` |
 | `HARNESS_MODEL` | per provider | wire model name |
 | `HARNESS_BASE_URL` | per provider | point at any OpenAI-compatible endpoint |
-| `HARNESS_PORT` | `3000` | |
+| `HARNESS_PORT` | `3985` | |
 | `HARNESS_NREPL_PORT` | `7888` | |
 | `HARNESS_DB` | `veriframe.sqlite3` | |
 | `HARNESS_MAX_TURNS` | `80` | per branch |

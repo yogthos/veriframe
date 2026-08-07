@@ -63,7 +63,11 @@
                                       {:provider provider
                                        :known (keys providers)})))]
      (merge
-      {:http     {:port (or (env-long "HARNESS_PORT") 3000)}
+      ;; 3985 rather than a common port: 3000 is the busiest address on a
+      ;; developer machine, and a harness that silently fails to bind (or
+      ;; binds where something else already lives) is worse than one on an
+      ;; address nothing else wants.
+      {:http     {:port (or (env-long "HARNESS_PORT") 3985)}
        :nrepl    {:port (or (env-long "HARNESS_NREPL_PORT")
                             (env-long "JOLT_NREPL_PORT")
                             7888)}

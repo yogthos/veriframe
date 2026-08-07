@@ -105,14 +105,20 @@
                      [cx cy cr cg cb, x0 y0 cr cg cb, x1 y1 cr cg cb]))
                  (range n)))))
 
+(def hover-color [0.75 0.78 0.85])
+
 (defn node-verts
-  "Every triangle for one node, back to front: selection halo (when
-  selected), status ring, engine body."
-  [cx cy node selected?]
-  (let [{:keys [shape fill ring]} (node-style node)
-        r (node-radius node)]
-    (vec (concat
-          (when selected?
-            (shape-verts cx cy (+ r 9.0) shape select-color))
-          (shape-verts cx cy (+ r 4.0) shape ring)
-          (shape-verts cx cy r shape fill)))))
+  "Every triangle for one node, back to front: the hover or selection halo,
+  then the status ring, then the engine body. Selection wins over hover —
+  the pointer is transient, the selection is a decision."
+  ([cx cy node selected?] (node-verts cx cy node selected? false))
+  ([cx cy node selected? hovered?]
+   (let [{:keys [shape fill ring]} (node-style node)
+         r (node-radius node)]
+     (vec (concat
+           (cond
+             selected? (shape-verts cx cy (+ r 9.0) shape select-color)
+             hovered?  (shape-verts cx cy (+ r 7.0) shape hover-color)
+             :else nil)
+           (shape-verts cx cy (+ r 4.0) shape ring)
+           (shape-verts cx cy r shape fill))))))

@@ -26,6 +26,7 @@
             [glimmer-gl.gtk :as glx]
             [jolt.ffi :as ffi]
             [veriframe.gui.graph :as graph]
+            [veriframe.gui.input :as input]
             [veriframe.gui.style :as style]))
 
 (def ^:private vs-src
@@ -39,10 +40,29 @@
        "in vec3 vcol; out vec4 frag;\n"
        "void main() { frag = vec4(vcol, 1.0); }"))
 
-(defonce ^:private st (atom {:w 1 :h 1 :pan [0.0 0.0]}))
+(defonce ^:private st (atom {:w 1 :h 1 :scale 1.0 :pan [0.0 0.0]}))
 
 (def pick-radius 26.0)
-(def ^:private drag-slop-px 5.0)
+
+(defn hovered [] (:hover @st))
+
+;; --- HiDPI ---------------------------------------------------------------
+;; GtkGLArea's "resize" reports the FRAMEBUFFER size, in device pixels, while
+;; a GestureClick reports LOGICAL widget coordinates. On a 2x display those
+;; differ by exactly the scale factor, so a graph drawn correctly in device
+;; pixels is unclickable: every hit test looks half a screen away from where
+;; the node actually is, `nearest` returns nil, and the pane feels dead while
+;; looking perfect. Everything here stays in device pixels (what GL draws in)
+;; and pointer input is converted on the way in. The factor is derived rather
+;; than bound: gtk_widget_get_width is logical, the resize width is device.
+
+(defn- device-scale [area device-w]
+  (let [logical (try (glx/widget-width area) (catch Throwable _ 0))]
+    (if (pos? logical) (/ (double device-w) (double logical)) 1.0)))
+
+(defn- ->device [[x y]]
+  (let [s (:scale @st 1.0)]
+    [(* x s) (* y s)]))
 
 ;; --- geometry (pure) ---------------------------------------------------------
 
@@ -61,7 +81,8 @@
      :tris (vec (mapcat (fn [id]
                           (let [[cx cy] (px id)]
                             (style/node-verts cx cy (get-in g [:nodes id])
-                                              (= id selected))))
+                                              (= id selected)
+                                              (= id (:hover @st)))))
                         (keys positions)))}))
 
 ;; --- GL lifecycle ------------------------------------------------------------
@@ -134,49 +155,69 @@
   (swap! st assoc :pan [0.0 0.0])
   (request-render!))
 
-;; --- drag to pan --------------------------------------------------------------
-;; Press starts a candidate drag; motion past a few pixels of slop turns it
-;; into a real one and stops it from also being a click. Release picks only
-;; when the pointer never left that slop, so dragging the graph around never
-;; changes the selection by accident.
+;; --- pointer ------------------------------------------------------------------
+;; The state machine itself is veriframe.gui.input, pure and tested. What
+;; lives here is only the GTK plumbing around it, wrapped so that a throw
+;; inside a callback is reported rather than swallowed: an exception thrown
+;; through a foreign-callable takes the event with it and leaves the pane
+;; looking dead, which is a bug class worth naming out loud.
 
-(defn- press! [x y]
-  (swap! st assoc :drag {:from [x y] :pan0 (:pan @st) :moved? false}))
+(defn- guard
+  "Run `f`, reporting anything it throws instead of losing it in the GTK
+  callback boundary."
+  [what f]
+  (try (f)
+       (catch Throwable e
+         (println "[glpane]" what "failed:" (ex-message e))
+         nil)))
 
-(defn- motion! [x y]
-  (when-let [{:keys [from pan0]} (:drag @st)]
-    (let [[fx fy] from
-          [px py] pan0
-          dx (- x fx)
-          dy (- y fy)]
-      (swap! st (fn [s]
-                  (-> s
-                      (assoc :pan [(+ px dx) (+ py dy)])
-                      (assoc-in [:drag :moved?]
-                                (or (get-in s [:drag :moved?])
-                                    (> (Math/sqrt (+ (* dx dx) (* dy dy)))
-                                       drag-slop-px))))))
+(defn- hover! [source on-hover x y]
+  (let [id (pick source x y)]
+    ;; Only on CHANGE: motion fires constantly, and the callback lands in a
+    ;; reactive cell that repaints the window.
+    (when (not= id (:hover @st))
+      (swap! st assoc :hover id)
+      (when on-hover (on-hover id))
       (request-render!))))
 
-(defn- release! [source on-pick x y]
-  (let [moved? (get-in @st [:drag :moved?])]
-    (swap! st dissoc :drag)
-    (when-not moved?
-      (on-pick (pick source x y)))))
+(defn- on-press [x y]
+  (let [[dx dy] (->device [x y])]
+    (swap! st input/press dx dy)))
+
+(defn- on-motion [source on-hover x y]
+  (let [[dx dy] (->device [x y])]
+    (swap! st input/motion dx dy)
+    (if (:drag @st)
+      (request-render!)
+      (hover! source on-hover dx dy))))
+
+(defn- on-release [source on-pick x y]
+  (let [[dx dy] (->device [x y])
+        [s pick?] (input/release @st dx dy)]
+    (reset! st s)
+    (when pick?
+      (on-pick (pick source dx dy)))))
 
 (defn pane
   "The :gl-area hiccup. `source` is a zero-arg fn returning
   {:graph <folded> :selected <id|nil>}; `on-pick` receives the picked node
-  id (or nil when the click landed on empty space)."
-  [source on-pick]
+  id (or nil when the click landed on empty space); `on-hover` receives the
+  node under the pointer whenever it changes."
+  [source on-pick on-hover]
   [:gl-area {:version [3 2] :depth-buffer false :hexpand true :vexpand true
-             :on-realize realize!
-             :on-render (fn [_area] (render! source))
-             :on-resize (fn [_area w h]
-                          (swap! st assoc :w (max 1 w) :h (max 1 h))
-                          (gl/gl-viewport 0 0 w h))
-             :on-motion (fn [_area x y] (motion! x y))
+             :can-focus true
+             :on-realize (fn [area] (guard "realize" #(realize! area)))
+             :on-render (fn [_area] (guard "render" #(render! source)))
+             :on-resize (fn [area w h]
+                          (guard "resize"
+                                 #(let [scale (device-scale area w)]
+                                    (swap! st assoc :w (max 1 w) :h (max 1 h)
+                                           :scale scale)
+                                    (gl/gl-viewport 0 0 w h))))
+             :on-motion (fn [_area x y]
+                          (guard "motion" #(on-motion source on-hover x y)))
              :on-button (fn [_area _btn pressed? x y]
-                          (if pressed?
-                            (press! x y)
-                            (release! source on-pick x y)))}])
+                          (guard "button"
+                                 #(if pressed?
+                                    (on-press x y)
+                                    (on-release source on-pick x y))))}])

@@ -24,10 +24,17 @@
             [veriframe.gui.glpane :as glpane]
             [veriframe.gui.graph :as graph]))
 
-(def default-base-url "http://127.0.0.1:3999")
+(defn default-base-url
+  "Where the server is. Defaults to the same port `jolt serve` does, so the
+  GUI finds a default server with no configuration; `VERIFRAME_URL` points
+  it elsewhere, and `HARNESS_PORT` alone is enough when only the port moved
+  (the server reads that same variable)."
+  []
+  (or (System/getenv "VERIFRAME_URL")
+      (str "http://127.0.0.1:" (or (System/getenv "HARNESS_PORT") "3985"))))
 
 (defonce state
-  (r/atom {:base-url default-base-url
+  (r/atom {:base-url (default-base-url)
            :runs []                     ; known runs, newest first
            :run nil                     ; selected run id
            :graph (graph/empty-graph)   ; folded scene graph
@@ -55,6 +62,12 @@
   (swap! state assoc :selected id :branch-log nil)
   (refresh-branch-log!)
   (glpane/request-render!))
+
+(defn- set-hover!
+  "Called only when the hovered node changes, so this repaints the window
+  at pointer speed only across node boundaries, not per motion event."
+  [id]
+  (swap! state assoc :hover id))
 
 ;; --- run selection and the poll loop -----------------------------------------
 
@@ -190,7 +203,7 @@
   request-render!, not via reconciliation."
   []
   [:frame {:label "solution space" :hexpand true :vexpand true}
-   [glpane/pane scene-source select-node!]])
+   [glpane/pane scene-source select-node! set-hover!]])
 
 (defn- legend []
   (let [{:keys [selected graph event-count]} @state]
@@ -203,6 +216,20 @@
                           event-count " events"
                           (when selected (str " · selected " selected)))
               :xalign 1.0 :hexpand true}]]))
+
+(defn- status-line
+  "What the pointer is over. Also the fastest read on whether the pane is
+  receiving input at all."
+  []
+  (let [{:keys [selected graph hover]} @state
+        node (get-in graph [:nodes (or hover selected)])]
+    [:label {:label (cond
+                      hover (str "▸ " hover
+                                 (when-let [t (:tool node)] (str " · " t))
+                                 " — click to inspect, drag to pan")
+                      selected (str "selected " selected " — click empty space to clear")
+                      :else "hover a node to identify it; drag to pan")
+             :xalign 0.0}]))
 
 (defn- branch-text [node detail]
   (str "status: " (name (or (:status node) :unknown))
@@ -260,6 +287,7 @@
    [:hbox {:spacing 8 :vexpand true}
     [graph-pane]
     [log-panel]]
+   [status-line]
    [:separator]
    [input-bar]])
 
