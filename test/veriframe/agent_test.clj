@@ -565,6 +565,72 @@
         (is (= :failure (:category r)))
         (is (= 1 @calls))))))
 
+(deftest judge-budget-is-sized-to-the-prompt-not-retried-into
+  ;; vf-mti. In gen-10 of the covering campaign the judge became the beam's
+  ;; critical path: over rounds of width >= 7, audit and review were the last
+  ;; branch to finish 24 times out of 28 while taking a quarter of the turns,
+  ;; and verify_lean gated a round once in 47. The cause was the retry above
+  ;; firing as the NORM rather than the exception — 39 of the run's 46 retries
+  ;; landed after turn 40, once claims turned into exact-rational assertions
+  ;; over 20-odd moduli. Measured over those 69 judge calls: the ones that ran
+  ;; out of budget carried a mean of 16.8 rational literals and 2.8 with
+  ;; four-or-more-digit denominators; the ones that answered first time carried
+  ;; 5.2 and 0.7. So the density of exact arithmetic is the signal, and a
+  ;; prompt carrying it should OPEN at the budget the retry would have reached
+  ;; instead of paying for a doomed first call.
+  (testing "exact arithmetic is what marks a prompt expensive"
+    (is (tools/arithmetic-heavy? "E - 2*(1-D) = 83/496125 > 0")
+        "one four-digit denominator is exact-rational work on its own")
+    (is (tools/arithmetic-heavy?
+         "E = 3/9+3/15+3/21+3/27+3/45+3/63+3/75+3/81+3/105 < 2*(1-D)")
+        "a long sum of small fractions is the same work spread out"))
+  (testing "ordinary prose about fractions is not"
+    (is (not (tools/arithmetic-heavy?
+              "no covering system is supported on the primes {3,5} alone")))
+    (is (not (tools/arithmetic-heavy?
+              "the density 1/2 exceeds both 1/3 and 1/5"))
+        "a handful of small fractions is prose, not a certificate"))
+  (testing "a heavy prompt opens where the retry would have escalated to"
+    (is (= 200 (tools/judge-max-tokens {:max-tokens 100} "83/496125" 1)))
+    (is (= 100 (tools/judge-max-tokens {:max-tokens 100} "a plain claim" 1))))
+  (testing "a retry still escalates past wherever the first attempt opened"
+    (is (= 200 (tools/judge-max-tokens {:max-tokens 100} "a plain claim" 2)))
+    (is (= 400 (tools/judge-max-tokens {:max-tokens 100} "83/496125" 2))
+        "starting high must not make the retry a no-op"))
+  (testing "escalation is capped, so no provider ceiling is blown"
+    (is (= 400 (tools/judge-max-tokens {:max-tokens 100} "83/496125" 3))))
+  (testing "an unset budget stays unset — the provider default rules"
+    (is (nil? (tools/judge-max-tokens {} "83/496125" 1)))))
+
+(deftest an-arithmetic-heavy-audit-opens-at-the-doubled-budget
+  ;; The end of vf-mti: the sizing has to reach the live call, and it has to
+  ;; buy the verdict on the FIRST attempt rather than the second.
+  (let [c (db/connect ":memory:")
+        _ (db/migrate! c)
+        rid (runs/start-run! c {:problem "p" :beam-width 1})
+        heavy (str "For the P315 pool the aggregate mod-3 maxima are"
+                   " D = 2754/6125 and E = 109237/99225, so in exact rational"
+                   " arithmetic E - 2*(1-D) = 83/496125 > 0")
+        b (merge (state/new-branch {:id "B1" :problem "p"})
+                 {:thesis {:goal "g" :technique "t" :subClaims []}
+                  :artifacts [{:claim heavy :claim-status :confirmed
+                               :kind :smt :tier :confirmed :code "c1"}]})
+        calls (atom [])]
+    (runs/open-branch! c rid {:branch-id "B1" :created-at-turn 0})
+    (with-redefs [llm/chat (fn [_ _ msgs opts]
+                             (swap! calls conj {:msgs msgs :opts opts})
+                             {:content "GAPS: none\nVERDICT: PASS"})]
+      (tools/run-tool {:branch b :turn 1 :conn c :run-id rid
+                       :llm-config {:max-tokens 100}
+                       :tool-name "audit"
+                       :args {:claim heavy :proposedAnswer "42"}})
+      (is (= 1 (count @calls)) "the verdict arrives without a retry")
+      (is (= 200 (get-in (first @calls) [:opts :max-tokens]))
+          "the first call already carries the doubled budget")
+      (is (empty? (filter #(= "judge-retry" (:kind %))
+                          (journal/events-since c rid 0)))
+          "nothing was spent on a doomed attempt"))))
+
 (deftest relaxation-is-journalled-as-thesis-drift
   (let [c (db/connect ":memory:")
         _ (db/migrate! c)

@@ -377,6 +377,58 @@
 
 (def ^:private max-judge-attempts 3)
 
+(def ^:private rational-literal
+  "A rational written out, capturing the denominator: `1/5`, `83/496125`."
+  #"\d+\s*/\s*(\d+)")
+
+(def ^:private wide-denominator-digits
+  "A denominator this long is a certificate, not prose. `4759/4725` is the
+  output of exact arithmetic; `1/2` is someone talking about a half."
+  4)
+
+(def ^:private many-rationals
+  "Enough small fractions in one prompt to amount to the same work."
+  8)
+
+(def ^:private judge-token-ceiling-multiple
+  "The hard cap on judge escalation, as a multiple of the configured budget.
+  Escalation is a ceiling the model may not need, but every provider has a
+  real limit and blowing it turns a slow call into a failed one."
+  4)
+
+(defn arithmetic-heavy?
+  "Does this judge prompt invite exact-rational checking?
+
+  Measured over the 69 audit and review calls of gen-10 of the covering
+  campaign: the calls that spent their whole budget reasoning and returned no
+  verdict carried a mean of 16.8 rational literals, 2.8 of them with
+  four-or-more-digit denominators; the calls that answered first time carried
+  5.2 and 0.7. Either signal alone catches ~76% of the expensive calls.
+
+  Deliberately loose, because the two errors are not symmetric: `max-tokens`
+  is a ceiling and not a spend, so marking a cheap prompt heavy costs nothing
+  the model does not choose to use, while missing an expensive one costs a
+  whole wasted call plus the retry."
+  [prompt]
+  (let [ms (re-seq rational-literal (str prompt))]
+    (boolean (or (some #(>= (count (second %)) wide-denominator-digits) ms)
+                 (>= (count ms) many-rationals)))))
+
+(defn judge-max-tokens
+  "The token budget for judge `attempt` on `prompt`, or nil to leave the
+  provider default alone when nothing is configured.
+
+  An arithmetic-heavy prompt opens at the budget a retry would have escalated
+  to, since it is going to need it either way. Retries then escalate from
+  wherever they opened — starting high must not turn the retry into a repeat
+  of the call that just failed — up to the ceiling."
+  [llm-config prompt attempt]
+  (when-let [base (:max-tokens llm-config)]
+    (let [opening (if (arithmetic-heavy? prompt) 2 1)
+          escalation (bit-shift-left 1 (max 0 (dec attempt)))]
+      (min (* base judge-token-ceiling-multiple)
+           (* base opening escalation)))))
+
 (defn- judge
   "Ask the model a yes-or-no question and read the answer through the
   constrained parser. Any failure to answer cleanly fails closed.
@@ -396,14 +448,13 @@
                         (str " Your previous response ended before any verdict"
                              " line. State the verdict line now and keep any"
                              " justification to a few sentences.")))
+          budget (judge-max-tokens llm-config prompt attempt)
           r (try
               {:response (llm/chat llm-adapter llm-config
                                    [{:role "system" :content system}
                                     {:role "user" :content prompt}]
                                    (cond-> {:temperature 0.0}
-                                     (> attempt 1)
-                                     (assoc :max-tokens
-                                            (some-> (:max-tokens llm-config) (* 2)))))}
+                                     budget (assoc :max-tokens budget)))}
               (catch Throwable e {:error (ex-message e)}))]
       (if (:error r)
         {:verdict :unparseable :reason (str "the judge call failed: " (:error r))}
@@ -415,6 +466,7 @@
                   (journal/note! conn run-id :judge-retry
                                  {:branch-id (:id branch) :turn turn
                                   :data {:attempt attempt
+                                         :budget budget
                                          :reason (:reason parsed)}}))
                 (recur (inc attempt)))
             ;; The reasoning stream is stripped HERE, not at the call sites,
