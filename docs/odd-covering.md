@@ -151,6 +151,49 @@ powers chip away at the entangled gap slowly — quantifying that decay
 across richer entangled parts is the empirical curve the conjecture's
 truth or falsity lives on.
 
+## Finding 5 — richer entangled parts, and the decay curve
+
+*Run `7f4af6b7` (generation 5, seeded from `c5dcc35f`), beam width 3, 15
+confirmed artifacts, 2 branches culled by Pareto retention.*
+
+Three new exhaustive entangled bounds, now over sets mixing **three** prime
+powers, and two more density-feasible sets settled from them:
+
+$$u_E(\{3,5,9,15,25,27\}) = 221 \ (\bmod\ 675), \quad
+  u_E(\{3,5,9,15,21,27\}) = 302 \ (\bmod\ 945),$$
+$$u_E(\{3,5,7,9,15,21,27\}) = 255 \ (\bmod\ 945).$$
+
+Combined with coprime parts whose coverage is again exactly their CRT
+independence value ($\{11,13,17\}$ leaves $10\cdot12\cdot16 = 1920$ of
+$2431$; $\{7,11\}$ leaves $6\cdot10 = 60$ of $77$):
+
+- $S_1 = \{3,5,9,11,13,15,17,21,27\}$, $\sum 1/m = \tfrac{2348807}{2297295} \ge 1$:
+  minimum uncovered $302 \cdot 1920 = 579840$ of $L = 2297295$. **Cannot cover.**
+- $S_2 = \{3,5,7,9,11,15,25,27\}$, $\sum 1/m = \tfrac{53114}{51975} \ge 1$:
+  minimum uncovered $221 \cdot 60 = 13260$ of $L = 51975$. **Cannot cover.**
+
+**The decay curve.** Every entangled bound the campaign has proved, as an
+uncovered fraction $u_E / \operatorname{lcm}$:
+
+| Entangled set $E$ | $u_E / L$ | fraction |
+|---|---|---|
+| $\{3,5,9,15\}$ | $17/45$ | 0.3778 |
+| $\{3,5,9,15,25\}$ | $80/225$ | 0.3556 |
+| $\{3,5,9,15,27\}$ | $47/135$ | 0.3481 |
+| $\{3,5,7,9,21\}$ | $108/315$ | 0.3429 |
+| $\{3,5,9,15,25,27\}$ | $221/675$ | 0.3274 |
+| $\{3,5,9,15,21,27\}$ | $302/945$ | 0.3196 |
+| $\{3,5,7,9,15,21,27\}$ | $255/945$ | 0.2698 |
+
+It decays, and slowly — seven moduli sharing three primes still cannot
+cover more than about 73% of the line. Whether the infimum over all odd
+entangled sets is positive is, as far as this campaign can tell, the
+question the conjecture reduces to: a positive floor $c > 0$ would rule out
+every odd distinct covering whose coprime part cannot make up the remaining
+$c$, which is infinitely many modulus sets at once. Nothing here yet proves
+a floor exists; it is an empirical curve over seven exhaustively-verified
+points.
+
 ## Frontier table
 
 | Odd distinct modulus set   | $\sum 1/m$              | Density-feasible | Max coverage / $L$      | Verdict                  |
@@ -162,6 +205,8 @@ truth or falsity lives on.
 | $\{3,5,7,9,11,13,15,17\}$  | $827504/765765 \ge 1$   | **yes**          | $569925/765765$ (exact) | **cannot cover**         |
 | $\{3,5,7,9,11,13,15,25\}$  | $\ge 1$                 | **yes**          | $167625/225225$ (exact) | **cannot cover**         |
 | $\{3,5,7,9,11,13,15,27\}$  | $\ge 1$                 | **yes**          | $101295/135135$ (exact) | **cannot cover**         |
+| $\{3,5,7,9,11,15,25,27\}$  | $53114/51975 \ge 1$     | **yes**          | $38715/51975$ (exact)   | **cannot cover**         |
+| $\{3,5,9,11,13,15,17,21,27\}$ | $2348807/2297295 \ge 1$ | **yes**       | $1717455/2297295$ (exact) | **cannot cover**       |
 
 **Next targets** (Pareto-minimal density-feasible sets: maximize density
 slack, minimize $\operatorname{lcm}$, minimize modulus count): supersets of
@@ -178,8 +223,11 @@ these exhaustive bounds show.
 
 - Runs: `c45ac428-182f-4cd3-876e-686acc1e9f2c` (2026-08-06),
   `b84d2263-d8f6-4144-81bd-f5ef0e3b6dd1` (2026-08-07),
-  `61de2075-6413-458d-aa03-667e56aea459` (2026-08-07, seeded from the
-  previous run), all `deepseek-v4-flash`, beam width 2, artifact sharing on.
+  `61de2075-6413-458d-aa03-667e56aea459`,
+  `c5dcc35f-3e05-45e0-bc9f-1a9e8d76fee4`,
+  `7f4af6b7-f494-4303-9fac-39b5927e3032` (2026-08-07), each after the first
+  seeded from the run before it, all `deepseek-v4-flash` with artifact
+  sharing on, beam width 2 through generation 4 and 3 thereafter.
 - Every claim above sits in the run journal as a confirmed artifact with
   the exact engine code that verified it (`GET /v1/runs/:id/journal`).
   Cross-run continuation can import them with `seed_run`.
