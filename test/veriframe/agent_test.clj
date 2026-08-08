@@ -2055,3 +2055,69 @@
           (is (= (set (conj ids "B2"))
                  (set (map :id (runs/branches c rid))))
               "and every child reached the branches table"))))))
+
+;; --- a prolog artifact must be auditable and mean what it claims ------------
+
+(defn- prolog-verify
+  "Run the prolog `verify` tool with the engine and judge stubbed."
+  [{:keys [answers rules judge-reply claim check]}]
+  (let [c (db/connect ":memory:")
+        _ (db/migrate! c)
+        rid (runs/start-run! c {:problem "p" :beam-width 1})
+        b (assoc (state/new-branch {:id "B1" :problem "p"}) :prolog ::session)]
+    (runs/open-branch! c rid {:branch-id "B1" :created-at-turn 0})
+    (with-redefs [veriframe.engine.prolog/query (fn [& _] {:ok true :answers answers})
+                  veriframe.engine.prolog/snapshot (fn [_] rules)
+                  llm/chat (fn [& _] {:content judge-reply})]
+      (tools/run-tool {:branch b :turn 1 :conn c :run-id rid
+                       :tool-name "verify"
+                       :args {:claim claim :check check}}))))
+
+(deftest a-prolog-artifact-carries-the-rules-its-goal-depends-on
+  ;; gen-13 a#333 recorded its code as the bare goal `sat_105`. The rule that
+  ;; gave that goal meaning lived in an earlier add_rule turn, so the artifact
+  ;; could not be audited from the artifacts table by a judge or by a person —
+  ;; and the rule turned out to post its constraints inside findall/3, which
+  ;; discards them, making the confirmed claim false.
+  (let [r (prolog-verify {:answers [{:bindings {} :formatted "true"}]
+                          :rules [{:name "q105" :code "sat_105 :- member(X,[1]), X > 0."}]
+                          :judge-reply "GAPS: none\nVERDICT: PASS"
+                          :claim "the q=105 condition is satisfiable"
+                          :check "sat_105"})
+        code (get-in r [:artifact :code])]
+    (is (str/includes? code "sat_105 :- member(X,[1]), X > 0.")
+        "the rule body travels with the artifact")
+    (is (str/includes? code "sat_105")
+        "and so does the goal that was actually run")))
+
+(deftest a-ground-prolog-goal-still-faces-the-faithfulness-check
+  ;; A goal with no variables reports {} bindings, which is neither "bound" nor
+  ;; the all-unbound case the existential guard catches, so it went straight to
+  ;; :confirmed on the strength of having succeeded at all.
+  (is (= :unfaithful
+         (-> (prolog-verify {:answers [{:bindings {} :formatted "true"}]
+                             :rules [{:code "sat_105 :- true."}]
+                             :judge-reply (str "GAP: the goal never constrains the class"
+                                               " densities\nVERDICT: FAIL")
+                             :claim "the q=105 condition is satisfiable"
+                             :check "sat_105"})
+             :artifact :claim-status))
+      "a judge that rejects the rules blocks the confirmation")
+  (is (= :confirmed
+         (-> (prolog-verify {:answers [{:bindings {} :formatted "true"}]
+                             :rules [{:code "sat_105 :- true."}]
+                             :judge-reply "GAPS: none\nVERDICT: PASS"
+                             :claim "the q=105 condition is satisfiable"
+                             :check "sat_105"})
+             :artifact :claim-status))
+      "and one it accepts still confirms"))
+
+(deftest an-all-unbound-prolog-goal-never-reaches-the-judge
+  ;; It is already :existential and substantiates nothing, so there is no
+  ;; confirmation to guard and no reason to pay for a model call.
+  (is (= :existential
+         (-> (prolog-verify {:answers [{:bindings {:A "_G123"} :formatted "A = _G123"}]
+                             :rules [{:code "r :- true."}]
+                             :judge-reply "irrelevant, must not be called"
+                             :claim "c" :check "r"})
+             :artifact :claim-status))))

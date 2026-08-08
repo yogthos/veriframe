@@ -136,6 +136,82 @@
       (claims/release! claims (:id branch) claim)
       (claims/complete! claims (:id branch) claim outcome payload))))
 
+(declare judge)
+
+(defn- faithfulness-prompt
+  "Ask whether `code` actually formalises `claim`, given what the engine said.
+
+  `engine` names the artifact for the reader (\"an SMT-LIB encoding\"), and
+  `outcome` describes what came back (\"Z3 returned unsat\")."
+  [claim code {:keys [engine outcome extra]}]
+  (str "A verifier was asked to substantiate this CLAIM by writing " engine "."
+       " " outcome ", which is the outcome the author predicted. Your ONE job"
+       " is to decide whether the artifact actually formalises the claim.\n\n"
+       "CLAIM:\n" claim "\n\nARTIFACT:\n" code "\n\n"
+       "Answer PASS only if this outcome on THIS artifact establishes exactly"
+       " the claim above. Answer FAIL if the artifact expresses something"
+       " stronger, weaker, or simply different — in particular check that every"
+       " coefficient, bound, threshold and index set matches what the claim"
+       " says, that the quantity being summed or compared is the one named, and"
+       " that no case the claim covers is missing. An artifact that is harder"
+       " to satisfy than the claim requires makes a negative result prove less"
+       " than it appears to; one that is easier makes a positive result prove"
+       " less. Both are FAIL."
+       (when extra (str "\n\n" extra))
+       "\n\nDo not re-derive the mathematics or re-check the engine's work."
+       " Only compare the claim to the formalisation. Judge the artifact as"
+       " written: if it does not match the claim, answer FAIL. It is not an"
+       " option to reinterpret the claim so that it fits."))
+
+(def ^:private prolog-faithfulness-note
+  "Prolog earns a specific warning because the failure that motivated this
+  check was invisible without it: a goal can succeed while enforcing nothing.
+
+  gen-13 confirmed a false claim whose rule posted every constraint inside
+  findall/3, which runs its goal in a separate context and discards bindings
+  AND constraint posts on completion. What survived was `Row ins 0..1,
+  sum(Row,#=,1)` — pick one value per row — which any assignment satisfies.
+  The goal returned instantly with empty witnesses and the harness read that
+  as proof."
+  (str "This is Prolog, so check that the goal actually ENFORCES what the"
+       " claim asserts rather than merely succeeding. Constraints posted"
+       " inside findall/3, forall/2 or \\+ are undone when those complete, so"
+       " a goal that posts its real constraints there and then labels is"
+       " solving an unconstrained problem. A goal that succeeds instantly with"
+       " empty or unbound witnesses is the signature. Also check that the"
+       " rules shown actually define every predicate the claim depends on."))
+
+(defn- prolog-artifact-code
+  "The goal together with the rules it runs against.
+
+  A Prolog goal is a name; its meaning lives in rules asserted on earlier
+  turns. Recording the goal alone — which is what the artifact used to hold —
+  leaves a row that neither a judge nor a person can audit, and that is how a
+  false claim survived review."
+  [session check]
+  (let [rules (seq (remove str/blank? (map :code (prolog/snapshot session))))]
+    (if rules
+      (str (str/join "\n" rules) "\n\n% goal:\n" check)
+      check)))
+
+(defn- encoding-faithful?
+  "Whether the SMT-LIB actually formalises the claim it is offered for.
+
+  Nothing else in the pipeline asks this. `expectedVerdict` pins which verdict
+  supports the claim, and the free-variable check catches a SAT mistaken for a
+  witness, but both take the encoding on trust — so a formula that is simply
+  about something else confirms whatever English is stapled to it. Three
+  gen-11 artifacts shipped that way: the claim named the mod-3 layered
+  condition, the encoding gave 3-divisible moduli coefficient L/m where that
+  condition requires 3L/m, and Z3's UNSAT was real while the claim was false.
+
+  Only asked of a would-be confirmation. A refuted or ambiguous artifact
+  substantiates nothing, so paying a judge to inspect its encoding buys
+  nothing, and confirmations are the ones that propagate into other branches."
+  [ctx claim code opts]
+  (verdict/passed? (judge ctx (faithfulness-prompt claim code opts))))
+
+
 ;; --- Prolog -----------------------------------------------------------------
 
 (defmethod run-tool "add_rule" [{:keys [branch] :as ctx}]
@@ -212,7 +288,20 @@
                                         bindings))
               some-unbound (when (seq bindings)
                              (->> (first bindings) (filter (comp unbound? val)) (map key)))
-              status (if all-unbound? :existential :confirmed)]
+              code (prolog-artifact-code (:prolog branch) (arg ctx :check))
+              status (cond
+                       all-unbound? :existential
+                       ;; A ground goal reports {} bindings, which is neither
+                       ;; bound nor all-unbound, so it used to reach :confirmed
+                       ;; on the strength of having succeeded at all — with the
+                       ;; rules that give it meaning nowhere in the artifact.
+                       (not (encoding-faithful?
+                             ctx claim code
+                             {:engine "a Prolog program and a goal to run against it"
+                              :outcome "The goal succeeded"
+                              :extra prolog-faithfulness-note}))
+                       :unfaithful
+                       :else :confirmed)]
           {:branch branch
            :category (if all-unbound? :failure :success)
            :progress? (not all-unbound?)
@@ -230,7 +319,7 @@
                                " came back unbound, so the claim rests on the variables"
                                " that did bind.")
                           :else ""))
-           :artifact {:kind :prolog :claim claim :code (arg ctx :check)
+           :artifact {:kind :prolog :claim claim :code code
                       :claim-status status :tier :fast :witness bindings}})))))
 
 ;; --- Z3 ---------------------------------------------------------------------
@@ -268,44 +357,6 @@
 ;; moving judge, its retry loop and its budget sizing over three hundred lines
 ;; up the file to satisfy the reader's eye, which is a much larger diff than
 ;; the coupling deserves.
-(declare judge)
-
-(defn- faithfulness-prompt
-  [claim smtlib verdict]
-  (str "A verifier was asked to substantiate this CLAIM by writing an SMT-LIB"
-       " encoding. Z3 returned " (name verdict) ", which is the verdict the"
-       " author predicted. Your ONE job is to decide whether the encoding"
-       " actually formalises the claim.\n\n"
-       "CLAIM:\n" claim "\n\nENCODING:\n" smtlib "\n\n"
-       "Answer PASS only if a " (name verdict) " on THIS encoding establishes"
-       " exactly the claim above. Answer FAIL if the encoding expresses"
-       " something stronger, weaker, or simply different — in particular check"
-       " that every coefficient, bound, threshold and index set matches what"
-       " the claim says, that the quantity being summed or compared is the one"
-       " named, and that no case the claim covers is missing from the"
-       " encoding. An encoding that is harder to satisfy than the claim"
-       " requires makes an UNSAT prove less than it appears to; an encoding"
-       " that is easier makes a SAT prove less. Both are FAIL.\n\n"
-       "Do not re-derive the mathematics or check Z3's work. Only compare the"
-       " claim to the formalisation."))
-
-(defn- encoding-faithful?
-  "Whether the SMT-LIB actually formalises the claim it is offered for.
-
-  Nothing else in the pipeline asks this. `expectedVerdict` pins which verdict
-  supports the claim, and the free-variable check catches a SAT mistaken for a
-  witness, but both take the encoding on trust — so a formula that is simply
-  about something else confirms whatever English is stapled to it. Three
-  gen-11 artifacts shipped that way: the claim named the mod-3 layered
-  condition, the encoding gave 3-divisible moduli coefficient L/m where that
-  condition requires 3L/m, and Z3's UNSAT was real while the claim was false.
-
-  Only asked of a would-be confirmation. A refuted or ambiguous artifact
-  substantiates nothing, so paying a judge to inspect its encoding buys
-  nothing, and confirmations are the ones that propagate into other branches."
-  [ctx claim smtlib verdict]
-  (verdict/passed? (judge ctx (faithfulness-prompt claim smtlib verdict))))
-
 (defmethod run-tool "verify_smt" [{:keys [branch config] :as ctx}]
   (if-let [m (missing ctx :claim :smtlib)]
     (fail branch m)
@@ -318,7 +369,10 @@
         (let [free (free-variables smtlib)
               status (smt-claim-status (:verdict r) expected (seq free))
               status (if (and (= :confirmed status)
-                              (not (encoding-faithful? ctx claim smtlib (:verdict r))))
+                              (not (encoding-faithful?
+                                    ctx claim smtlib
+                                    {:engine "an SMT-LIB encoding"
+                                     :outcome (str "Z3 returned " (name (:verdict r)))})))
                        :unfaithful
                        status)]
           (merge
