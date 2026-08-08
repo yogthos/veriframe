@@ -533,20 +533,26 @@ already settled. Expect the same one step up.
   without the supervisor noticing, which is the failure the run-error
   journalling now catches. Clearing that row needs a direct write to
   `veriframe.sqlite3` and has not been done.
-- The four-prime frontier table and the $q=105$ result are likewise
-  hand-computed, in exact rational arithmetic, by the same program that
-  reproduces Finding 9's constants and all three of its slacks exactly. They
-  have not been through the engines.
-- Generation 14 reached the $q=105$ number independently — twice, in Octave
-  and in Prolog, agreeing with the above to the digit — and **neither was
-  confirmable**. Both hardcode the eight scaled constants without deriving
-  them, and since $11$ enters the mod-$105$ argument only through those
-  constants, an artifact that states them computes a number for an unstated
-  support: the $\{3,5,7\}$ version of the same program is identical in shape
-  and gives a false claim. The reviewer caught it both times. This is the
-  a\#344 defect one level subtler — a number carried in from a derivation the
-  artifact does not contain — and it is why the number above is recorded as
-  hand-computed rather than engine-confirmed.
+- The four-prime frontier table is hand-computed, in exact rational
+  arithmetic, by the same program that reproduces Finding 9's constants and
+  all three of its slacks exactly. It has not been through the engines.
+- The $q=105$ result is **also engine-confirmed**, by generation 14, as a
+  pair: a\#352 (Prolog) verifies the combinatorics — that $(1,1,2,4)$ leaves
+  $36$ uncovered classes with maxima $(23,11,7,6,4,2)$ — and a\#355 (Z3)
+  derives all eight constants from $P$ and asserts `slack >= 0`, which comes
+  back unsat. Both agree with the hand computation to the digit.
+- Getting there took three rejected artifacts and a human intervention, and
+  the reason is worth recording. The first attempts — Octave and Prolog,
+  both with the right number — hardcoded the eight scaled constants. Since
+  $11$ is coprime to $105$ it enters the argument *only* through those
+  constants, so an artifact that states them computes a number for an
+  unstated support: the $\{3,5,7\}$ version of the same program is identical
+  in shape and gives a false claim. The reviewer refused both on exactly that
+  ground and was right to. This is the a\#344 defect one level subtler — a
+  number carried in from a derivation the artifact does not contain — and it
+  is worth knowing that a correct number is not the same thing as a verified
+  one. a\#355 fixes it by computing `T_all = (3*5*7*11)/(2*4*6*10)` in the
+  encoding, which is the first place the fourth prime appears at all.
 - Every claim above sits in the run journal as a confirmed artifact with
   the exact engine code that verified it (`GET /v1/runs/:id/journal`).
   Cross-run continuation can import them with `seed_run`.
