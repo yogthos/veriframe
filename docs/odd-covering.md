@@ -327,6 +327,94 @@ about structure rather than counting, it works where density is satisfied,
 and it is the first tool this campaign has that could plausibly scale to the
 general $\{3,5,7\}$ case.
 
+## Finding 9 — every odd covering needs at least four primes
+
+*Runs `98d0423e` (generation 12) and `6f6704f4` (generation 13), both
+unseeded. The argument's shape is generation 13's, artifact 345; the
+extension to all $N$ and the sweep over the remaining supports were done by
+hand outside the run. Every constant below was re-derived independently in
+exact rational arithmetic, not through the run's engines.*
+
+Finding 8 closed one nine-element $\{3,5,7\}$-supported set by indivisibility
+and predicted the tool would scale. It does — to the whole support, and then
+to every support with three primes or fewer.
+
+### The partition, stated once
+
+Fix $q$ and split $\mathbb{Z}$ into the $q$ classes mod $q$. For a class $c$
+and a modulus $m$, put $g = \gcd(m,q)$. The congruence $a_m \bmod m$ meets
+class $c$ with relative density $g/m$ when $a_m \equiv c \pmod g$, and $0$
+otherwise. Covering requires every class to reach relative density $1$.
+
+Two facts about $q = 15$ decide everything below.
+
+**No counting proof can exist.** Aggregate the moduli by $g$ and let the
+masses be real. Over *all* $3,5,7$-smooth odd $m>1$ the group totals are
+$\tfrac16$ ($g{=}1$), $\tfrac74$ ($g{=}3$), $\tfrac{35}{24}$ ($g{=}5$),
+$\tfrac{35}{16}$ ($g{=}15$). That relaxation is **feasible** — a witness
+exists with eleven of the fifteen classes tight at exactly $\tfrac56$. So no
+LP, density or Farkas certificate can ever prove $\{3,5,7\}$ impossible;
+confirmed dually by the non-existence of a weighted contradiction over the
+fifteen class inequalities. Any proof must use integrality.
+
+**Integrality decides it.** The moduli $3$, $5$ and $15$ have $g/m = 1$
+exactly, so each *fully covers* its classes — five, three and one of the
+fifteen. Fix their residues $(r_3, r_5, y)$: the $s$ classes they miss
+receive nothing from them and must reach density $1$ from the tail alone.
+The tail's reach is bounded by
+
+$$s F_1 + \max_3 \cdot A_3 + \max_5 \cdot A_5 + A_{15},$$
+
+where $A_g$ is the tail's total $g$-mass and $\max_3, \max_5$ are the largest
+numbers of missed classes inside a single mod-3 resp. mod-5 block — each tail
+modulus can do no better than aim at the fullest block.
+
+**Theorem.** For each support $\{3,5,q\}$ with $q \in \{7,11,13\}$, the
+mod-15 layered condition fails in all $225$ cases $(r_3,r_5,y)$, over the
+**full infinite** smooth modulus set. Hence no odd covering system has any of
+these supports.
+
+| support | $F_1$ | $A_3$ | $A_5$ | $A_{15}$ | min slack |
+| ------- | ----- | ----- | ----- | -------- | --------- |
+| $\{3,5,7\}$  | $1/6$  | $3/4$   | $11/24$ | $19/16$ | $35/48$   |
+| $\{3,5,11\}$ | $1/10$ | $13/20$ | $3/8$   | $17/16$ | $151/80$  |
+| $\{3,5,13\}$ | $1/12$ | $5/8$   | $17/48$ | $33/32$ | $209/96$  |
+
+Adding moduli only adds density, so failure over the infinite set implies
+failure for every finite subset. The tightest case throughout is
+$r_3 = 0, r_5 = 0, y = 1$ with $s = 7$; for $\{3,5,7\}$ the tail reaches
+$\tfrac{301}{48} \approx 6.27$ against $7$ needed.
+
+**Corollary (four primes).** Every odd covering system has at least four
+distinct odd primes in its support. A support $P$ needs
+$\prod_{p \in P} p/(p-1) \ge 2$, since $\sum 1/m$ over $P$-smooth $m>1$ is
+$\prod p/(p-1) - 1$. No one- or two-prime odd support reaches $2$. For three
+primes: $3 \in P$ (without it the best is $\{5,7,11\}$ at $1.604$), $5 \in P$
+(without it, $\{3,7,11\}$ at $1.925$), and then
+$\tfrac{15}{8}\cdot\tfrac{q}{q-1} \ge 2$ forces $q \le 16$ — leaving exactly
+$\{3,5,7\}, \{3,5,11\}, \{3,5,13\}$, all three killed above. $\blacksquare$
+
+**Standing on the literature.** Not checked against MathSciNet, and it should
+be before anyone calls it new. The square-free case is already *solved* —
+Balister, Bollobás, Morris, Sahasrabudhe and Tiba show there is no odd
+square-free covering at all, superseding the Simpson–Zeilberger ($\ge 18$
+primes) and Guo–Sun ($\ge 22$) bounds. The general case is open; the known
+partial results there are Hough–Nielsen (every distinct covering has a
+modulus divisible by $2$ or $3$, which independently forces $3 \in P$ above)
+and Balister et al. (an odd covering's lcm is divisible by $9$ or $15$ —
+which does *not* exclude $\{3,5,7\}$, so the result above is independent of
+it). A web search found no statement of the four-primes bound, but that is
+weak evidence: it is elementary relative to the field's machinery, and the
+"9 or 15" result comes from exactly this kind of small-support analysis.
+
+**Corrections to earlier generations.** Generation 11 shipped three confirmed
+artifacts asserting that no subcollection of $P_{500}$, $P_{600}$, $P_{1000}$
+satisfies the mod-3 layered condition. All three gave $3$-divisible moduli
+coefficient $L/m$ where the condition requires $3L/m$, understating them
+threefold; regenerated with the right coefficient, all three are **SAT**. The
+claims are false and are retracted. The true mod-3 threshold is $N \le 342$,
+flipping at $343 = 7^3$.
+
 ## Frontier table
 
 | Odd distinct modulus set   | $\sum 1/m$              | Density-feasible | Max coverage / $L$      | Verdict                  |
@@ -343,17 +431,27 @@ general $\{3,5,7\}$ case.
 | $\{3,5,7,9,11,15,27,45\}$ | $\approx 1.0041 \ge 1$  | **yes**          | $7755/10395$ (exact)    | **cannot cover**         |
 | $\{3,5,7,9,11,13,15,27,45\}$ | $\approx 1.0811 \ge 1$ | **yes**       | $103455/135135$ (exact) | **cannot cover**         |
 | $\{3,5,7,9,15,21,25,27,35\}$ | $4759/4725 \ge 1$   | **yes**          | — (partition argument)  | **cannot cover** ($\{3,5,7\}$-supported) |
+| all $3,5,7$-smooth odd $m>1$   | $19/16 \ge 1$   | **yes**          | — (mod-15 integrality)  | **cannot cover** (Finding 9) |
+| all $3,5,11$-smooth odd $m>1$  | $17/16 \ge 1$   | **yes**          | — (mod-15 integrality)  | **cannot cover** (Finding 9) |
+| all $3,5,13$-smooth odd $m>1$  | $33/32 \ge 1$   | **yes**          | — (mod-15 integrality)  | **cannot cover** (Finding 9) |
 
-**Next targets** (Pareto-minimal density-feasible sets: maximize density
-slack, minimize $\operatorname{lcm}$, minimize modulus count): supersets of
-the $\{3,5,7,9,21\}$ building block with coprime parts from
-$\{11,13,17,19\}$; sets with richer entangled parts ($25$, $27$, $33$, $35$
-— the 9-or-15 lcm condition says the entangled part is where the action
-is). The emerging pattern: in every settled case the coprime part's
-coverage is exactly its independence value with no way to aim it at the
-entangled part's gaps, so the search for a covering (or an impossibility
-proof) reduces to whether entangled moduli can *cooperate* beyond what
-these exhaustive bounds show.
+**Next targets.** Finding 9 retires every support with three primes or
+fewer, so individual finite sets inside them are no longer worth settling —
+the frontier is now four-prime supports. Of these, $\{3,5,7,11\}$ is the
+densest at $\prod p/(p-1) = 2.40625$ and is the natural next objective.
+
+The method to try first is the one that worked: pick $q$ dividing the
+support, find the moduli with $g/m = 1$ (they fully cover their classes and
+are what integrality bites on), and bound the tail's reach against the
+classes they miss. For $\{3,5,7,11\}$ the candidate partitions are $q = 15$,
+$q = 21$, $q = 35$ and $q = 105$; the unit-weight moduli for $q=105$ are
+$3,5,7,15,21,35,105$, which is a much richer set of atoms than the three
+available at $q=15$.
+
+What will *not* work, and is now proved rather than suspected: any argument
+that only counts. The aggregated real relaxation is feasible in the limit
+for $\{3,5,7\}$, so a density or LP bound cannot decide even the support
+already settled. Expect the same one step up.
 
 ## Provenance
 
@@ -368,6 +466,22 @@ these exhaustive bounds show.
   `94452de2-0dfd-442a-bc4d-596ede4a1fc9` (2026-08-07), each after the first
   seeded from the run before it, all `deepseek-v4-flash` with artifact
   sharing on, beam width 2 through generation 4 and 3 thereafter.
+- Generations 10–13 (2026-08-07/08): `05ecb88a-52d7-4d72-acaf-d389aa367112`,
+  `90336412-b135-422c-a9cf-116064890e12`,
+  `98d0423e-ddf6-46a5-97a6-b6493ec82e03`,
+  `6f6704f4-00da-4a48-8db6-49bb56ca8ddb`. Generations 12 and 13 were run
+  **unseeded**: generation 11 left false artifacts marked confirmed (see the
+  corrections in Finding 9), and `seed_run` imports on `claim_status =
+  'confirmed'`, so seeding would have carried them forward as established.
 - Every claim above sits in the run journal as a confirmed artifact with
   the exact engine code that verified it (`GET /v1/runs/:id/journal`).
   Cross-run continuation can import them with `seed_run`.
+- **Finding 9 is the exception, deliberately.** Its constants and all $225$
+  cases were re-derived by hand in exact rational arithmetic rather than
+  taken from the journal. Generations 12 and 13 each produced confirmed
+  artifacts that were false — a Prolog goal posting its constraints inside
+  `findall/3`, and another inside `forall/2`, both of which undo constraint
+  posts on completion, so the goals succeeded having enforced nothing. A
+  third asserted one class constraint for a claim about fifteen. Nothing in
+  the harness caught any of them at the time. Treat a confirmed artifact as
+  a lead, not a result, until its encoding has been read.
