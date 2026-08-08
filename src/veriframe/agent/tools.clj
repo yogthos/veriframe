@@ -263,6 +263,49 @@
         pinned (set (map second (re-seq #"\(\s*=\s+([A-Za-z_][\w-]*)\s+-?\d" smtlib)))]
     (vec (sort (remove pinned declared)))))
 
+;; `judge` lives further down with the other sub-LLM machinery it needs.
+;; Forward-declared rather than hoisted above this point: the alternative is
+;; moving judge, its retry loop and its budget sizing over three hundred lines
+;; up the file to satisfy the reader's eye, which is a much larger diff than
+;; the coupling deserves.
+(declare judge)
+
+(defn- faithfulness-prompt
+  [claim smtlib verdict]
+  (str "A verifier was asked to substantiate this CLAIM by writing an SMT-LIB"
+       " encoding. Z3 returned " (name verdict) ", which is the verdict the"
+       " author predicted. Your ONE job is to decide whether the encoding"
+       " actually formalises the claim.\n\n"
+       "CLAIM:\n" claim "\n\nENCODING:\n" smtlib "\n\n"
+       "Answer PASS only if a " (name verdict) " on THIS encoding establishes"
+       " exactly the claim above. Answer FAIL if the encoding expresses"
+       " something stronger, weaker, or simply different — in particular check"
+       " that every coefficient, bound, threshold and index set matches what"
+       " the claim says, that the quantity being summed or compared is the one"
+       " named, and that no case the claim covers is missing from the"
+       " encoding. An encoding that is harder to satisfy than the claim"
+       " requires makes an UNSAT prove less than it appears to; an encoding"
+       " that is easier makes a SAT prove less. Both are FAIL.\n\n"
+       "Do not re-derive the mathematics or check Z3's work. Only compare the"
+       " claim to the formalisation."))
+
+(defn- encoding-faithful?
+  "Whether the SMT-LIB actually formalises the claim it is offered for.
+
+  Nothing else in the pipeline asks this. `expectedVerdict` pins which verdict
+  supports the claim, and the free-variable check catches a SAT mistaken for a
+  witness, but both take the encoding on trust — so a formula that is simply
+  about something else confirms whatever English is stapled to it. Three
+  gen-11 artifacts shipped that way: the claim named the mod-3 layered
+  condition, the encoding gave 3-divisible moduli coefficient L/m where that
+  condition requires 3L/m, and Z3's UNSAT was real while the claim was false.
+
+  Only asked of a would-be confirmation. A refuted or ambiguous artifact
+  substantiates nothing, so paying a judge to inspect its encoding buys
+  nothing, and confirmations are the ones that propagate into other branches."
+  [ctx claim smtlib verdict]
+  (verdict/passed? (judge ctx (faithfulness-prompt claim smtlib verdict))))
+
 (defmethod run-tool "verify_smt" [{:keys [branch config] :as ctx}]
   (if-let [m (missing ctx :claim :smtlib)]
     (fail branch m)
@@ -273,7 +316,11 @@
       (if (= :error (:status r))
         (fail branch (:error r) :failure {:claim claim :reason (:error r)})
         (let [free (free-variables smtlib)
-              status (smt-claim-status (:verdict r) expected (seq free))]
+              status (smt-claim-status (:verdict r) expected (seq free))
+              status (if (and (= :confirmed status)
+                              (not (encoding-faithful? ctx claim smtlib (:verdict r))))
+                       :unfaithful
+                       status)]
           (merge
            {:branch branch
             :category (if (= :confirmed status) :success :failure)
@@ -282,6 +329,15 @@
                          (case status
                            :confirmed "That matches your expectedVerdict — claim CONFIRMED."
                            :refuted "That contradicts your expectedVerdict — claim REFUTED."
+                           :unfaithful
+                           (str "That matches your expectedVerdict, but a reviewer"
+                                " reading the encoding beside the claim judged that"
+                                " it does not formalise the claim, so the verdict"
+                                " does not establish it. Z3 answered the question"
+                                " you asked; the question was not the one you"
+                                " stated. Check every coefficient, bound and index"
+                                " set against the claim's wording, then re-run —"
+                                " or restate the claim to match what you encoded.")
                            :existential
                            (str "You expected SAT and got it, but " (str/join ", " free)
                                 " are free, so Z3 chose values to satisfy your constraints."

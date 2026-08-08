@@ -107,3 +107,29 @@
                           {:branch-id "B1" :turn 1 :tool-name "__provider_error__"
                            :result "timeout" :category "neutral"})
     (is (nil? (:assistant_text (first (journal/turns c rid))))))))
+
+;; --- liveness ---------------------------------------------------------------
+
+(deftest last-progress-tracks-the-newest-journal-entry
+  (with-db [c]
+    (let [rid (runs/start-run! c {:problem "p" :beam-width 1})]
+      ;; start-run! journals :run-started, so a fresh run already has progress.
+      (is (some? (runs/last-progress-at c rid)))
+      (journal/note! c rid :turn {:data {:n 1}})
+      (is (some? (runs/last-progress-at c rid))))
+    (is (nil? (runs/last-progress-at c "no-such-run"))
+        "a run with no events has no progress timestamp rather than a fake one")))
+
+(deftest a-run-is-stalled-only-when-it-is-running-and-quiet
+  (with-db [c]
+    (let [rid (runs/start-run! c {:problem "p" :beam-width 1})
+          ;; The run's only event is :run-started, which we age by choosing a
+          ;; threshold shorter than it has existed rather than by editing rows.
+          long-window 3600000]
+      (is (false? (runs/stalled? c rid long-window))
+          "a run that just emitted an event is not stalled")
+      (is (true? (runs/stalled? c rid -1))
+          "past the threshold with no newer event, a running run is stalled")
+      (runs/finish-run! c rid :completed "answer")
+      (is (false? (runs/stalled? c rid -1))
+          "a finished run is quiet because it is over, not because it is stuck"))))

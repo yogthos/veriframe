@@ -34,9 +34,25 @@
                   :started_at (:started_at r) :ended_at (:ended_at r)})
                (runs/list-runs conn (or limit 50)))})
 
+(def stall-threshold-ms
+  "How long a running run may say nothing before a reader should doubt it.
+
+  Above the 900000ms turn deadline by a factor of two, because silence under
+  that is a branch legitimately waiting on a provider call or a Lean tactic
+  and reporting it would be crying wolf. Past twice the deadline every branch
+  in the beam has had its turn forfeited and the round should have moved on,
+  so continued silence means nobody is going to update this row."
+  1800000)
+
 (defn get-run [conn run-id]
   (when-let [r (runs/get-run conn run-id)]
-    {:run (-> r (update :prompt_digest str))
+    {:run (-> r
+              (update :prompt_digest str)
+              ;; A status of 'running' is a claim the loop makes once and never
+              ;; revisits, so on its own it cannot distinguish a working run
+              ;; from a dead one. These two let a client tell.
+              (assoc :last_progress_at (runs/last-progress-at conn run-id)
+                     :stalled (runs/stalled? conn run-id stall-threshold-ms)))
      :branches (mapv #(update % :thesis parse-json) (runs/branches conn run-id))
      :metrics (metrics/run-metrics conn run-id)
      :artifacts (mapv #(update % :witness parse-json)

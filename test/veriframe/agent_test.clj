@@ -30,11 +30,13 @@
             [veriframe.agent.state :as state]
             [veriframe.agent.tools :as tools]
             [veriframe.agent.verdict :as verdict]
+            [veriframe.engine.smt :as smt]
             [veriframe.llm.client :as llm]
             [clojure.data.json :as json]
             [veriframe.store.artifacts :as artifacts]
             [veriframe.store.db :as db]
             [veriframe.store.failures :as failures]
+            [veriframe.store.interventions :as interventions]
             [veriframe.store.journal :as journal]
             [veriframe.store.runs :as runs]))
 
@@ -1924,3 +1926,91 @@
           (is (= 1 (count (:open-predictions b))) "the unsettled firing still settles later")
           (is (some #(= "trying lemma A" (:content %)) (:messages b))
               "the model's own words are back in its history"))))))
+
+;; --- a crashing run must say so ---------------------------------------------
+
+(deftest a-beam-that-throws-marks-the-run-failed-and-journals-the-error
+  ;; gen-11 died mid-round and sat at status 'running' with ended_at NULL for
+  ;; the rest of the night. The exception went to the process's stdout — a tty
+  ;; — and nowhere else, so a crashed run and a healthy slow round were
+  ;; indistinguishable from the journal, the API and the GUI alike.
+  (let [c (db/connect ":memory:")
+        _ (db/migrate! c)]
+    (with-redefs [veriframe.engine.prolog/create-session (fn [_] nil)
+                  interventions/pending (fn [& _]
+                                          (throw (ex-info "boom in round 1" {})))]
+      (is (thrown? Throwable
+                   (beam/run! {:conn c :config {:run {:share-artifacts? false}}
+                               :problem "p" :beam-width 1 :max-turns 5}))
+          "the throw still reaches the caller rather than being swallowed here"))
+    (let [r (first (runs/list-runs c))
+          rid (:id r)
+          errs (filter #(= "run-error" (:kind %)) (journal/events-since c rid 0))]
+      (is (= "failed" (:status r)) "the run row records the crash")
+      (is (some? (:ended_at r)) "and is closed out rather than left open")
+      (is (= 1 (count errs)) "exactly one run-error entry")
+      (is (str/includes? (:data (first errs)) "boom in round 1")
+          "carrying the message, so the journal explains the death")
+      ;; jolt's Throwable carries an empty .getStackTrace, so the type and the
+      ;; ex-data are the whole of what can be preserved. Recorded anyway: the
+      ;; terminal is not a durable log, and "which exception" narrows a hunt
+      ;; that otherwise starts from nothing.
+      (is (str/includes? (:data (first errs)) "ExceptionInfo")
+          "and the exception type"))))
+
+;; --- an encoding must actually encode the claim -----------------------------
+
+(defn- smt-artifact-status
+  "Run verify_smt with Z3 stubbed to `verdict` and the faithfulness judge
+  stubbed to `judge-reply`, and return the resulting claim-status."
+  [verdict judge-reply claim]
+  (let [c (db/connect ":memory:")
+        _ (db/migrate! c)
+        rid (runs/start-run! c {:problem "p" :beam-width 1})
+        b (state/new-branch {:id "B1" :problem "p"})]
+    (runs/open-branch! c rid {:branch-id "B1" :created-at-turn 0})
+    (with-redefs [smt/run-smt (fn [& _] {:status :ok :verdict verdict})
+                  llm/chat (fn [& _] {:content judge-reply})]
+      (-> (tools/run-tool {:branch b :turn 1 :conn c :run-id rid
+                           :tool-name "verify_smt"
+                           :args {:claim claim
+                                  :smtlib "(assert (>= (* 5 y) 1))(check-sat)"
+                                  :expectedVerdict "unsat"}})
+          :artifact :claim-status))))
+
+(deftest an-smt-encoding-that-does-not-match-its-claim-is-not-confirmed
+  ;; Three gen-11 artifacts shipped as confirmed while encoding a condition
+  ;; strictly stronger than the claim: moduli divisible by 3 were given
+  ;; coefficient L/m where the stated mod-3 layered condition requires 3L/m.
+  ;; Z3's unsat was real and the claim was false, because nothing compared the
+  ;; SMT-LIB to the English. expectedVerdict cannot catch this — it was correct.
+  (is (= :unfaithful
+         (smt-artifact-status :unsat
+                              "GAP: 3-divisible moduli carry L/m, not 3L/m\nVERDICT: FAIL"
+                              "No subcollection satisfies the mod-3 layered condition"))
+      "a judge that rejects the encoding blocks the confirmation")
+  (is (= :confirmed
+         (smt-artifact-status :unsat "GAPS: none\nVERDICT: PASS"
+                              "No subcollection satisfies the mod-3 layered condition"))
+      "and an encoding it accepts still confirms"))
+
+(deftest the-faithfulness-check-fails-closed-and-costs-nothing-when-unconfirmed
+  (is (= :unfaithful
+         (smt-artifact-status :unsat "the judge rambled without a verdict line"
+                              "some claim"))
+      "an unreadable judge leaves the gate shut rather than defaulting open")
+  ;; A verdict that already refutes the claim never reaches the judge, so a
+  ;; stubbed llm/chat that would throw proves the call is not made.
+  (let [c (db/connect ":memory:")
+        _ (db/migrate! c)
+        rid (runs/start-run! c {:problem "p" :beam-width 1})
+        b (state/new-branch {:id "B1" :problem "p"})]
+    (runs/open-branch! c rid {:branch-id "B1" :created-at-turn 0})
+    (with-redefs [smt/run-smt (fn [& _] {:status :ok :verdict :sat})
+                  llm/chat (fn [& _] (throw (ex-info "judge must not be called" {})))]
+      (is (= :refuted
+             (-> (tools/run-tool {:branch b :turn 1 :conn c :run-id rid
+                                  :tool-name "verify_smt"
+                                  :args {:claim "c" :smtlib "(check-sat)"
+                                         :expectedVerdict "unsat"}})
+                 :artifact :claim-status))))))

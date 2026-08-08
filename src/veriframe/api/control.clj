@@ -58,6 +58,14 @@
                   r)
                 (catch Throwable e
                   (log/error "run failed:" (ex-message e))
+                  ;; beam/run! has already marked the row failed and journaled
+                  ;; the error; this only drops the in-memory handle, which is
+                  ;; otherwise leaked and leaves abort! reporting a dead run as
+                  ;; abortable. deref with 0 because by here the id has long
+                  ;; been delivered — unless the throw beat on-start, in which
+                  ;; case there is no id to forget.
+                  (when-let [rid (deref promised 0 nil)]
+                    (swap! active dissoc rid))
                   {:status :error :error (ex-message e)})))
         run-id (deref promised 30000 nil)]
     (if run-id

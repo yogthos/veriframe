@@ -49,6 +49,43 @@
 (defn get-run [conn run-id]
   (db/fetch-one conn ["SELECT * FROM runs WHERE id = ?" run-id]))
 
+(defn last-progress-at
+  "When this run last wrote anything to its journal, or nil if it never has.
+
+  Every meaningful step emits an event, so this is the run's heartbeat without
+  a heartbeat column: the id index gives it in one indexed row lookup, and
+  ordering by id rather than created_at avoids trusting a clock for
+  monotonicity."
+  [conn run-id]
+  (:created_at (db/fetch-one conn ["SELECT created_at FROM events WHERE run_id = ?
+                                    ORDER BY id DESC LIMIT 1" run-id])))
+
+(defn stalled?
+  "True when a run still claims to be running but has been silent longer than
+  `threshold-ms`.
+
+  gen-11 crashed mid-round and sat at status 'running' with no events for the
+  rest of the night, and nothing could tell that from a healthy slow round —
+  both look like a row saying `running`. Silence alone is not enough (a Lean
+  tactic legitimately buys minutes of it), so the threshold belongs above the
+  turn deadline; silence plus a status nobody will ever update is the signal.
+
+  Only ever reports on a RUNNING run. A finished one is quiet because it is
+  over, which is not the same fault and must not raise the same alarm."
+  [conn run-id threshold-ms]
+  (let [r (get-run conn run-id)]
+    (boolean
+     (and r
+          (= "running" (:status r))
+          (when-let [t (or (last-progress-at conn run-id) (:started_at r))]
+            (try
+              (> (- (System/currentTimeMillis)
+                    (.toEpochMilli (java.time.Instant/parse t)))
+                 threshold-ms)
+              ;; An unparseable timestamp is a storage fault, not evidence the
+              ;; run is wedged. Say nothing rather than cry wolf.
+              (catch Throwable _ false)))))))
+
 (defn list-runs
   ([conn] (list-runs conn 50))
   ([conn limit]

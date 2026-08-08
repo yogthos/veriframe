@@ -582,6 +582,29 @@
                           [[] []]
                           culled)]
               (recur (into (into (vec inactive) updated) children) (inc turn))))))
+      ;; A run that dies must say so in the journal it is judged by.
+      ;;
+      ;; gen-11 threw here and the exception went to the process's stdout — a
+      ;; tty — and nowhere else. The row stayed 'running' with ended_at NULL,
+      ;; so the API, the GUI and every query agreed the run was alive for the
+      ;; nine hours it had been dead. A crash that leaves no trace in the
+      ;; record is indistinguishable from a slow round, which makes the whole
+      ;; journal untrustworthy as a liveness signal.
+      ;;
+      ;; Recorded then rethrown: the caller still gets the exception, and the
+      ;; recording is best-effort because a failure to journal the failure
+      ;; must not replace it with a different one.
+      (catch Throwable e
+        (try
+          (journal/note! conn run-id :run-error
+                         {:data {:error (ex-message e)
+                                 ;; jolt's Throwable has an empty stack trace,
+                                 ;; so the type and ex-data are all there is.
+                                 :type (some-> (:via (Throwable->map e)) first :type str)
+                                 :ex-data (some-> (ex-data e) pr-str)}})
+          (runs/finish-run! conn run-id :failed nil)
+          (catch Throwable _ nil))
+        (throw e))
       (finally
         ;; Prolog sessions are opened by the scheduler; Lean sessions are
         ;; opened lazily by a tool on whichever branch first needs one, so
