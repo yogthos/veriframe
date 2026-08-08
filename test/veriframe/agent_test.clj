@@ -2177,6 +2177,59 @@
       (is (str/includes? (:data (first evs)) "17361625")
           "naming the coefficient, so the branch's next turn can fix it"))))
 
+;; --- a judge verdict has to say why -----------------------------------------
+
+(deftest a-judge-verdict-is-journalled-with-its-reasoning
+  ;; A rejection used to leave `claim-status = unfaithful` and nothing else.
+  ;; When gen-14's mod-105 computation was rejected — arithmetic independently
+  ;; confirmed correct, every one of its eight constants right — there was no
+  ;; way to tell from the journal whether the reviewer had caught a real
+  ;; mismatch or misfired, which is precisely the question that decides
+  ;; whether the gate is worth having. A gate whose false positives are
+  ;; invisible cannot be tuned.
+  (let [c (db/connect ":memory:")
+        _ (db/migrate! c)
+        rid (runs/start-run! c {:problem "p" :beam-width 1})
+        b (state/new-branch {:id "B1" :problem "p"})]
+    (runs/open-branch! c rid {:branch-id "B1" :created-at-turn 0})
+    (with-redefs [smt/run-smt (fn [& _] {:status :ok :verdict :unsat})
+                  llm/chat (fn [& _]
+                             {:content (str "<think>weighing it up</think>\n"
+                                            "GAP: the encoding pins y0 and the claim does not\n"
+                                            "VERDICT: FAIL")})]
+      (tools/run-tool {:branch b :turn 4 :conn c :run-id rid
+                       :tool-name "verify_smt"
+                       :args {:claim "some claim" :smtlib "(assert (>= x 1))(check-sat)"
+                              :expectedVerdict "unsat"}}))
+    (let [evs (filter #(= "judge-verdict" (:kind %)) (journal/events-since c rid 0))
+          d (some-> (first evs) :data)]
+      (is (= 1 (count evs)) "the verdict is recorded")
+      (is (str/includes? d "faithfulness")
+          "labelled with which question was asked, since three callers share the judge")
+      (is (str/includes? d "fail") "carrying the verdict")
+      (is (str/includes? d "pins y0")
+          "and the reasoning, which is the whole point — without it a rejection
+           cannot be told from a misfire")
+      (is (not (str/includes? d "weighing it up"))
+          "the think block is dropped: it is bulk, and the parser already ignores it"))))
+
+(deftest a-judge-verdict-that-passes-is-journalled-too
+  ;; Only recording rejections would make the gate look worse than it is and
+  ;; leave no denominator for a false-positive rate.
+  (let [c (db/connect ":memory:")
+        _ (db/migrate! c)
+        rid (runs/start-run! c {:problem "p" :beam-width 1})
+        b (state/new-branch {:id "B1" :problem "p"})]
+    (runs/open-branch! c rid {:branch-id "B1" :created-at-turn 0})
+    (with-redefs [smt/run-smt (fn [& _] {:status :ok :verdict :unsat})
+                  llm/chat (fn [& _] {:content "GAPS: none\nVERDICT: PASS"})]
+      (tools/run-tool {:branch b :turn 4 :conn c :run-id rid
+                       :tool-name "verify_smt"
+                       :args {:claim "some claim" :smtlib "(assert (>= x 1))(check-sat)"
+                              :expectedVerdict "unsat"}}))
+    (is (= 1 (count (filter #(= "judge-verdict" (:kind %))
+                            (journal/events-since c rid 0)))))))
+
 ;; --- the other three engines face the same two layers -----------------------
 
 (defn- fresh-run []

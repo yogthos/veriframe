@@ -281,7 +281,7 @@
                            {:branch-id (:id (:branch ctx)) :turn (:turn ctx)
                             :data {:claim claim :warnings warnings}}))
           false)
-      (verdict/passed? (judge ctx (faithfulness-prompt claim code opts))))))
+      (verdict/passed? (judge ctx :faithfulness (faithfulness-prompt claim code opts))))))
 
 
 ;; --- Prolog -----------------------------------------------------------------
@@ -649,6 +649,39 @@
       (min (* base judge-token-ceiling-multiple)
            (* base opening escalation)))))
 
+(def ^:private judge-reasoning-limit
+  "How much of the judge's answer to keep in the journal.
+
+  Enough to see which gap it named and how it argued; bounded because a
+  reasoning model will happily write ten thousand characters and the journal
+  is read by people and by grep, not by a model."
+  4000)
+
+(defn- note-verdict!
+  "Record what the judge answered and why.
+
+  Without this a rejection is a bare `claim-status = unfaithful` and there is
+  no way to tell a caught defect from a misfire. That question — is the gate
+  rejecting real work — is the one that decides whether the gate is worth
+  having, and it was unanswerable the first time it came up: gen-14's mod-105
+  slack computation was rejected with its arithmetic independently confirmed
+  correct, and the record held nothing to diagnose it with.
+
+  The reasoning stream is dropped, as everywhere else: the parser ignores it
+  and it is the bulk of the response."
+  [{:keys [conn run-id branch turn]} label prompt parsed content]
+  (when (and conn run-id)
+    (journal/note! conn run-id :judge-verdict
+                   {:branch-id (:id branch) :turn turn
+                    :data {:label (name label)
+                           :verdict (name (:verdict parsed))
+                           :reason (:reason parsed)
+                           :gaps (:gaps parsed)
+                           :prompt-chars (count (str prompt))
+                           :answer (let [t (verdict/strip-reasoning content)]
+                                     (subs t 0 (min judge-reasoning-limit
+                                                    (count t))))}})))
+
 (defn- judge
   "Ask the model a yes-or-no question and read the answer through the
   constrained parser. Any failure to answer cleanly fails closed.
@@ -660,9 +693,13 @@
   one live run and cost the branch its ship (vf-42e). Retries sharpen the
   instruction and double the token budget, and each one is journaled. A
   transport failure is NOT retried: llm/chat already ran its own bounded
-  retry loop, and a second loop here would multiply it."
-  [{:keys [llm-adapter llm-config conn run-id branch turn]} prompt]
-  (loop [attempt 1]
+  retry loop, and a second loop here would multiply it.
+
+  `label` names which question was asked, because three callers share this
+  and a journal line saying only FAIL does not say what failed."
+  ([ctx prompt] (judge ctx :unlabelled prompt))
+  ([{:keys [llm-adapter llm-config conn run-id branch turn] :as ctx} label prompt]
+   (loop [attempt 1]
     (let [system (str "You are a strict reviewer. " verdict/instruction
                       (when (> attempt 1)
                         (str " Your previous response ended before any verdict"
@@ -677,7 +714,13 @@
                                      budget (assoc :max-tokens budget)))}
               (catch Throwable e {:error (ex-message e)}))]
       (if (:error r)
-        {:verdict :unparseable :reason (str "the judge call failed: " (:error r))}
+        (let [parsed {:verdict :unparseable
+                      :reason (str "the judge call failed: " (:error r))}]
+          ;; Journalled too. A gate that fails closed on a transport error
+          ;; looks from the artifact table exactly like one that rejected on
+          ;; the merits, and those need telling apart.
+          (note-verdict! ctx label prompt parsed "")
+          parsed)
         (let [content (get-in r [:response :content])
               parsed (verdict/parse content)]
           (if (and (= :unparseable (:verdict parsed))
@@ -689,13 +732,15 @@
                                          :budget budget
                                          :reason (:reason parsed)}}))
                 (recur (inc attempt)))
-            ;; The reasoning stream is stripped HERE, not at the call sites,
-            ;; because every caller quotes :text back into the branch's message
-            ;; history and a branch that reads reviewer-voice reasoning answers
-            ;; its next turn as a reviewer instead of calling a tool. Keeping
-            ;; the raw text in the map would leave that trap set for the next
-            ;; caller added.
-            (assoc parsed :text (verdict/strip-reasoning content))))))))
+            (do
+              (note-verdict! ctx label prompt parsed content)
+              ;; The reasoning stream is stripped HERE, not at the call sites,
+              ;; because every caller quotes :text back into the branch's message
+              ;; history and a branch that reads reviewer-voice reasoning answers
+              ;; its next turn as a reviewer instead of calling a tool. Keeping
+              ;; the raw text in the map would leave that trap set for the next
+              ;; caller added.
+              (assoc parsed :text (verdict/strip-reasoning content))))))))))
 
 (defmethod run-tool "review" [{:keys [branch] :as ctx}]
   (if-let [m (missing ctx :claim :rationale)]
@@ -720,7 +765,7 @@
                        " Answer FAIL if the two encodings share the assumption that"
                        " could be wrong."
                        "\n\n" judge-exemptions)
-                j (judge ctx p)
+                j (judge ctx :review p)
                 passed (verdict/passed? j)
                 _ (when-let [d (:disagreement j)]
                     (when (and (:conn ctx) (:run-id ctx))
@@ -800,7 +845,7 @@
                  " is only for evidence that does establish something, just something"
                  " weaker."
                  "\n\n" judge-exemptions)
-          j (judge ctx p)
+          j (judge ctx :audit p)
           passed (verdict/passed? j)
           _ (when-let [d (:disagreement j)]
               (when (and (:conn ctx) (:run-id ctx))
