@@ -2014,3 +2014,44 @@
                                   :args {:claim "c" :smtlib "(check-sat)"
                                          :expectedVerdict "unsat"}})
                  :artifact :claim-status))))))
+
+;; --- forking twice must not collide -----------------------------------------
+
+(deftest child-ids-skip-suffixes-the-parent-already-used
+  ;; Killed gen-11 and gen-12. Child ids were parent + "." + (batch index + 2),
+  ;; which has no memory of an earlier fork, so a branch that forked twice
+  ;; reissued its first child's id and the INSERT hit
+  ;; `UNIQUE constraint failed: branches.run_id, branches.id`, taking the run
+  ;; down. Repopulation makes this the common case rather than a corner: it
+  ;; asks the strongest survivor to branch again, and the strongest survivor is
+  ;; the one that has already branched.
+  (is (= ["B2.2" "B2.3"] (#'beam/child-ids #{} "B2" 2))
+      "a first fork still starts at .2")
+  (is (= ["B2.4" "B2.5"] (#'beam/child-ids #{"B2.2" "B2.3"} "B2" 2))
+      "a second fork continues past the children already spawned")
+  (is (= ["B2.3" "B2.5"] (#'beam/child-ids #{"B2.2" "B2.4"} "B2" 2))
+      "gaps are reusable: ids are unique keys, not a spawn ordering")
+  (is (= ["B1.2.2"] (#'beam/child-ids #{"B1.2"} "B1.2" 1))
+      "the parent's own id is not a child id and must not be skipped over"))
+
+(deftest a-parent-can-fork-twice-without-taking-the-run-down
+  (let [c (db/connect ":memory:")
+        _ (db/migrate! c)
+        rid (runs/start-run! c {:problem "p" :beam-width 1})]
+    (with-redefs [veriframe.engine.prolog/create-session (fn [_] nil)]
+      (let [ctx {:conn c :run-id rid :config {} :problem "p" :sessions (atom [])}
+            thesis {:goal "g" :technique "t" :subClaims []}
+            parent (assoc (state/new-branch {:id "B2" :problem "p"})
+                          :pending-branch-theses [thesis thesis])]
+        (runs/open-branch! c rid {:branch-id "B2" :created-at-turn 0})
+        (let [[kids1 p1] (#'beam/spawn-children! ctx parent 1 5)
+              p2 (assoc p1 :pending-branch-theses [thesis])
+              [kids2 _] (#'beam/spawn-children! ctx p2 3 9)
+              ids (mapv :id (concat kids1 kids2))]
+          (is (= ["B2.2" "B2.3"] (mapv :id kids1)))
+          (is (= ["B2.4"] (mapv :id kids2))
+              "the second fork does not reissue B2.2")
+          (is (= (count ids) (count (distinct ids))))
+          (is (= (set (conj ids "B2"))
+                 (set (map :id (runs/branches c rid))))
+              "and every child reached the branches table"))))))

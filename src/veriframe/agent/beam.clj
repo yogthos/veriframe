@@ -252,6 +252,27 @@
                    %)
                 branches)))))
 
+(defn- child-ids
+  "`n` unused child ids for `parent-id`, given the ids already `taken`.
+
+  Numbering has to survive a parent forking more than once. It used to be the
+  index within the spawn batch plus two, which reissues `.2` the second time a
+  branch branches — and the INSERT then fails the branches primary key and
+  takes the whole run down with it. Both gen-11 and gen-12 died exactly there,
+  and neither had anything unusual about it: repopulation asks the strongest
+  survivor to branch again, and the strongest survivor is by definition one
+  that has already branched.
+
+  Gaps are filled rather than stepped over. A child id is a unique key, not a
+  record of spawn order, and the turn a branch was created is already stored
+  on the row for anyone who wants the ordering."
+  [taken parent-id n]
+  (loop [ix 2, acc []]
+    (if (<= n (count acc))
+      acc
+      (let [id (str parent-id "." ix)]
+        (recur (inc ix) (cond-> acc (not (taken id)) (conj id)))))))
+
 (defn- spawn-children!
   "Turn a branch's pending theses into sibling branches, under the total cap.
 
@@ -277,11 +298,15 @@
                 " already cover similar ground."))]
 
       :else
-      (let [children (map-indexed
-                      (fn [i t]
-                        (open-branch! ctx (str (:id parent) "." (+ i 2))
-                                      (:id parent) t turn))
-                      spawning)
+      ;; Read the taken ids from the branches table rather than counting on
+      ;; the parent value, which a resumed run rebuilds from the journal and
+      ;; which is not the authority on what has been inserted anyway.
+      (let [taken (set (map :id (runs/branches (:conn ctx) (:run-id ctx))))
+            ids (child-ids taken (:id parent) (count spawning))
+            ;; mapv, not map: these INSERT. A lazy seq of side effects is only
+            ;; correct for as long as every caller keeps realising it.
+            children (mapv (fn [id t] (open-branch! ctx id (:id parent) t turn))
+                           ids spawning)
             parent (cond-> parent
                      (< take-n (count pending))
                      (state/add-message
