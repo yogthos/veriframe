@@ -142,27 +142,44 @@
 (defn- faithfulness-prompt
   "Ask whether `code` actually formalises `claim`, given what the engine said.
 
-  `engine` names the artifact for the reader (\"an SMT-LIB encoding\"), and
-  `outcome` describes what came back (\"Z3 returned unsat\")."
-  [claim code {:keys [engine outcome extra]}]
-  (str "A verifier was asked to substantiate this CLAIM by writing " engine "."
-       " " outcome ", which is the outcome the author predicted. Your ONE job"
-       " is to decide whether the artifact actually formalises the claim.\n\n"
-       "CLAIM:\n" claim "\n\nARTIFACT:\n" code "\n\n"
-       "Answer PASS only if this outcome on THIS artifact establishes exactly"
-       " the claim above. Answer FAIL if the artifact expresses something"
-       " stronger, weaker, or simply different — in particular check that every"
-       " coefficient, bound, threshold and index set matches what the claim"
-       " says, that the quantity being summed or compared is the one named, and"
-       " that no case the claim covers is missing. An artifact that is harder"
-       " to satisfy than the claim requires makes a negative result prove less"
-       " than it appears to; one that is easier makes a positive result prove"
-       " less. Both are FAIL."
-       (when extra (str "\n\n" extra))
-       "\n\nDo not re-derive the mathematics or re-check the engine's work."
-       " Only compare the claim to the formalisation. Judge the artifact as"
-       " written: if it does not match the claim, answer FAIL. It is not an"
-       " option to reinterpret the claim so that it fits."))
+  `engine` names the artifact for the reader (\"an SMT-LIB encoding\"),
+  `outcome` describes what came back (\"Z3 returned unsat\"), and `direction`
+  is whether the harness read that outcome as confirming or refuting. The
+  question is the same either way — is this a faithful formalisation — but
+  what rides on the answer is not, and saying which is at stake stops the
+  reviewer from grading a refutation as though a PASS were an endorsement of
+  the claim."
+  [claim code {:keys [engine outcome extra direction]}]
+  (let [refuting? (= :refutes direction)]
+    (str "A verifier was asked to substantiate this CLAIM by writing " engine "."
+         " " outcome ", "
+         (if refuting?
+           (str "which is the opposite of what the author predicted, so the"
+                " harness has recorded the claim as REFUTED.")
+           "which is the outcome the author predicted.")
+         " Your ONE job is to decide whether the artifact actually formalises"
+         " the claim.\n\n"
+         "CLAIM:\n" claim "\n\nARTIFACT:\n" code "\n\n"
+         (if refuting?
+           (str "Answer PASS only if this outcome on THIS artifact refutes"
+                " exactly the claim above — that is, only if the artifact is a"
+                " faithful formalisation, so that what failed here is the claim"
+                " and not something else wearing its words.")
+           (str "Answer PASS only if this outcome on THIS artifact establishes"
+                " exactly the claim above."))
+         " Answer FAIL if the artifact expresses something"
+         " stronger, weaker, or simply different — in particular check that every"
+         " coefficient, bound, threshold and index set matches what the claim"
+         " says, that the quantity being summed or compared is the one named, and"
+         " that no case the claim covers is missing. An artifact that is harder"
+         " to satisfy than the claim requires makes a negative result prove less"
+         " than it appears to; one that is easier makes a positive result prove"
+         " less. Both are FAIL."
+         (when extra (str "\n\n" extra))
+         "\n\nDo not re-derive the mathematics or re-check the engine's work."
+         " Only compare the claim to the formalisation. Judge the artifact as"
+         " written: if it does not match the claim, answer FAIL. It is not an"
+         " option to reinterpret the claim so that it fits.")))
 
 (def ^:private prolog-faithfulness-note
   "Prolog earns a specific warning because the failure that motivated this
@@ -181,6 +198,44 @@
        " solving an unconstrained problem. A goal that succeeds instantly with"
        " empty or unbound witnesses is the signature. Also check that the"
        " rules shown actually define every predicate the claim depends on."))
+
+(def ^:private octave-faithfulness-note
+  "Octave is the one engine that computes rather than decides, so the gap
+  between artifact and claim is wider here than anywhere else: a claim about
+  all reals cannot be reached from any number of evaluated points, and a
+  tolerance turns a strict statement into an approximate one."
+  (str "This is Octave, which COMPUTES rather than decides: it says what"
+       " happened for these inputs at this precision. Check that the expression"
+       " actually reads the values the workspace computed rather than numbers"
+       " transcribed into it, that a tolerance is not standing in for a strict"
+       " inequality the claim states, and above all that the claim is about"
+       " these inputs. A claim quantified over all reals, all integers, or an"
+       " infinite family is NOT established by a finite computation, however"
+       " many cases it covers — that is FAIL no matter how clean the code is."))
+
+(def ^:private lean-faithfulness-note
+  "Lean's proof checking is not in question; its statements are. Everything
+  that can go wrong here goes wrong in the theorem line."
+  (str "Lean has already checked the PROOF, so do not re-examine it. The only"
+       " question is whether the STATEMENT is the claim. Check the quantifiers"
+       " and their ranges, the hypotheses (an unused or contradictory one makes"
+       " a theorem elaborate while proving nothing about the claim), the"
+       " direction of every inequality, and whether a definition introduced in"
+       " the snippet means what the claim says it means — a `def` that is"
+       " subtly the wrong object makes a true theorem about the wrong thing."))
+
+(def ^:private template-faithfulness-note
+  "verify_template cross-checks two encodings, which the tool used to treat as
+  making review unnecessary. It does not: both encodings are built from the
+  same model-supplied slots, so they agree with each other exactly when the
+  instantiation was consistent, and say nothing about whether the values are
+  the ones the claim names."
+  (str "This encoding came from a vetted template, so the template's logic is"
+       " not in question and neither is the cross-check — both encodings were"
+       " built from the SAME slot values, so their agreement shows the"
+       " instantiation was consistent and nothing more. What is in question is"
+       " the slots: check that every value filled in is the one the claim"
+       " names, in the units and at the scale the claim uses."))
 
 (defn- prolog-artifact-code
   "The goal together with the rules it runs against.
@@ -206,9 +261,15 @@
   condition, the encoding gave 3-divisible moduli coefficient L/m where that
   condition requires 3L/m, and Z3's UNSAT was real while the claim was false.
 
-  Only asked of a would-be confirmation. A refuted or ambiguous artifact
-  substantiates nothing, so paying a judge to inspect its encoding buys
-  nothing, and confirmations are the ones that propagate into other branches."
+  Asked of refutations too. This used to be confirmations only, on the
+  reasoning that a refuted artifact substantiates nothing — which is false. A
+  refutation asserts the negation, and the negation is a substantive claim
+  that the branch believes, the claims registry hands to other branches as
+  settled, and nobody re-runs. gen-13 refuted `the mod-15 condition for P_3000
+  is satisfiable` from an encoding that pinned y0 = 0; the claim quantified
+  over every y0, so the unsat was about a different question, and the run
+  steered on it for turns. Ambiguous outcomes are still not judged: there is
+  no assertion in them to be unfaithful to."
   [ctx claim code {:keys [structural] :as opts}]
   (let [{:keys [ok warnings]} (or structural {:ok true})]
     (if-not ok
@@ -380,13 +441,18 @@
         (fail branch (:error r) :failure {:claim claim :reason (:error r)})
         (let [free (free-variables smtlib)
               status (smt-claim-status (:verdict r) expected (seq free))
-              status (if (and (= :confirmed status)
-                              (not (encoding-faithful?
-                                    ctx claim smtlib
-                                    {:engine "an SMT-LIB encoding"
-                                     :outcome (str "Z3 returned " (name (:verdict r)))
-                                     :structural (faithful/check-smt claim smtlib)})))
-                       :unfaithful
+              faithful? #(encoding-faithful?
+                          ctx claim smtlib
+                          {:engine "an SMT-LIB encoding"
+                           :outcome (str "Z3 returned " (name (:verdict r)))
+                           :direction %
+                           :structural (faithful/check-smt claim smtlib
+                                                           {:verdict (:verdict r)})})
+              status (case status
+                       :confirmed (if (faithful? :confirms) :confirmed :unfaithful)
+                       ;; A refutation is an assertion too — of the negation —
+                       ;; and it settles the claim for every other branch.
+                       :refuted (if (faithful? :refutes) :refuted :unfaithful)
                        status)]
           (merge
            {:branch branch
@@ -397,14 +463,15 @@
                            :confirmed "That matches your expectedVerdict — claim CONFIRMED."
                            :refuted "That contradicts your expectedVerdict — claim REFUTED."
                            :unfaithful
-                           (str "That matches your expectedVerdict, but a reviewer"
-                                " reading the encoding beside the claim judged that"
-                                " it does not formalise the claim, so the verdict"
-                                " does not establish it. Z3 answered the question"
-                                " you asked; the question was not the one you"
-                                " stated. Check every coefficient, bound and index"
-                                " set against the claim's wording, then re-run —"
-                                " or restate the claim to match what you encoded.")
+                           (str "Review found that the encoding does not formalise"
+                                " the claim, so this verdict does not settle it"
+                                " either way. Z3 answered the question you asked;"
+                                " the question was not the one you stated. Check"
+                                " every coefficient, bound and index set against"
+                                " the claim's wording and re-run. Narrowing the"
+                                " claim until it matches a formula you have"
+                                " already written is not a fix: state the claim"
+                                " you mean, then encode that.")
                            :existential
                            (str "You expected SAT and got it, but " (str/join ", " free)
                                 " are free, so Z3 chose values to satisfy your constraints."
@@ -440,13 +507,33 @@
           ;; for another branch to try rather than left locked behind an error.
           (do (settle-claim! ctx claim :released nil)
               (fail branch (:error r) :failure {:claim claim :reason (:error r)}))
-          (let [status (cond (:confirmed r) :confirmed
+          (let [smtlib (get-in r [:primary :smtlib])
+                verdict (get-in r [:primary :verdict])
+                status (cond (:confirmed r) :confirmed
                              (:agreed r) :refuted
                              :else :ambiguous)
+                ;; The cross-check used to stand in for review. It cannot:
+                ;; both encodings are built from the same slots, so agreement
+                ;; means the instantiation was consistent, not that the values
+                ;; are the claim's.
+                status (if (and (= :confirmed status)
+                                (not (encoding-faithful?
+                                      ctx claim smtlib
+                                      {:engine (str "an SMT-LIB encoding generated"
+                                                    " from the `" tname "` template")
+                                       :outcome (str "Z3 returned "
+                                                     (name verdict)
+                                                     " and the cross-check agreed")
+                                       :direction :confirms
+                                       :extra template-faithfulness-note
+                                       :structural (faithful/check-smt
+                                                    claim smtlib {:verdict verdict})})))
+                         :unfaithful
+                         status)
                 confirmed? (= :confirmed status)
                 artifact {:kind :smt :claim claim
-                          :code (get-in r [:primary :smtlib])
-                          :verdict (get-in r [:primary :verdict])
+                          :code smtlib
+                          :verdict verdict
                           :witness (get-in r [:primary :model])
                           :claim-status status :tier :slow}]
             (settle-claim! ctx claim (if confirmed? :confirmed :failed)
@@ -461,10 +548,20 @@
                            "\n  crosscheck " (name (get-in r [:cross :verdict]))
                            " (expected " (name (get-in r [:cross :expected])) ")"
                            (when confirmed?
-                             "\n\nBoth encodings agree, so this needs no separate review."))
+                             (str "\n\nBoth encodings agree and the slots match the"
+                                  " claim, so this needs no separate review."))
+                           (when (= :unfaithful status)
+                             (str "\n\nBoth encodings agree — but they were built from"
+                                  " the same slots, and review found those slots do"
+                                  " not say what the claim says. The template did its"
+                                  " job on the numbers you gave it. Check each slot"
+                                  " against the claim's wording and re-run.")))
               :artifact artifact}
              (when-not confirmed?
-               {:failure {:claim claim :reason (:note r)}}))))))))
+               {:failure {:claim claim
+                          :reason (if (= :unfaithful status)
+                                    "the template's slots do not match the claim"
+                                    (:note r))}}))))))))
 
 ;; --- planning ---------------------------------------------------------------
 
@@ -1004,19 +1101,43 @@
                     :failure {:claim claim :reason "the proof contained sorry"})
 
               (:ok r)
-              {:branch branch :category :success :progress? true
-               :result (str "Lean accepted it. Claim CONFIRMED.")
-               :artifact {:kind :lean :claim claim :code (arg ctx :lean)
-                          :claim-status :confirmed :tier :fast}}
+              (let [code (arg ctx :lean)]
+                (if (encoding-faithful?
+                     ctx claim code
+                     {:engine "a Lean 4 declaration"
+                      :outcome "Lean accepted it with no goals left open"
+                      :direction :confirms
+                      :extra lean-faithfulness-note
+                      :structural (faithful/check-lean claim code)})
+                  {:branch branch :category :success :progress? true
+                   :result "Lean accepted it. Claim CONFIRMED."
+                   :artifact {:kind :lean :claim claim :code code
+                              :claim-status :confirmed :tier :fast}}
+                  (fail branch
+                        (str "Lean accepted the declaration, so the PROOF is sound —"
+                             " but review found the STATEMENT is not the claim, so"
+                             " what you proved is not what you said. Check the"
+                             " quantifiers, their ranges, the hypotheses and the"
+                             " direction of each inequality against the claim's"
+                             " wording, then state the theorem the claim describes.")
+                        :failure {:claim claim
+                                  :reason "the Lean statement does not match the claim"}
+                        :artifact {:kind :lean :claim claim :code code
+                                   :claim-status :unfaithful :tier :fast})))
 
               :else
-              (fail branch (str "Lean rejected it:\n" (lean-error-text (:errors r)))
+              ;; No artifact. A snippet Lean rejects is a failed proof ATTEMPT,
+              ;; which says nothing about whether the claim is true — this used
+              ;; to record it with claim-status :refuted, so a type error read
+              ;; as evidence against the claim. The failure log keeps the
+              ;; record; the artifact table should not.
+              (fail branch (str "Lean rejected it:\n" (lean-error-text (:errors r))
+                                "\n\nThat is a problem with the proof, not evidence"
+                                " about the claim.")
                     :failure {:claim claim
                               :reason (str "lean: " (some-> (first (:errors r)) :data
                                                             (str/replace #"\s+" " ")
-                                                            (subs 0 (min 160 (count (str (:data (first (:errors r)))))))))}
-                    :artifact {:kind :lean :claim claim :code (arg ctx :lean)
-                               :claim-status :refuted :tier :fast})))
+                                                            (subs 0 (min 160 (count (str (:data (first (:errors r)))))))))})))
           (catch Throwable e
             (fail branch (str "Lean is unavailable: " (ex-message e)))))))))
 
@@ -1132,6 +1253,20 @@
   [claim tol exact?]
   (if exact? claim (str claim " (numerically, within " tol ")")))
 
+(defn- octave-artifact-code
+  "The checked expression together with the workspace that gives it meaning.
+
+  Same problem the Prolog artifact had, and the same fix. `1.014488 > 1` was
+  recorded as a confirmed artifact in gen-13: the glpk solve that produced
+  1.014488 ran on an earlier turn and was nowhere in the row, so what the
+  artifact showed was a comparison of two numbers with no provenance. The
+  workspace log is what makes an Octave result auditable at all."
+  [session expr]
+  (let [steps (seq (remove str/blank? (map :code (octave/snapshot session))))]
+    (if steps
+      (str (str/join "\n" steps) "\n\n% check:\n" expr)
+      expr)))
+
 (defmethod run-tool "verify_octave" [{:keys [branch] :as ctx}]
   (if-let [m (missing ctx :claim :expr)]
     (fail branch m)
@@ -1139,35 +1274,66 @@
       (let [[s branch] (octave-session! ctx)
             claim (arg ctx :claim)
             tol (or (arg ctx :tol) 0)
-            r (octave/check s (arg ctx :expr) tol)]
-        (cond
-          (not (:ok r))
+            expr (arg ctx :expr)
+            r (octave/check s expr tol)]
+        (if-not (:ok r)
           (fail branch (str "The expression did not evaluate to a verdict: " (:error r)
                             "\nThat is an encoding problem, not evidence about the claim.")
                 :failure {:claim claim :reason (:error r)})
+          (let [true? (boolean (:verdict r))
+                exact? (:exact r)
+                code (octave-artifact-code s expr)
+                faithful? (encoding-faithful?
+                           ctx claim code
+                           {:engine (str "an Octave workspace and an expression to"
+                                         " evaluate against it")
+                            :outcome (str "The expression evaluated to "
+                                          (if true? "true" "false")
+                                          (if exact?
+                                            " as an exact comparison"
+                                            (str " within a tolerance of " tol)))
+                            :direction (if true? :confirms :refutes)
+                            :extra octave-faithfulness-note
+                            :structural (faithful/check-octave claim expr)})
+                status (cond (not faithful?) :unfaithful
+                             true? :confirmed
+                             :else :refuted)
+                artifact {:kind :octave
+                          :claim (octave-claim-text claim tol exact?)
+                          :code code
+                          :claim-status status :tier :fast}]
+            (case status
+              :confirmed
+              {:branch branch :category :success :progress? true
+               :result (str "Octave evaluated it to true. Claim CONFIRMED"
+                            (if exact?
+                              (str " by an exact comparison.\n\nThe comparison was"
+                                   " exact; the arithmetic under it is still floating"
+                                   " point, so this holds for these inputs at this"
+                                   " precision.")
+                              (str " numerically, within " tol ".\n\nThis is evidence"
+                                   " about a computation, not a proof about the reals:"
+                                   " it holds for these inputs at this precision."))
+                            " A claim about ALL reals needs Z3 or Lean.")
+               :artifact artifact}
 
-          (:verdict r)
-          (let [exact? (:exact r)]
-            {:branch branch :category :success :progress? true
-             :result (str "Octave evaluated it to true. Claim CONFIRMED"
-                          (if exact?
-                            " by exact arithmetic."
-                            (str " numerically, within " tol "."))
-                          (when-not exact?
-                            (str "\n\nThis is evidence about a computation, not a proof about"
-                                 " the reals: it holds for these inputs at this precision."
-                                 " A claim about ALL reals needs Z3 or Lean.")))
-             :artifact {:kind :octave
-                        :claim (octave-claim-text claim tol exact?)
-                        :code (arg ctx :expr)
-                        :claim-status :confirmed :tier :fast}})
+              :unfaithful
+              (fail branch
+                    (str "Octave evaluated it to " (if true? "true" "false")
+                         ", but review found the expression does not answer the"
+                         " claim, so the verdict settles nothing either way."
+                         " Check that the expression reads the values the"
+                         " workspace computed, that any tolerance matches what"
+                         " the claim states, and that the claim is about these"
+                         " inputs rather than an infinite family a computation"
+                         " cannot reach.")
+                    :failure {:claim claim
+                              :reason "the Octave expression does not answer the claim"}
+                    :artifact artifact)
 
-          :else
-          (fail branch (str "Octave evaluated it to FALSE, so the claim is not supported.")
-                :failure {:claim claim :reason "the Octave check evaluated to false"}
-                :artifact {:kind :octave
-                           :claim (octave-claim-text claim tol (:exact r))
-                           :code (arg ctx :expr)
-                           :claim-status :refuted :tier :fast})))
+              :refuted
+              (fail branch "Octave evaluated it to FALSE, so the claim is not supported."
+                    :failure {:claim claim :reason "the Octave check evaluated to false"}
+                    :artifact artifact)))))
       (catch Throwable e
         (fail branch (str "Octave is unavailable: " (ex-message e)))))))

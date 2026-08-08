@@ -123,11 +123,69 @@
                   (occurrences s construct)))
           undoing-constructs)))
 
+;; --- the claim has to add up on its own terms -------------------------------
+
+(defn- index-set-size
+  "How many indices `{0,1,2}`, `{0,..,6}` or `{0..4}` names, or nil.
+
+  Only sets starting at 0 count. An index family runs from zero; a set of
+  moduli — `D={3,5,7,9,…,945}`, which appears in the very claims this check
+  exists for — does not, and counting one as the other would fire the check on
+  every claim of that shape."
+  [body]
+  (let [nums (map parse-long (re-seq #"\d+" (or body "")))]
+    (when (and (seq nums) (zero? (first nums)))
+      (if (str/includes? body "..")
+        (inc (last nums))
+        (count nums)))))
+
+(defn index-family-sizes
+  "Sizes of the index families a claim quantifies over, in order."
+  [claim]
+  (->> (re-seq #"(?i)for\s+(?:each\s+|every\s+|all\s+)?[A-Za-z]\w*\s*(?:in|=)\s*\{([^}]*)\}"
+               (or claim ""))
+       (keep (comp index-set-size second))))
+
+(defn overcounted-claim
+  "When the parts a claim enumerates already exceed the total it states.
+
+  gen-12 shipped two artifacts saying \"all of the following 14 inequalities\"
+  and then listing families indexed 0..2, 0..4 and 0..6 — fifteen. Both
+  encodings had all fifteen, so nothing that compares claim to encoding can
+  see it; the claim contradicts itself.
+
+  Only the surplus direction. A claim may name families and then add
+  constraints it never enumerates, so a shortfall proves nothing — but what is
+  enumerated is always a subset of the whole, so parts exceeding the stated
+  total is a certain contradiction."
+  [claim stated]
+  (let [sizes (index-family-sizes claim)
+        total (reduce + 0 sizes)]
+    (when (and stated (seq sizes) (> total stated))
+      {:stated stated :enumerated total :sizes (vec sizes)})))
+
+(declare stated-count)
+
+(defn- claim-warning
+  "The objection to a claim considered on its own, independent of any engine."
+  [claim]
+  (when-let [{:keys [stated enumerated sizes]} (overcounted-claim claim (stated-count claim))]
+    (str "The claim says " stated " but the families it lists come to "
+         enumerated " (" (str/join " + " sizes) "). Whatever the engine was"
+         " asked, the claim disagrees with itself before anything ran, so no"
+         " verdict on it means what it says. Fix the count or the families.")))
+
+(defn check-claim
+  "Deterministic objections to a claim's own wording, for any engine."
+  [claim]
+  (result [(claim-warning claim)]))
+
 (defn check-prolog
   "Deterministic objections to a Prolog goal and the rules behind it."
-  [_claim code]
+  [claim code]
   (result
-   [(when-let [[construct snippet] (constraint-in-undoing-scope code)]
+   [(claim-warning claim)
+    (when-let [[construct snippet] (constraint-in-undoing-scope code)]
       (str "This program posts a constraint inside `" construct "`, which runs"
            " its goal in a separate context and undoes bindings and constraint"
            " posts when it completes — so those constraints are gone before"
@@ -212,26 +270,170 @@
 (defn- assertion-count [smtlib]
   (count (re-seq #"\(\s*assert\b" (lint/strip-smt-comments (or smtlib "")))))
 
-(defn check-smt
-  "Deterministic objections to an SMT-LIB encoding offered for a claim."
+;; --- SMT: an unsat that only searched part of the space ---------------------
+
+(defn- declared-constants [smtlib]
+  (set (map second (re-seq #"\(\s*declare-(?:const|fun)\s+([^\s()]+)" (or smtlib "")))))
+
+(defn- pinned-constants [smtlib]
+  (set (map second (re-seq #"\(\s*=\s+([A-Za-z_][\w-]*)\s+-?\d" (or smtlib "")))))
+
+(defn partially-pinned-family
+  "A family of declared constants of which some but not all are pinned to a
+  literal, or nil.
+
+  An unsat is only worth what the space it searched. `(assert (= y0 0))`
+  removes every assignment with y0 ≠ 0, so unsat afterwards says nothing about
+  those — and whether the pin is a sound symmetry break is a mathematical
+  argument that lives outside the file. gen-13 recorded a refutation of \"the
+  mod-15 condition for P_3000 is satisfiable\" from exactly that encoding.
+
+  The tell is PART of a family. `(assert (= L 3281866875))` names a constant
+  and excludes nothing; L is a family of one. Every member of a family pinned
+  is a ground check of one assignment, which is a legitimate thing to ask.
+  Only a proper subset reads as a restriction."
+  [smtlib]
+  (let [declared (declared-constants smtlib)
+        pinned (pinned-constants smtlib)]
+    (->> (group-by #(str/replace % #"\d+$" "") declared)
+         (sort-by key)
+         (keep (fn [[fam members]]
+                 (let [p (sort (filter pinned members))]
+                   (when (and (>= (count members) 3)
+                              (seq p)
+                              (< (count p) (count members)))
+                     {:family fam :pinned (vec p) :size (count members)}))))
+         first)))
+
+(defn undisclosed-pins
+  "A partial family pin the claim never mentions, or nil.
+
+  Three artifacts from one run pin y0 out of y0..y20. Two of them say so —
+  \"fixes y0 = 0 by the class-permutation symmetry\" — and one does not, and
+  the one that does not is the one whose unsat did not hold up when the pin
+  was removed by hand. That is the whole distinction this check can draw.
+
+  Whether a disclosed symmetry reduction is SOUND is a mathematical argument
+  about the problem, not a fact about the file, so it belongs to the reviewer
+  that reads both — objecting to it here would be guessing, and a check that
+  guesses gets routed around. What is decidable is whether the encoding
+  narrowed the space without saying so."
   [claim smtlib]
-  (let [stated (stated-count claim)
-        asserts (assertion-count smtlib)]
-    (result
-     [(when-let [{:keys [lcm bad]} (unexplained-coefficients smtlib)]
-        (str "Coefficient(s) " (str/join ", " bad) " correspond to no modulus:"
-             " with L = " lcm ", a layered coefficient is g*L/m for an integer"
-             " modulus m, so g*L must divide evenly by it, and for these it"
-             " does not for any g up to 120. Every other coefficient here fits"
-             " that shape, so this is a typo rather than a different encoding."))
-      ;; Only when the claim commits to a count AND the file is plainly short
-      ;; of it. An encoding may carry extra asserts (bounds, symmetry breaks),
-      ;; so more is unremarkable; fewer means constraints the claim promises
-      ;; are simply absent.
-      (when (and stated (pos? asserts) (< asserts stated))
-        (str "The claim is about " stated " constraints but the encoding"
-             " contains only " asserts " assertion(s). Whatever the engine"
-             " answered, it was not asked about the other "
-             (- stated asserts) ". Either assert them or state the claim the"
-             " encoding actually checks — and if the count in the claim is"
-             " simply wrong, fix the count."))])))
+  (when-let [{:keys [pinned] :as fam} (partially-pinned-family smtlib)]
+    (let [mentions? (fn [v] (re-find (re-pattern (str "(?i)\\b"
+                                                      (java.util.regex.Pattern/quote v)
+                                                      "\\b"))
+                                     (or claim "")))
+          silent (remove mentions? pinned)]
+      (when (seq silent)
+        (assoc fam :undisclosed (vec silent))))))
+
+(defn check-smt
+  "Deterministic objections to an SMT-LIB encoding offered for a claim.
+
+  `verdict` is what Z3 answered. It matters because a pinned variable can only
+  damage an unsat — a SAT verdict hands back a real assignment, and one found
+  inside a restricted space is still one."
+  ([claim smtlib] (check-smt claim smtlib nil))
+  ([claim smtlib {:keys [verdict]}]
+   (let [stated (stated-count claim)
+         asserts (assertion-count smtlib)]
+     (result
+      [(claim-warning claim)
+       (when (= :unsat (some-> verdict name keyword))
+         (when-let [{:keys [family size undisclosed]} (undisclosed-pins claim smtlib)]
+           (str "This encoding pins " (str/join ", " undisclosed) " to a literal"
+                " while leaving the other " (- size (count undisclosed))
+                " member(s) of the `" family "` family free, and the claim never"
+                " says so. Z3's unsat is therefore only about the slice where"
+                " those hold, and the claim is about all of them. Either drop the"
+                " pin and re-run, or state in the claim which symmetry reduction"
+                " you are applying so it can be reviewed with the encoding.")))
+       (when-let [{:keys [lcm bad]} (unexplained-coefficients smtlib)]
+         (str "Coefficient(s) " (str/join ", " bad) " correspond to no modulus:"
+              " with L = " lcm ", a layered coefficient is g*L/m for an integer"
+              " modulus m, so g*L must divide evenly by it, and for these it"
+              " does not for any g up to 120. Every other coefficient here fits"
+              " that shape, so this is a typo rather than a different encoding."))
+       ;; Only when the claim commits to a count AND the file is plainly short
+       ;; of it. An encoding may carry extra asserts (bounds, symmetry breaks),
+       ;; so more is unremarkable; fewer means constraints the claim promises
+       ;; are simply absent.
+       (when (and stated (pos? asserts) (< asserts stated))
+         (str "The claim is about " stated " constraints but the encoding"
+              " contains only " asserts " assertion(s). Whatever the engine"
+              " answered, it was not asked about the other "
+              (- stated asserts) ". Either assert them or state the claim the"
+              " encoding actually checks — and if the count in the claim is"
+              " simply wrong, fix the count."))]))))
+
+;; --- Octave: a verdict that read nothing the engine computed ----------------
+
+(def ^:private octave-builtin-operands
+  "Names that are constants of the language rather than anything a workspace
+  computed. `true && 1 > 0` reads no more than `1 > 0` does."
+  #{"pi" "e" "Inf" "inf" "NaN" "nan" "NA" "eps" "true" "false" "realmax" "realmin"})
+
+(defn reads-workspace?
+  "Whether the checked expression has any operand the workspace supplied.
+
+  Numeric literals go first so that the `e` in `1e-9` is not read as a name,
+  then function names — an identifier immediately followed by `(` — because
+  the name of a function is not an operand."
+  [expr]
+  (let [without-numbers (str/replace (or expr "") #"\d+(?:\.\d+)?(?:[eEdD][+-]?\d+)?" " ")
+        without-calls (str/replace without-numbers #"[A-Za-z_]\w*\s*\(" "(")]
+    (boolean (some (complement octave-builtin-operands)
+                   (re-seq #"[A-Za-z_]\w*" without-calls)))))
+
+(defn computes-nothing?
+  "Whether the expression only compares constants the model wrote down.
+
+  Deliberately narrower than \"reads no variable\". Using Octave as a
+  calculator over literals is legitimate and the campaign did it repeatedly —
+  `(45045 - 32805 == 12240)`, `(1/3+1/5+1/7+1/9+1/11+1/13+1/15+1/25) > 1` —
+  and in those the engine really does the arithmetic being claimed. Firing on
+  them would reject four correct artifacts to catch one bad one.
+
+  What has no content is a comparison with no operation in it at all: no
+  variable, no arithmetic, no call. `1.014488 > 1` is Octave confirming that
+  the model can read its own notes."
+  [expr]
+  (let [s (or expr "")]
+    (and (not (reads-workspace? s))
+         (not (re-find #"[-+*/^\\]" (str/replace s #"^\s*-" "")))
+         (not (re-find #"[A-Za-z_]\w*\s*\(" s)))))
+
+(defn check-octave
+  "Deterministic objections to an Octave check offered for a claim.
+
+  Octave computes rather than decides, so what an artifact is worth depends
+  entirely on the expression connecting the claim to the computation. gen-13
+  recorded a confirmed artifact whose whole code was `1.014488 > 1`: the glpk
+  solve behind that number ran on an earlier turn and appears nowhere, and the
+  expression would have confirmed any claim it was attached to.
+
+  Whether a computation that DID happen reaches the claim — a tolerance
+  standing in for a strict inequality, a finite check offered for an infinite
+  family — is judgement, and belongs to the reviewer that reads both."
+  [claim expr]
+  (result
+   [(claim-warning claim)
+    (when (computes-nothing? expr)
+      (str "`" (str/trim (str expr)) "` compares constants: no variable, no"
+           " arithmetic, no call. Octave computed nothing here, so the verdict"
+           " restates numbers you already had and would have come out the same"
+           " for any claim attached to it. Whatever produced them is not part of"
+           " the artifact. Check the computed values themselves (`val > 1`, or"
+           " `vf_approx(val, expected, tol)`), or recompute the quantity inside"
+           " the expression."))]))
+
+(defn check-lean
+  "Deterministic objections to a Lean snippet offered for a claim.
+
+  Lean checks its own proofs, so there is nothing here to add on the proof
+  side — a snippet that elaborates without `sorry` proves its statement. What
+  remains is whether the STATEMENT is the claim, which is the judge's job, and
+  whether the claim is coherent at all, which is arithmetic."
+  [claim _code]
+  (result [(claim-warning claim)]))

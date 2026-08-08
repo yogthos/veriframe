@@ -140,17 +140,188 @@
     (is (true? (:ok r)) (str "unexpected warnings: " (:warnings r)))))
 
 (deftest an-encoding-with-more-asserts-than-the-claim-states-is-allowed
-  ;; A KNOWN LIMITATION, pinned so nobody assumes otherwise.
+  ;; A KNOWN LIMITATION of the ASSERT count, pinned so nobody assumes
+  ;; otherwise. An encoding legitimately carries asserts the claim never counts
+  ;; — domain bounds, symmetry breaks, sort constraints — so "more than
+  ;; stated" is exactly what a correct artifact looks like. Only the deficit
+  ;; direction is decidable from a count, and only the deficit direction is
+  ;; dangerous: it means constraints the claim promises are absent from what
+  ;; the engine answered.
   ;;
-  ;; a#321 and a#324 both said "the following 14 inequalities" and then listed
-  ;; three families totalling 3+5+7 = 15. The encodings had all fifteen; only
-  ;; the prose was wrong. This check cannot catch that, because an encoding
-  ;; legitimately carries asserts the claim never counts — domain bounds,
-  ;; symmetry breaks, sort constraints — so "more than stated" is exactly what
-  ;; a correct artifact looks like. Only the deficit direction is decidable
-  ;; from a count, and only the deficit direction is dangerous: it means
-  ;; constraints the claim promises are absent from what the engine answered.
+  ;; The surplus direction is reachable from the CLAIM alone instead — see
+  ;; a-claim-whose-own-parts-outnumber-its-total-is-rejected below, which is
+  ;; what actually catches a#321 and a#324.
   (let [asserts (clojure.string/join "\n" (repeat 15 "(assert (>= (+ 1 2) 3))"))
         r (f/check-smt "no assignment satisfies all of the following 14 inequalities"
                        (str asserts "\n(check-sat)"))]
     (is (true? (:ok r)))))
+
+;; --- the claim has to add up on its own terms --------------------------------
+
+(deftest a-claim-whose-own-parts-outnumber-its-total-is-rejected
+  ;; gen-12 a#321 and a#324, verbatim in shape: "all of the following 14
+  ;; inequalities" followed by three families indexed 0..2, 0..4 and 0..6 —
+  ;; 3 + 5 + 7 = 15. Both encodings carried all fifteen, so only the prose was
+  ;; wrong, and no comparison against the encoding can see it. The claim
+  ;; contradicts itself, which is arithmetic on the claim text alone.
+  ;;
+  ;; Only the SURPLUS direction fires. A claim may name families and then add
+  ;; constraints it never enumerates, so a shortfall proves nothing — but
+  ;; enumerated parts can only be a subset of the whole, so parts exceeding the
+  ;; stated total is a certain contradiction.
+  (let [r (f/check-claim
+           (str "For D={3,5,7,9,15,21,27,35,45,63,105,135,189,315,945}, there is no"
+                " assignment of integers a_m with 0<=a_m<m for each m in D such that"
+                " ALL of the following 14 inequalities hold: for each r in {0,1,2},"
+                " 351 + ... >= 945; for each r in {0,1,2,3,4}, 662 + ... >= 945;"
+                " for each r in {0,..,6}, 735 + ... >= 945."))]
+    (is (false? (:ok r)))
+    (is (some #(re-find #"15" %) (:warnings r))
+        "the warning states what the parts actually add up to")))
+
+(deftest a-modulus-set-is-not-mistaken-for-an-index-family
+  ;; The same claim carries D={3,5,7,9,...,945} — fifteen elements, in a
+  ;; `for each m in D` phrase. If that set were counted as an index family the
+  ;; check would fire on every claim of this shape whatever the count said.
+  ;; Index families run from 0; a set of moduli does not.
+  (let [r (f/check-claim
+           (str "For D={3,5,7,9,15,21,27,35,45,63,105,135,189,315,945} there is no"
+                " assignment satisfying the following 2 inequalities: for each r in"
+                " {0,1}, sum over m in D of w_m >= 945."))]
+    (is (true? (:ok r)) (str "unexpected warnings: " (:warnings r)))))
+
+(deftest enumerated-families-within-the-stated-total-pass
+  ;; 3 + 5 = 8 against a stated 12. The claim may well have four more
+  ;; constraints it did not spell out; nothing here contradicts anything.
+  (let [r (f/check-claim
+           (str "all 12 constraints hold: for each r in {0,1,2}, A_r >= L;"
+                " for each s in {0,...,4}, B_s >= L"))]
+    (is (true? (:ok r)) (str "unexpected warnings: " (:warnings r)))))
+
+(deftest a-claim-with-no-stated-total-is-left-alone
+  (let [r (f/check-claim "for each r in {0,1,2}, A_r >= L")]
+    (is (true? (:ok r)) (str "unexpected warnings: " (:warnings r)))))
+
+;; --- octave: a verdict that read nothing the engine computed -----------------
+
+(deftest an-octave-check-over-literals-only-is-rejected
+  ;; gen-13 a#344, a CONFIRMED artifact whose entire code is `1.014488 > 1`.
+  ;; The glpk solve that produced 1.014488 happened on an earlier turn and is
+  ;; nowhere in the artifact; Octave was handed a number the model typed and
+  ;; asked to compare it to another. The verdict is true and says nothing —
+  ;; whatever the claim, this expression would have confirmed it.
+  (let [r (f/check-octave "the LP dual certificate value is 1.014488 > 1"
+                          "1.014488 > 1")]
+    (is (false? (:ok r)))
+    (is (some #(re-find #"(?i)computed nothing" %) (:warnings r)))))
+
+(deftest an-octave-check-that-reads-the-workspace-passes
+  ;; a#346, a#347 and a#348 from the same run, which do reference what was
+  ;; computed. The check must let these through or it is useless.
+  (doseq [expr ["bad == 0 && total == 225"
+                "total == 225 && bad == 0"
+                "vf_approx(slack, 35/48, 1e-9)"]]
+    (let [r (f/check-octave "every one of the 225 cases has positive slack" expr)]
+      (is (true? (:ok r)) (str expr " → unexpected warnings: " (:warnings r))))))
+
+(deftest octave-as-a-calculator-over-literals-still-computes
+  ;; The first cut of this check fired on any expression without a variable,
+  ;; which rejected four correct artifacts to catch a#344. These are all real
+  ;; confirmed artifacts from the campaign, and in every one the engine does
+  ;; the arithmetic the claim is about. The defect in a#344 is narrower: a
+  ;; comparison with no operation in it at all.
+  (doseq [expr ["(45045 - 32805 == 12240)"
+                "(1/3+1/5+1/7+1/9+1/11+1/13+1/15+1/25) > 1"
+                "all([315/3,315/5,315/7,315/9] == [105,63,45,35])"
+                "abs(1.5 - 1.0) < 0.001"
+                "sum([1,2,3]) == 6"]]
+    (let [r (f/check-octave "the arithmetic holds" expr)]
+      (is (true? (:ok r)) (str expr " → unexpected warnings: " (:warnings r))))))
+
+(deftest octave-builtin-constants-are-not-operands-either
+  ;; `true` is a constant of the language, not something the workspace worked
+  ;; out, so this comparison is as empty as a#344's.
+  (let [r (f/check-octave "the bound holds" "true && 3 > 2")]
+    (is (false? (:ok r)))))
+
+;; --- smt: an unsat that only searched part of the space ----------------------
+
+(deftest an-unsat-over-a-partly-pinned-family-is-rejected
+  ;; gen-13 a#336 recorded a REFUTATION of "the mod-15 condition for P_3000 is
+  ;; satisfiable" from an encoding containing `(assert (= y0 0))`. Z3's unsat
+  ;; was over the slice with y0 = 0, and the claim quantified over all of them.
+  ;; Whether pinning y0 is a sound symmetry break is a mathematical argument
+  ;; that is nowhere in the file.
+  ;;
+  ;; The tell is that the pin covers PART of a family: y0 is fixed while
+  ;; y1..y20 are free. That is a restriction of the search space, never a
+  ;; definition.
+  (let [decls (clojure.string/join
+               "\n" (for [i (range 21)] (str "(declare-fun y" i " () Int)")))
+        smt (str decls "\n(assert (= y0 0))\n(assert (>= (+ y1 y2) 3))\n(check-sat)")
+        r (f/check-smt "there exist y_i with every class covered" smt {:verdict :unsat})]
+    (is (false? (:ok r)))
+    (is (some #(re-find #"y0" %) (:warnings r))
+        "the warning names the pin that shrank the space")))
+
+(deftest a-pin-the-claim-discloses-is-left-to-the-judge
+  ;; Three artifacts in the same run pin y0 out of y0..y20. a#334 and a#337 say
+  ;; so — "fixes y0 = 0 by the class-permutation symmetry" — and a#336 does
+  ;; not, and a#336 is the one whose unsat did not survive removing the pin by
+  ;; hand. Whether a DISCLOSED reduction is sound is a mathematical argument
+  ;; about the problem, which is the reviewer's job; objecting to it here would
+  ;; be guessing, and a check that guesses gets routed around.
+  (let [decls (clojure.string/join
+               "\n" (for [i (range 21)] (str "(declare-fun y" i " () Int)")))
+        smt (str decls "\n(assert (= y0 0))\n(assert (>= (+ y1 y2) 3))\n(check-sat)")
+        r (f/check-smt (str "no assignment of the y_i covers every class, with y0"
+                            " fixed to 0 by the class-permutation symmetry")
+                       smt {:verdict :unsat})]
+    (is (true? (:ok r)) (str "unexpected warnings: " (:warnings r)))))
+
+(deftest a-defined-constant-is-not-a-pinned-variable
+  ;; `(assert (= L 3281866875))` defines a name. Nothing is excluded by it,
+  ;; and an encoding that names its constants this way is doing the right
+  ;; thing. Only a proper subset of a FAMILY reads as a restriction.
+  (let [decls (clojure.string/join
+               "\n" (for [i (range 21)] (str "(declare-fun y" i " () Int)")))
+        smt (str "(declare-fun L () Int)\n" decls
+                 "\n(assert (= L 3281866875))\n(assert (>= (+ y1 y2) L))\n(check-sat)")
+        r (f/check-smt "there exist y_i with every class covered" smt {:verdict :unsat})]
+    (is (true? (:ok r)) (str "unexpected warnings: " (:warnings r)))))
+
+(deftest a-fully-pinned-family-is-not-a-restriction
+  ;; Every y_i fixed is a ground check of one specific assignment, which is a
+  ;; legitimate thing to ask and a claim can say so. Nothing is half-searched.
+  (let [decls (clojure.string/join
+               "\n" (for [i (range 5)] (str "(declare-fun y" i " () Int)")))
+        pins (clojure.string/join
+              "\n" (for [i (range 5)] (str "(assert (= y" i " " i "))")))
+        r (f/check-smt "this specific assignment covers every class"
+                       (str decls "\n" pins "\n(check-sat)") {:verdict :unsat})]
+    (is (true? (:ok r)) (str "unexpected warnings: " (:warnings r)))))
+
+(deftest a-pin-under-a-sat-verdict-is-not-objected-to
+  ;; A pin narrows the space, so it can only make unsat prove less. A SAT
+  ;; verdict hands back a real assignment, and an assignment found inside a
+  ;; restricted space is still an assignment.
+  (let [decls (clojure.string/join
+               "\n" (for [i (range 21)] (str "(declare-fun y" i " () Int)")))
+        smt (str decls "\n(assert (= y0 0))\n(assert (>= (+ y1 y2) 3))\n(check-sat)")
+        r (f/check-smt "some assignment covers every class" smt {:verdict :sat})]
+    (is (true? (:ok r)) (str "unexpected warnings: " (:warnings r)))))
+
+;; --- lean gets the claim-side checks too -------------------------------------
+
+(deftest lean-claims-are-held-to-the-same-arithmetic
+  (let [r (f/check-lean
+           (str "all of the following 14 inequalities hold: for each r in {0,1,2},"
+                " A_r >= L; for each s in {0,..,4}, B_s >= L; for each t in {0,..,6},"
+                " C_t >= L")
+           "theorem foo : True := trivial")]
+    (is (false? (:ok r)))))
+
+(deftest a-lean-snippet-with-a-consistent-claim-passes
+  (let [r (f/check-lean "the sum of two odds is even"
+                        "theorem foo (a b : Nat) : Even (2*a + 1 + (2*b + 1)) := by omega")]
+    (is (true? (:ok r)) (str "unexpected warnings: " (:warnings r)))))

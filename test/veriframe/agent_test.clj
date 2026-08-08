@@ -30,6 +30,9 @@
             [veriframe.agent.state :as state]
             [veriframe.agent.tools :as tools]
             [veriframe.agent.verdict :as verdict]
+            [veriframe.engine.lean-pool :as lean-pool]
+            [veriframe.engine.lean-repl :as lean-repl]
+            [veriframe.engine.octave :as octave]
             [veriframe.engine.smt :as smt]
             [veriframe.llm.client :as llm]
             [clojure.data.json :as json]
@@ -1963,20 +1966,22 @@
 (defn- smt-artifact-status
   "Run verify_smt with Z3 stubbed to `verdict` and the faithfulness judge
   stubbed to `judge-reply`, and return the resulting claim-status."
-  [verdict judge-reply claim]
-  (let [c (db/connect ":memory:")
-        _ (db/migrate! c)
-        rid (runs/start-run! c {:problem "p" :beam-width 1})
-        b (state/new-branch {:id "B1" :problem "p"})]
-    (runs/open-branch! c rid {:branch-id "B1" :created-at-turn 0})
-    (with-redefs [smt/run-smt (fn [& _] {:status :ok :verdict verdict})
-                  llm/chat (fn [& _] {:content judge-reply})]
-      (-> (tools/run-tool {:branch b :turn 1 :conn c :run-id rid
-                           :tool-name "verify_smt"
-                           :args {:claim claim
-                                  :smtlib "(assert (>= (* 5 y) 1))(check-sat)"
-                                  :expectedVerdict "unsat"}})
-          :artifact :claim-status))))
+  ([verdict judge-reply claim] (smt-artifact-status verdict judge-reply claim nil))
+  ([verdict judge-reply claim args]
+   (let [c (db/connect ":memory:")
+         _ (db/migrate! c)
+         rid (runs/start-run! c {:problem "p" :beam-width 1})
+         b (state/new-branch {:id "B1" :problem "p"})]
+     (runs/open-branch! c rid {:branch-id "B1" :created-at-turn 0})
+     (with-redefs [smt/run-smt (fn [& _] {:status :ok :verdict verdict})
+                   llm/chat (fn [& _] {:content judge-reply})]
+       (-> (tools/run-tool {:branch b :turn 1 :conn c :run-id rid
+                            :tool-name "verify_smt"
+                            :args (merge {:claim claim
+                                          :smtlib "(assert (>= (* 5 y) 1))(check-sat)"
+                                          :expectedVerdict "unsat"}
+                                         args)})
+           :artifact :claim-status)))))
 
 (deftest an-smt-encoding-that-does-not-match-its-claim-is-not-confirmed
   ;; Three gen-11 artifacts shipped as confirmed while encoding a condition
@@ -1994,13 +1999,14 @@
                               "No subcollection satisfies the mod-3 layered condition"))
       "and an encoding it accepts still confirms"))
 
-(deftest the-faithfulness-check-fails-closed-and-costs-nothing-when-unconfirmed
+(deftest the-faithfulness-check-fails-closed-and-costs-nothing-when-there-is-no-assertion
   (is (= :unfaithful
          (smt-artifact-status :unsat "the judge rambled without a verdict line"
                               "some claim"))
       "an unreadable judge leaves the gate shut rather than defaulting open")
-  ;; A verdict that already refutes the claim never reaches the judge, so a
-  ;; stubbed llm/chat that would throw proves the call is not made.
+  ;; An ambiguous outcome asserts nothing — there is no claim and no negation
+  ;; to be unfaithful to — so the judge is never called. A stubbed llm/chat
+  ;; that throws proves it.
   (let [c (db/connect ":memory:")
         _ (db/migrate! c)
         rid (runs/start-run! c {:problem "p" :beam-width 1})
@@ -2008,12 +2014,28 @@
     (runs/open-branch! c rid {:branch-id "B1" :created-at-turn 0})
     (with-redefs [smt/run-smt (fn [& _] {:status :ok :verdict :sat})
                   llm/chat (fn [& _] (throw (ex-info "judge must not be called" {})))]
-      (is (= :refuted
+      (is (= :ambiguous
              (-> (tools/run-tool {:branch b :turn 1 :conn c :run-id rid
                                   :tool-name "verify_smt"
-                                  :args {:claim "c" :smtlib "(check-sat)"
-                                         :expectedVerdict "unsat"}})
-                 :artifact :claim-status))))))
+                                  :args {:claim "c" :smtlib "(check-sat)"}})
+                 :artifact :claim-status))
+          "no expectedVerdict means no assertion, so nothing to review"))))
+
+(deftest a-refutation-is-reviewed-like-a-confirmation
+  ;; It used to skip the judge, on the reasoning that a refuted artifact
+  ;; substantiates nothing. It substantiates the NEGATION, which the branch
+  ;; believes, the claims registry hands to other branches as settled, and
+  ;; nobody re-runs. gen-13 refuted "the mod-15 condition for P_3000 is
+  ;; satisfiable" from an encoding that pinned y0 = 0 — the claim quantified
+  ;; over every y0, so the unsat was about a different question.
+  (is (= :unfaithful
+         (smt-artifact-status :unsat "GAP: the encoding pins y0\nVERDICT: FAIL"
+                              "some claim" {:expectedVerdict "sat"}))
+      "an encoding review rejects blocks the refutation too")
+  (is (= :refuted
+         (smt-artifact-status :unsat "GAPS: none\nVERDICT: PASS"
+                              "some claim" {:expectedVerdict "sat"}))
+      "and one it accepts still refutes"))
 
 ;; --- forking twice must not collide -----------------------------------------
 
@@ -2154,6 +2176,110 @@
       (is (= 1 (count evs)) "and the objection is journalled")
       (is (str/includes? (:data (first evs)) "17361625")
           "naming the coefficient, so the branch's next turn can fix it"))))
+
+;; --- the other three engines face the same two layers -----------------------
+
+(defn- fresh-run []
+  (let [c (db/connect ":memory:")
+        _ (db/migrate! c)
+        rid (runs/start-run! c {:problem "p" :beam-width 1})]
+    (runs/open-branch! c rid {:branch-id "B1" :created-at-turn 0})
+    [c rid (state/new-branch {:id "B1" :problem "p"})]))
+
+(deftest an-octave-check-over-literals-is-blocked-before-the-judge
+  ;; gen-13 a#344: a CONFIRMED artifact whose whole code was `1.014488 > 1`.
+  ;; The glpk solve behind that number ran on an earlier turn and appears
+  ;; nowhere in the row, and the expression would have confirmed any claim
+  ;; stapled to it. Octave had neither layer at the time. llm/chat throws, so
+  ;; this passes only if the deterministic check settles it first.
+  (let [[c rid b] (fresh-run)]
+    (with-redefs [octave/create-session (fn [& _] {:dir "/tmp/x" :log (atom [])
+                                                   :alive (atom true)})
+                  octave/check (fn [& _] {:ok true :verdict true :tol 0 :exact true})
+                  llm/chat (fn [& _] (throw (ex-info "judge must not be called" {})))]
+      (let [r (tools/run-tool {:branch b :turn 1 :conn c :run-id rid
+                               :tool-name "verify_octave"
+                               :args {:claim "the LP dual value exceeds 1"
+                                      :expr "1.014488 > 1"}})]
+        (is (= :unfaithful (get-in r [:artifact :claim-status])))
+        (is (= :failure (:category r)))))))
+
+(deftest an-octave-artifact-carries-the-workspace-that-produced-its-numbers
+  ;; The Prolog artifact had this exact defect and the same fix: a goal, or an
+  ;; expression, is meaningless without the definitions behind it.
+  (let [[c rid b] (fresh-run)
+        log (atom [{:code "A = solve_lp();"} {:code "val = A(1);"}])]
+    (with-redefs [octave/create-session (fn [& _] {:dir "/tmp/x" :log log
+                                                   :alive (atom true)})
+                  octave/check (fn [& _] {:ok true :verdict true :tol 0 :exact true})
+                  llm/chat (fn [& _] {:content "GAPS: none\nVERDICT: PASS"})]
+      (let [code (-> (tools/run-tool {:branch b :turn 1 :conn c :run-id rid
+                                      :tool-name "verify_octave"
+                                      :args {:claim "the LP value exceeds 1"
+                                             :expr "val > 1"}})
+                     :artifact :code)]
+        (is (str/includes? code "A = solve_lp();"))
+        (is (str/includes? code "val > 1"))))))
+
+(deftest a-lean-theorem-that-is-not-the-claim-is-not-confirmed
+  ;; Lean checks proofs, not statements. A declaration can elaborate perfectly
+  ;; and be about something else — a narrower range, an unused hypothesis, a
+  ;; definition that is subtly the wrong object.
+  (let [[c rid b] (fresh-run)
+        run (fn [judge-reply]
+              (with-redefs [lean-repl/create-session (fn [& _] {:id "s"})
+                            lean-repl/mathlib-env (fn [& _] nil)
+                            lean-pool/checkout! (fn [& _] {:id "s"})
+                            lean-repl/run-command (fn [& _] {:ok true :sorries []})
+                            llm/chat (fn [& _] {:content judge-reply})]
+                (-> (tools/run-tool {:branch b :turn 1 :conn c :run-id rid
+                                     :tool-name "verify_lean"
+                                     :args {:claim "every odd covering needs four primes"
+                                            :lean "theorem foo : 1 + 1 = 2 := by rfl"}})
+                    :artifact :claim-status)))]
+    (is (= :unfaithful (run "GAP: proves 1+1=2, not the claim\nVERDICT: FAIL")))
+    (is (= :confirmed (run "GAPS: none\nVERDICT: PASS")))))
+
+(deftest a-lean-snippet-lean-rejects-records-no-artifact
+  ;; It used to record one with claim-status :refuted, so a type error or a
+  ;; failed tactic read as evidence AGAINST the claim. A proof that does not
+  ;; compile says nothing about whether the statement is true. The failure log
+  ;; keeps the record; the artifact table should not.
+  (let [[c rid b] (fresh-run)]
+    (with-redefs [lean-repl/create-session (fn [& _] {:id "s"})
+                  lean-repl/mathlib-env (fn [& _] nil)
+                  lean-pool/checkout! (fn [& _] {:id "s"})
+                  lean-repl/run-command (fn [& _] {:ok false :sorries []
+                                                   :errors [{:data "unknown identifier"}]})
+                  llm/chat (fn [& _] (throw (ex-info "judge must not be called" {})))]
+      (let [r (tools/run-tool {:branch b :turn 1 :conn c :run-id rid
+                               :tool-name "verify_lean"
+                               :args {:claim "some claim"
+                                      :lean "theorem foo : True := nonsense"}})]
+        (is (nil? (:artifact r)) "a broken proof is not a refutation")
+        (is (= :failure (:category r)))))))
+
+(deftest a-template-cross-check-does-not-stand-in-for-review
+  ;; verify_template ran two encodings and told the model "this needs no
+  ;; separate review." Both are built from the SAME model-supplied slots, so
+  ;; agreement shows the instantiation was consistent and says nothing about
+  ;; whether the values are the ones the claim names.
+  (let [[c rid b] (fresh-run)
+        run (fn [judge-reply]
+              (with-redefs [smt/run-template
+                            (fn [& _] {:status :ok :confirmed true :agreed true
+                                       :note "both agree"
+                                       :primary {:smtlib "(assert (>= n 7))(check-sat)"
+                                                 :verdict :unsat :expected :unsat}
+                                       :cross {:verdict :sat :expected :sat}})
+                            llm/chat (fn [& _] {:content judge-reply})]
+                (-> (tools/run-tool {:branch b :turn 1 :conn c :run-id rid
+                                     :tool-name "verify_template"
+                                     :args {:claim "no n below 5 works"
+                                            :template "t" :slots {:n 7}}})
+                    :artifact :claim-status)))]
+    (is (= :unfaithful (run "GAP: the slot is 7, the claim says 5\nVERDICT: FAIL")))
+    (is (= :confirmed (run "GAPS: none\nVERDICT: PASS")))))
 
 ;; --- a truncated turn is retried, not spent ---------------------------------
 
