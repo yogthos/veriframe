@@ -112,12 +112,54 @@
 
 ;; --- one turn ---------------------------------------------------------------
 
-(defn- call-model [ctx branch]
-  (try
-    (let [r (llm/chat (:llm-adapter ctx) (:llm-config ctx) (:messages branch))]
-      {:ok true :response r})
-    (catch Throwable e
-      {:ok false :error (ex-message e)})))
+(def ^:private max-call-attempts
+  "One retry, then the turn is spent. Unbounded escalation here would let a
+  single turn eat a branch's whole budget, and a model that has not reached a
+  tool call in twice its cap is not one token short."
+  2)
+
+(defn- truncated-without-call?
+  "The response ran out of tokens before it emitted a usable tool call.
+
+  fence/signals already separates this from `:no-fence` and its docstring says
+  what to do about it — 'the fix is more tokens, not more steering' — but the
+  loop steered anyway and forfeited the turn. gen-12 opened with three of these
+  in a single round; gen-11 spent 12% of its turns this way against gen-10's
+  4%. Truncation that still carried a call is a complete turn and is left
+  alone."
+  [response]
+  (let [parsed (fence/parse-tool-call (:content response))]
+    (and (:truncated (fence/signals response parsed))
+         (or (nil? parsed) (= "__parse_error__" (:name parsed))))))
+
+(defn- call-model
+  "One model call, retried once at a doubled budget when the first response hit
+  the token cap before emitting a tool call.
+
+  Same sizing as the judge's: double the configured budget rather than repeat
+  it, since a response that ran out of room needs room, and repeating the call
+  at the same cap reproduces the same truncation."
+  [ctx branch]
+  (loop [attempt 1]
+    (let [budget (when-let [base (:max-tokens (:llm-config ctx))]
+                   (* base (bit-shift-left 1 (dec attempt))))
+          r (try
+              {:ok true
+               :response (llm/chat (:llm-adapter ctx) (:llm-config ctx)
+                                   (:messages branch)
+                                   (when budget {:max-tokens budget}))}
+              (catch Throwable e
+                {:ok false :error (ex-message e)}))]
+      (if (and (:ok r)
+               (< attempt max-call-attempts)
+               (truncated-without-call? (:response r)))
+        (do (when (and (:conn ctx) (:run-id ctx))
+              (journal/note! (:conn ctx) (:run-id ctx) :turn-retry
+                             {:branch-id (:id branch)
+                              :data {:reason "truncated before any tool call"
+                                     :budget budget}}))
+            (recur (inc attempt)))
+        r))))
 
 (defn- settle-predictions!
   "Close out any prediction whose window has passed or whose expectation the

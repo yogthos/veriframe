@@ -31,6 +31,7 @@
   (:require [clojure.java.io :as io]
             [clojure.string :as str]
             [veriframe.agent.claims :as claims]
+            [veriframe.agent.faithful :as faithful]
             [veriframe.agent.state :as state]
             [veriframe.agent.verdict :as verdict]
             [veriframe.engine.lean-pool :as lean-pool]
@@ -208,8 +209,18 @@
   Only asked of a would-be confirmation. A refuted or ambiguous artifact
   substantiates nothing, so paying a judge to inspect its encoding buys
   nothing, and confirmations are the ones that propagate into other branches."
-  [ctx claim code opts]
-  (verdict/passed? (judge ctx (faithfulness-prompt claim code opts))))
+  [ctx claim code {:keys [structural] :as opts}]
+  (let [{:keys [ok warnings]} (or structural {:ok true})]
+    (if-not ok
+      ;; A deterministic objection settles it. These fire on arithmetic or
+      ;; syntax, never on judgement, so there is nothing for a reviewer to
+      ;; weigh — and asking anyway invites it to talk the objection away.
+      (do (when (and (:conn ctx) (:run-id ctx))
+            (journal/note! (:conn ctx) (:run-id ctx) :structural-objection
+                           {:branch-id (:id (:branch ctx)) :turn (:turn ctx)
+                            :data {:claim claim :warnings warnings}}))
+          false)
+      (verdict/passed? (judge ctx (faithfulness-prompt claim code opts))))))
 
 
 ;; --- Prolog -----------------------------------------------------------------
@@ -299,7 +310,8 @@
                              ctx claim code
                              {:engine "a Prolog program and a goal to run against it"
                               :outcome "The goal succeeded"
-                              :extra prolog-faithfulness-note}))
+                              :extra prolog-faithfulness-note
+                              :structural (faithful/check-prolog claim code)}))
                        :unfaithful
                        :else :confirmed)]
           {:branch branch
@@ -372,7 +384,8 @@
                               (not (encoding-faithful?
                                     ctx claim smtlib
                                     {:engine "an SMT-LIB encoding"
-                                     :outcome (str "Z3 returned " (name (:verdict r)))})))
+                                     :outcome (str "Z3 returned " (name (:verdict r)))
+                                     :structural (faithful/check-smt claim smtlib)})))
                        :unfaithful
                        status)]
           (merge

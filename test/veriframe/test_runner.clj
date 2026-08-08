@@ -25,10 +25,12 @@
             [veriframe.gui-style-test]
             [veriframe.gui-input-test]
             [veriframe.gui-mathtext-test]
-            [veriframe.gui-newrun-test]))
+            [veriframe.gui-newrun-test]
+            [veriframe.faithful-test]))
 
 (def namespaces
-  '[veriframe.store-test
+  '[veriframe.faithful-test
+    veriframe.store-test
     veriframe.llm-test
     veriframe.agent-test
     veriframe.pool-test

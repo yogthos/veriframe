@@ -2121,3 +2121,81 @@
                              :judge-reply "irrelevant, must not be called"
                              :claim "c" :check "r"})
              :artifact :claim-status))))
+
+;; --- the deterministic gate blocks before the judge is paid for -------------
+
+(deftest a-structural-objection-blocks-without-calling-the-judge
+  ;; The whole point of the deterministic checks is that they are free and
+  ;; certain. If a defect can be settled by arithmetic, asking a reviewer is
+  ;; both wasted money and an opportunity for it to be talked out of the
+  ;; objection — the drift failure in vf-5wi. So llm/chat throws here: the
+  ;; test passes only if it is never reached.
+  (let [c (db/connect ":memory:")
+        _ (db/migrate! c)
+        rid (runs/start-run! c {:problem "p" :beam-width 1})
+        b (state/new-branch {:id "B1" :problem "p"})
+        L 3281866875
+        term (fn [coef i] (str "(ite (= y" i " 0) " coef " 0)"))
+        good [(quot (* 15 L) 45) (quot (* 15 L) 2835)
+              (quot (* 3 L) 9) (quot (* 5 L) 25) (quot L 7)]
+        ;; 17361625 is gen-13's actual typo; 15L/2835 = 17364375.
+        smt (str "(assert (>= (+ " (str/join " " (map term good (range)))
+                 " " (term 17361625 99) ") " L "))(check-sat)")]
+    (runs/open-branch! c rid {:branch-id "B1" :created-at-turn 0})
+    (with-redefs [smt/run-smt (fn [& _] {:status :ok :verdict :unsat})
+                  llm/chat (fn [& _] (throw (ex-info "judge must not be called" {})))]
+      (let [r (tools/run-tool {:branch b :turn 1 :conn c :run-id rid
+                               :tool-name "verify_smt"
+                               :args {:claim "the layered condition with L = 3281866875"
+                                      :smtlib smt :expectedVerdict "unsat"}})]
+        (is (= :unfaithful (get-in r [:artifact :claim-status]))
+            "a coefficient matching no modulus blocks the confirmation")))
+    (let [evs (filter #(= "structural-objection" (:kind %)) (journal/events-since c rid 0))]
+      (is (= 1 (count evs)) "and the objection is journalled")
+      (is (str/includes? (:data (first evs)) "17361625")
+          "naming the coefficient, so the branch's next turn can fix it"))))
+
+;; --- a truncated turn is retried, not spent ---------------------------------
+
+(deftest a-response-truncated-before-any-tool-call-is-retried-at-a-doubled-budget
+  ;; fence/signals already separates :truncated from :no-fence and says why:
+  ;; a reply that hit the cap mid-thought never reached the fence, and "the fix
+  ;; is more tokens, not more steering." The branch loop steered anyway, and
+  ;; spent the turn. gen-12 opened with three of these in one round, gen-11 ran
+  ;; a 12% no-call rate against gen-10's 4%.
+  (let [calls (atom [])]
+    (with-redefs [llm/chat (fn [_ _ _ & [opts]]
+                             (swap! calls conj (:max-tokens opts))
+                             (if (= 1 (count @calls))
+                               {:content "thinking..." :finish-reason "length"}
+                               {:content "```tool-call\n{\"name\":\"thesis\"}\n```"
+                                :finish-reason "stop"}))]
+      (let [ctx {:llm-adapter :a :llm-config {:max-tokens 16384}}
+            r (#'aloop/call-model ctx {:messages []})]
+        (is (true? (:ok r)))
+        (is (= 2 (count @calls)) "the truncated call is retried rather than spent")
+        (is (= [16384 32768] @calls)
+            "and the retry doubles the budget instead of repeating it")
+        (is (str/includes? (:content (:response r)) "tool-call")
+            "the retry's response is the one returned")))))
+
+(deftest a-truncated-response-that-still-carried-a-call-is-not-retried
+  ;; Truncation only matters when it cost the tool call. A reply that emitted
+  ;; its fence and then ran out of room is a complete turn.
+  (let [calls (atom 0)]
+    (with-redefs [llm/chat (fn [& _]
+                             (swap! calls inc)
+                             {:content "```tool-call\n{\"name\":\"thesis\"}\n```\nand then"
+                              :finish-reason "length"})]
+      (#'aloop/call-model {:llm-adapter :a :llm-config {:max-tokens 16384}} {:messages []})
+      (is (= 1 @calls)))))
+
+(deftest a-model-that-never-calls-a-tool-stops-after-the-doubled-attempt
+  ;; The escalation is bounded: one retry, then the turn is spent as before.
+  ;; An unbounded loop here would burn a branch's whole budget on one turn.
+  (let [calls (atom 0)]
+    (with-redefs [llm/chat (fn [& _]
+                             (swap! calls inc)
+                             {:content "still thinking" :finish-reason "length"})]
+      (#'aloop/call-model {:llm-adapter :a :llm-config {:max-tokens 16384}} {:messages []})
+      (is (= 2 @calls)))))
