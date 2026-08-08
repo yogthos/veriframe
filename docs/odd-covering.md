@@ -437,6 +437,44 @@ flipping at $343 = 7^3$.
 | all $3,5,11,13$-smooth odd $m>1$ | $\ge 1$       | **yes**          | — (mod-15 integrality, slack $283/960$)  | **cannot cover** |
 | all $3,7,11,13$-smooth odd $m>1$ | $\ge 1$       | **yes**          | — (mod-21 integrality, slack $3313/1440$) | **cannot cover** |
 
+## Finding 10 — the $\{3,5,7,q\}$ family is closed except at $q=11$
+
+The four-prime supports are infinite, so they cannot be enumerated. They can
+be handled uniformly instead, and the mod-$105$ bound does it.
+
+**The bound is monotone in the fourth prime.** For support $\{3,5,7,q\}$ every
+constant depends on $q$ only through $T = q/(q-1)$: the tail is
+$F_1 = 1/(q-1)$ and $A_g = T\,C_g - 1$ with
+$C_g = \prod_{p \mid g} \tfrac{p}{p-1}$, so
+$C_3 = \tfrac32, C_5 = \tfrac54, C_7 = \tfrac76, C_{15} = \tfrac{15}{8},
+C_{21} = \tfrac74, C_{35} = \tfrac{35}{24}, C_{105} = \tfrac{35}{16}$. Then
+
+$$S(q) = s\cdot\tfrac{q-2}{q-1} - \sum_g A_g(q)\,M_g - A_{105}(q).$$
+
+As $q$ grows $T$ falls toward $1$, so every $A_g$ falls while $s(q-2)/(q-1)$
+rises: $S$ is increasing in $q$. Proved rather than observed — Z3 is given
+$s, M_3, \dots, M_{35}, q_1, q_2$ free, the hypotheses $q_2 > q_1 > 1$ and
+all counts nonnegative, **and the negation** $S(q_1) > S(q_2)$, and returns
+unsat. Since the uncovered-class combinatorics depend only on residues mod
+$105$ and $q$ is coprime to $105$, the same $1{,}157{,}625$ assignments serve
+every $q$, so the *minimum* over assignments is monotone too.
+
+**$q = 13$ is already positive.** Over all $1{,}157{,}625$ translation-reduced
+assignments the minimum scaled slack for $\{3,5,7,13\}$ is $+335$ at
+denominator $576$ — that is $\tfrac{335}{576} \approx 0.5816 > 0$ — attained
+at $(1,1,2,4)$ with the same data $s=36$, $(M_3,\dots,M_{35}) =
+(23,11,7,6,4,2)$ that is worst for $q=11$.
+
+**Therefore $\{3,5,7,q\}$ is infeasible for every prime $q \ge 13$**, and with
+$S(11) = -\tfrac{647}{480} < 0$ the single surviving member of the family is
+$q = 11$. One computation at $q=13$ plus one monotonicity proof retires an
+infinite family.
+
+*Engine-confirmed:* a\#366 (Z3, monotonicity) and a\#367 (Octave, the $q=13$
+minimum). Both re-derived independently in exact rational arithmetic: all
+eight $q=13$ coefficients $(528,360,204,152,594,516,334,789)$ reproduce, and
+a full re-enumeration returns $335$ at the same assignment.
+
 ## The four-prime frontier
 
 Finding 9 retires every support with three primes or fewer, so individual
@@ -458,8 +496,12 @@ from the support gives:
 | ------- | -------- | --------- | - |
 | $\{3,5,11,13\}$ | $15$ | $+283/960$   | closed |
 | $\{3,7,11,13\}$ | $21$ | $+3313/1440$ | closed |
-| $\{3,5,7,13\}$  | $15$ | $-553/576$   | **open** |
-| $\{3,5,7,11\}$  | $15$ | $-623/480$   | **open** |
+| $\{3,5,7,q\},\ q \ge 13$ | $105$ | $\ge +335/576$ | closed — Finding 10 |
+| $\{3,5,7,11\}$  | $105$ | $-647/480$   | **open** |
+
+The $q=15$ column that once showed $\{3,5,7,13\}$ at $-553/576$ is superseded:
+the bound is much stronger at $q=105$, where that support is $+335/576$.
+$\{3,5,7,11\}$ is negative at both.
 
 with $F_1 = 17/60$, $A_3 = 37/40$, $A_5 = 29/48$, $A_{15} = 45/32$ for
 $\{3,5,7,11\}$. The worst assignment is $(r_3,r_5,y) = (0,0,1)$, $s=7$,
