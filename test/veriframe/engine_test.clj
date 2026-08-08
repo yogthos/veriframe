@@ -484,6 +484,41 @@ sidon(S) :- sums(S, Sums), sort(Sums, Sorted), length(Sums, N), length(Sorted, N
         "nosuchvariable")  ; and neither is an error
       (is (true? (:verdict (octave/check s "det(M) != 0")))))))
 
+(deftest an-octave-error-says-what-expr-is-actually-for
+  ;; Pure string mapping, so it runs whether or not octave is installed.
+  ;;
+  ;; gen-14 lost three turns in five to this. A branch building an LP check
+  ;; wrote statements into `expr` and got Octave's own "invalid use of
+  ;; statement list", then tried to define a helper inline and got
+  ;; "'check_farkas' undefined". Neither says the thing the model needed to
+  ;; know: `expr` is ONE expression evaluated against the workspace, and
+  ;; everything that needs statements goes through octave_eval first, which is
+  ;; what keeps them in the workspace at all. vf_check already explains itself
+  ;; when handed a matrix; these two deserve the same.
+  (testing "statements in expr name octave_eval as the place for them"
+    (let [m (octave/explain-check-error "parse error:\n\n  invalid use of statement list")]
+      (is (str/includes? m "octave_eval"))
+      (is (re-find #"(?i)one expression" m))))
+  (testing "an undefined name suggests it was never defined in the workspace"
+    (let [m (octave/explain-check-error "'check_farkas' undefined")]
+      (is (str/includes? m "octave_eval"))
+      (is (str/includes? m "check_farkas")
+          "naming it, so the branch knows which one is missing")))
+  (testing "anything else is passed through untouched"
+    (is (= "the expression produced NaN, which is not a verdict"
+           (octave/explain-check-error
+            "the expression produced NaN, which is not a verdict")))))
+
+(deftest octave-check-explains-a-statement-list-error
+  ;; The same thing end to end, so the mapping is actually wired into `check`
+  ;; and not merely available.
+  (with-octave
+    (fn [s]
+      (let [r (octave/check s "x = 1; y = 2; x < y")]
+        (is (false? (:ok r)))
+        (is (str/includes? (:error r) "octave_eval")
+            (str "unhelpful error: " (:error r)))))))
+
 (deftest octave-records-whether-a-verdict-was-exact
   ;; The distinction this engine turns on. A result true within a tolerance has
   ;; established something weaker than one true by exact arithmetic, and the

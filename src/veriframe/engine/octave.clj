@@ -145,6 +145,41 @@
     (when (:ok r) (swap! (:log session) conj {:code (str code)}))
     r))
 
+(defn explain-check-error
+  "Turn Octave's own complaint about a bad `expr` into one that says what
+  `expr` is for, or pass it through.
+
+  `check` evaluates ONE expression against the workspace. A model that writes
+  statements into it, or tries to define a helper there, gets a parser message
+  with no hint of that: `invalid use of statement list`, or the name it just
+  tried to define reported as undefined. Neither points at `octave_eval`,
+  which is where statements belong and the only reason the workspace has
+  anything in it.
+
+  Measured cost: three of five consecutive failed turns on one gen-14 branch,
+  which was building an LP check and kept losing the turn to this. vf_check
+  already explains itself when handed a matrix — `wrap it in all(...) or
+  any(...) to say which you mean` — and these two cases had been left raw."
+  [error]
+  (let [e (str error)]
+    (cond
+      (or (str/includes? e "invalid use of statement list")
+          (re-find #"(?i)parse error.*\n.*=\s*$" e))
+      (str "`expr` must be ONE expression that reduces to a scalar logical, and"
+           " this is a list of statements. Run the statements with octave_eval"
+           " first — the workspace persists across calls, so anything they"
+           " define is still there — then pass verify_octave just the"
+           " comparison that decides the claim. Octave said: " e)
+
+      (re-find #"'([^']+)' undefined" e)
+      (let [n (second (re-find #"'([^']+)' undefined" e))]
+        (str "`" n "` does not exist in the workspace. verify_octave only"
+             " EVALUATES an expression; it cannot define anything. If `" n "`"
+             " is a helper function or a value you meant to compute, create it"
+             " with octave_eval first and then check it here. Octave said: " e))
+
+      :else e)))
+
 (defn check
   "Evaluate `expr`, which must reduce to a logical scalar.
 
@@ -157,6 +192,9 @@
   found false, which is a result. {:ok false} means it could not be evaluated."
   ([session expr] (check session expr 0))
   ([session expr tol]
-   (run-op session {:op "check" :expr (str expr) :tol (or tol 0)})))
+   (let [r (run-op session {:op "check" :expr (str expr) :tol (or tol 0)})]
+     (cond-> r
+       (and (not (:ok r)) (:error r))
+       (update :error explain-check-error)))))
 
 (defn snapshot [session] @(:log session))
