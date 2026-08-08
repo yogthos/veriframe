@@ -434,19 +434,58 @@ flipping at $343 = 7^3$.
 | all $3,5,7$-smooth odd $m>1$   | $19/16 \ge 1$   | **yes**          | — (mod-15 integrality)  | **cannot cover** (Finding 9) |
 | all $3,5,11$-smooth odd $m>1$  | $17/16 \ge 1$   | **yes**          | — (mod-15 integrality)  | **cannot cover** (Finding 9) |
 | all $3,5,13$-smooth odd $m>1$  | $33/32 \ge 1$   | **yes**          | — (mod-15 integrality)  | **cannot cover** (Finding 9) |
+| all $3,5,11,13$-smooth odd $m>1$ | $\ge 1$       | **yes**          | — (mod-15 integrality, slack $283/960$)  | **cannot cover** |
+| all $3,7,11,13$-smooth odd $m>1$ | $\ge 1$       | **yes**          | — (mod-21 integrality, slack $3313/1440$) | **cannot cover** |
 
-**Next targets.** Finding 9 retires every support with three primes or
-fewer, so individual finite sets inside them are no longer worth settling —
-the frontier is now four-prime supports. Of these, $\{3,5,7,11\}$ is the
-densest at $\prod p/(p-1) = 2.40625$ and is the natural next objective.
+## The four-prime frontier
 
-The method to try first is the one that worked: pick $q$ dividing the
-support, find the moduli with $g/m = 1$ (they fully cover their classes and
-are what integrality bites on), and bound the tail's reach against the
-classes they miss. For $\{3,5,7,11\}$ the candidate partitions are $q = 15$,
-$q = 21$, $q = 35$ and $q = 105$; the unit-weight moduli for $q=105$ are
-$3,5,7,15,21,35,105$, which is a much richer set of atoms than the three
-available at $q=15$.
+Finding 9 retires every support with three primes or fewer, so individual
+finite sets inside them are no longer worth settling. Four-prime supports are
+the frontier, and unlike three primes they are an **infinite** family:
+$\{3,5,7,q\}$ has $\prod p/(p-1) = \tfrac{35}{16}\cdot\tfrac{q}{q-1} > 2$ for
+every prime $q$. Enumeration cannot close them. Any argument has to be uniform
+in the fourth prime.
+
+Two structural facts survive from three primes. $3$ lies in every
+density-feasible four-prime support — the largest product without it is
+$\{5,7,11,13\}$ at $1.7378 < 2$. But $5$ no longer must: $\{3,7,11,13\}$
+reaches $2.0854$.
+
+Running the Finding 9 bound over four-prime supports at every $q = pp'$ built
+from the support gives:
+
+| Support | best $q$ | min slack | |
+| ------- | -------- | --------- | - |
+| $\{3,5,11,13\}$ | $15$ | $+283/960$   | closed |
+| $\{3,7,11,13\}$ | $21$ | $+3313/1440$ | closed |
+| $\{3,5,7,13\}$  | $15$ | $-553/576$   | **open** |
+| $\{3,5,7,11\}$  | $15$ | $-623/480$   | **open** |
+
+with $F_1 = 17/60$, $A_3 = 37/40$, $A_5 = 29/48$, $A_{15} = 45/32$ for
+$\{3,5,7,11\}$. The worst assignment is $(r_3,r_5,y) = (0,0,1)$, $s=7$,
+$\max_3 = 4$, $\max_5 = 2$ — the same one that is tightest for every support
+the argument does settle.
+
+$\{3,5,7,11\}$ is the hardest member of the $\{3,5,7,q\}$ family, because
+$F_1 = \tfrac{7}{6}\cdot\tfrac{q}{q-1} - 1$ is largest at $q=11$ and decreases
+to $1/6$. A bound monotone in $F_1$ that closes $q=11$ closes the whole
+infinite family at once. That is the shape of the result worth having.
+
+**What has not been tried.** $q = 105$, for either open support. Its
+unit-weight moduli are $3,5,7,15,21,35,105$ — a much richer set of atoms than
+the three at $q=15$ — but a brute-force sweep is
+$3\cdot5\cdot7\cdot15\cdot21\cdot35\cdot105 = 361{,}675{,}125$ assignments.
+Translation invariance mod $105$ fixes $r_3 = r_5 = r_7 = 0$ without loss and
+cuts it to $1{,}157{,}625$. Note that a finer $q$ is not automatically
+stronger *for this bound*: among semiprimes, $q=15$ beats $21$, $33$, $35$,
+$55$ and $77$ for $\{3,5,7,11\}$, and by a wide margin.
+
+The bound is also crude in a specific, fixable way. It charges every $g=3$
+modulus the full $\max_3$, as though each could serve the fullest block; in
+truth they compete, and a modulus assigned to a sparser block contributes
+less. Accounting for the assignment rather than taking the maximum for every
+modulus is strictly stronger and may close $\{3,5,7,11\}$ without needing
+$q=105$ at all.
 
 What will *not* work, and is now proved rather than suspected: any argument
 that only counts. The aggregated real relaxation is feasible in the limit
@@ -466,13 +505,21 @@ already settled. Expect the same one step up.
   `94452de2-0dfd-442a-bc4d-596ede4a1fc9` (2026-08-07), each after the first
   seeded from the run before it, all `deepseek-v4-flash` with artifact
   sharing on, beam width 2 through generation 4 and 3 thereafter.
-- Generations 10–13 (2026-08-07/08): `05ecb88a-52d7-4d72-acaf-d389aa367112`,
+- Generations 10–14 (2026-08-07/08): `05ecb88a-52d7-4d72-acaf-d389aa367112`,
   `90336412-b135-422c-a9cf-116064890e12`,
   `98d0423e-ddf6-46a5-97a6-b6493ec82e03`,
-  `6f6704f4-00da-4a48-8db6-49bb56ca8ddb`. Generations 12 and 13 were run
+  `6f6704f4-00da-4a48-8db6-49bb56ca8ddb`,
+  `21104871-49a9-4b2c-b7c4-3f6959795e17`. Generations 12 onward were run
   **unseeded**: generation 11 left false artifacts marked confirmed (see the
   corrections in Finding 9), and `seed_run` imports on `claim_status =
   'confirmed'`, so seeding would have carried them forward as established.
+  Generation 11's row still reads `running` in the journal — the process died
+  without the supervisor noticing, which is the failure the run-error
+  journalling now catches. Clearing that row needs a direct write to
+  `veriframe.sqlite3` and has not been done.
+- The four-prime frontier table is likewise hand-computed, in exact rational
+  arithmetic, by the same program that reproduces Finding 9's constants and
+  all three of its slacks exactly. It has not been through the engines.
 - Every claim above sits in the run journal as a confirmed artifact with
   the exact engine code that verified it (`GET /v1/runs/:id/journal`).
   Cross-run continuation can import them with `seed_run`.
