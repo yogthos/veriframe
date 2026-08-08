@@ -413,6 +413,27 @@
   (when (:octave b) (try (octave/dispose! (:octave b)) (catch Throwable _ nil)))
   (when (:prolog b) (try (prolog/dispose! (:prolog b)) (catch Throwable _ nil))))
 
+(defn- record-inactive!
+  "Write the ending of every branch in `branches` that is no longer active.
+
+  One place, keyed on `state/active?` alone, because splitting this by
+  outcome is what let a shipped branch fall between two loops: `done` leaves
+  {:status :done :final-answer ...}, which is neither `active?` (so the
+  run-end loop skipped it) nor answer-free (so the cull loop skipped it),
+  and the branch stayed 'active' in the record for the rest of time. The
+  status written is the branch's own, so a cull reads culled and a ship
+  reads done.
+
+  Engines are released here rather than at run end. A Lean session holds
+  ~0.83GB, so a branch that stopped at turn 10 of 80 sat on that for the
+  other 70 turns. The run-end `finally` still covers everything, including
+  branches still alive; this only stops a finished one holding memory it
+  can no longer use."
+  [{:keys [conn run-id]} branches]
+  (doseq [b branches :when (not (state/active? b))]
+    (runs/close-branch! conn run-id (:id b) (:status b) (:inactive-reason b))
+    (dispose-branch-engines! b)))
+
 (defn- finish-now?
   "Should a shipped branch end the run? Returns the winning branch, or nil to
   keep exploring.
@@ -545,19 +566,7 @@
                                        (if (state/active? b') alive (dec alive))]))
                                   [[] (count advanced)]
                                   advanced))
-                  _ (doseq [b culled
-                            :when (and (not (state/active? b))
-                                       (not (:final-answer b)))]
-                      (runs/close-branch! conn run-id (:id b) (:status b)
-                                          (:inactive-reason b))
-                      ;; Release the engines as the branch goes inactive rather
-                      ;; than at run end. A Lean session holds ~0.83GB, so a
-                      ;; branch culled at turn 10 of 80 was sitting on that for
-                      ;; the other 70 turns. The run-end `finally` still covers
-                      ;; everything, including the branches still alive; this
-                      ;; only stops a dead branch holding memory it can no
-                      ;; longer use.
-                      (dispose-branch-engines! b))
+                  _ (record-inactive! ctx culled)
                   inactive (filterv (complement state/active?) branches)
                   all-now (into (vec inactive) culled)
                   ;; Grow the frontier where the evidence is: after the cull,

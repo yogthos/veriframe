@@ -1232,6 +1232,45 @@
                     {:config {:run {:stop-on-first-done? false}}}
                     shipped [shipped (assoc working :status :culled)])))))))
 
+(deftest a-shipped-branch-is-recorded-as-finished
+  ;; vf-7hz. `done` sets {:status :done :final-answer ...}, and both places
+  ;; that wrote a branch's ending missed exactly that pair: the post-cull
+  ;; loop skipped anything holding a final answer, and the run-end loop only
+  ;; wrote branches still `active?`. So a branch that SHIPPED — the one
+  ;; outcome the run exists to produce — kept status 'active' in the record
+  ;; and never emitted branch-closed.
+  ;;
+  ;; Gen-10 of the covering campaign completed with all nine surviving
+  ;; branches shipped and all nine still reading 'active'. The GUI folds
+  ;; branch status from branch-closed events, so a finished run drew nine
+  ;; live branches, and the working indicator keys on :active as well.
+  (with-db [c]
+    (let [rid (runs/start-run! c {:problem "p" :beam-width 3})
+          status-of (fn [id] (-> (db/fetch c ["SELECT status, inactive_reason
+                                               FROM branches
+                                               WHERE run_id = ? AND id = ?" rid id])
+                                 first))]
+      (doseq [id ["B1" "B2" "B3"]]
+        (runs/open-branch! c rid {:branch-id id :created-at-turn 0}))
+      (#'beam/record-inactive!
+       {:conn c :run-id rid}
+       [(assoc (branch-with :id "B1") :status :done :final-answer "the answer")
+        (assoc (branch-with :id "B2") :status :culled
+               :inactive-reason "culled after 3 consecutive failures")
+        (branch-with :id "B3")])
+      (testing "a shipped branch is written as done, not left active"
+        (is (= "done" (:status (status-of "B1")))))
+      (testing "an ordinary cull still records why"
+        (is (= "culled" (:status (status-of "B2"))))
+        (is (str/includes? (:inactive_reason (status-of "B2")) "consecutive")))
+      (testing "a branch still working is untouched"
+        (is (= "active" (:status (status-of "B3")))))
+      (testing "shipping emits branch-closed, which is what the GUI folds"
+        (let [closed (filter #(= "branch-closed" (:kind %))
+                             (journal/events-since c rid 0))]
+          (is (= #{"B1" "B2"} (set (map :branch_id closed)))
+              "exactly the two that stopped, and no event for the live one"))))))
+
 ;; --- the critic and Pareto retention ----------------------------------------
 
 (deftest critic-score-parsing
