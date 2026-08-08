@@ -471,14 +471,30 @@ $F_1 = \tfrac{7}{6}\cdot\tfrac{q}{q-1} - 1$ is largest at $q=11$ and decreases
 to $1/6$. A bound monotone in $F_1$ that closes $q=11$ closes the whole
 infinite family at once. That is the shape of the result worth having.
 
-**What has not been tried.** $q = 105$, for either open support. Its
-unit-weight moduli are $3,5,7,15,21,35,105$ — a much richer set of atoms than
-the three at $q=15$ — but a brute-force sweep is
-$3\cdot5\cdot7\cdot15\cdot21\cdot35\cdot105 = 361{,}675{,}125$ assignments.
-Translation invariance mod $105$ fixes $r_3 = r_5 = r_7 = 0$ without loss and
-cuts it to $1{,}157{,}625$. Note that a finer $q$ is not automatically
-stronger *for this bound*: among semiprimes, $q=15$ beats $21$, $33$, $35$,
-$55$ and $77$ for $\{3,5,7,11\}$, and by a wide margin.
+**$q = 105$ does not close $\{3,5,7,11\}$ either.** Its unit-weight moduli are
+$3,5,7,15,21,35,105$ — a much richer set of atoms than the three at $q=15$ —
+and a brute-force sweep is $3\cdot5\cdot7\cdot15\cdot21\cdot35\cdot105 =
+361{,}675{,}125$ assignments, cut to $1{,}157{,}625$ by fixing
+$r_3 = r_5 = r_7 = 0$, which translation invariance mod $105$ permits without
+loss. The constants are
+
+$$F_1 = \tfrac{1}{10},\quad A_3 = \tfrac{13}{20},\quad A_5 = \tfrac{3}{8},
+\quad A_7 = \tfrac{17}{60},\quad A_{15} = \tfrac{17}{16},\quad
+A_{21} = \tfrac{37}{40},\quad A_{35} = \tfrac{29}{48},\quad
+A_{105} = \tfrac{45}{32}$$
+
+— note $11$ enters *only* here, since it is coprime to $105$ and so appears in
+no class and no block. Scaled by $480$ they are
+$48, 312, 180, 136, 510, 444, 290, 675$, and the minimum slack is
+
+$$-\tfrac{647}{480} \approx -1.3479 \quad\text{at } (r_{15},r_{21},r_{35},r_{105}) = (1,1,2,4),$$
+
+with $s = 36$ and $(M_3,M_5,M_7,M_{15},M_{21},M_{35}) = (23,11,7,6,4,2)$.
+
+That is *worse* than $q=15$'s $-623/480$. So a finer $q$ is not automatically
+stronger for this bound — among semiprimes $q=15$ also beats $21$, $33$, $35$,
+$55$ and $77$ for $\{3,5,7,11\}$, by a wide margin. Refining the partition is
+a dead end here; the bound itself has to change.
 
 The bound is also crude in a specific, fixable way. It charges every $g=3$
 modulus the full $\max_3$, as though each could serve the fullest block; in
@@ -517,9 +533,20 @@ already settled. Expect the same one step up.
   without the supervisor noticing, which is the failure the run-error
   journalling now catches. Clearing that row needs a direct write to
   `veriframe.sqlite3` and has not been done.
-- The four-prime frontier table is likewise hand-computed, in exact rational
-  arithmetic, by the same program that reproduces Finding 9's constants and
-  all three of its slacks exactly. It has not been through the engines.
+- The four-prime frontier table and the $q=105$ result are likewise
+  hand-computed, in exact rational arithmetic, by the same program that
+  reproduces Finding 9's constants and all three of its slacks exactly. They
+  have not been through the engines.
+- Generation 14 reached the $q=105$ number independently — twice, in Octave
+  and in Prolog, agreeing with the above to the digit — and **neither was
+  confirmable**. Both hardcode the eight scaled constants without deriving
+  them, and since $11$ enters the mod-$105$ argument only through those
+  constants, an artifact that states them computes a number for an unstated
+  support: the $\{3,5,7\}$ version of the same program is identical in shape
+  and gives a false claim. The reviewer caught it both times. This is the
+  a\#344 defect one level subtler — a number carried in from a derivation the
+  artifact does not contain — and it is why the number above is recorded as
+  hand-computed rather than engine-confirmed.
 - Every claim above sits in the run journal as a confirmed artifact with
   the exact engine code that verified it (`GET /v1/runs/:id/journal`).
   Cross-run continuation can import them with `seed_run`.
