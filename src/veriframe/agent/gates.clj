@@ -145,10 +145,13 @@
    {:gate :milestone
     :priority 5
     :budget :max-milestone-nudges
-    :doc "First confirmed artifact on this branch. Runs that do not ship at
-          this moment usually fail: after a confirmation the instinct is to
-          push for more, and that usually loses the verified result."
-    :when (fn [{:keys [branch]}] (state/has-confirmed? branch))
+    :doc "First confirmed artifact on this branch that engages what the branch
+          is working on. Runs that do not ship at this moment usually fail:
+          after a confirmation the instinct is to push for more, and that
+          usually loses the verified result. Relevance-filtered because the
+          gate congratulated a branch for verifying that between/3 works
+          (vf-8fl), which is the same failure the zebra run produced."
+    :when (fn [{:keys [branch]}] (state/has-relevant-confirmed? branch))
     :message (fn [_] (prompt "milestone"))
     :prediction (fn [_] "the branch calls review or done within two turns")
     :window 2}
@@ -167,14 +170,16 @@
 
           Fires on evidence rather than on hope: a confirmation is the
           fitness signal, so the branch worth reproducing from is the one
-          that just proved something. Silent once the run is winding down,
-          because a new line that late cannot finish."
+          that just proved something ABOUT THE PROBLEM — a fork costs another
+          engine process and another model call per turn, and is not worth
+          spending on a branch that confirmed its own tooling. Silent once the
+          run is winding down, because a new line that late cannot finish."
     :when (fn [{:keys [branch branch-count max-turns]}]
             (let [last-fired (->> (:gate-history branch)
                                   (filter #(= :branch-out (:gate %)))
                                   (map :turn)
                                   (reduce max -1000))]
-              (and (state/has-confirmed? branch)
+              (and (state/has-relevant-confirmed? branch)
                    (< (or branch-count 0) (threshold :max-total-branches))
                    ;; Not while the branch is still acting on the last ask.
                    (>= (- (state/turn-count branch) last-fired)

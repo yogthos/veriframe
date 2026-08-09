@@ -1049,6 +1049,23 @@
           (is (or (nil? block)
                   (not (str/includes? block "cross-branch lemma")))))))))
 
+(deftest only-on-topic-confirmations-enter-the-shared-pool
+  ;; The write side, and the reason vf-8fl is worse with sharing on than
+  ;; without it: an artifact that only ever cost its own branch a turn becomes
+  ;; every branch's context. Observed live, four turns into run 0d0c3560.
+  (let [problem "Characterise the non-uniqueness of the L1 min-cost-flow unwrapping."
+        b (branch-with :problem problem)
+        confirmed (fn [claim] {:claim claim :claim-status :confirmed :kind :prolog})]
+    (is (true? (aloop/shareable? b (confirmed "the two-path gadget has exactly two optimal flows") true)))
+    (is (false? (aloop/shareable? b (confirmed "Diagnostic: between(-1,1,X) succeeds for X = -1,0,1.") true))
+        "a check of the harness's own tooling is nobody else's lemma")
+    (testing "the existing conditions still hold"
+      (is (false? (aloop/shareable? b (confirmed "the two-path gadget has exactly two optimal flows") false))
+          "not with the flag off")
+      (is (false? (aloop/shareable? b {:claim "the two-path gadget has exactly two optimal flows"
+                                       :claim-status :refuted :kind :prolog} true))
+          "and only confirmations ever cross"))))
+
 (deftest shared-artifact-hit-journals-once-per-pair
   ;; A 28-turn run produced 86 hit events for a 15-row pool: the block
   ;; re-renders every turn, so per-serving journaling counted turns, not
@@ -1175,8 +1192,52 @@
         (is (= 0 (:turns-since-progress after)))
         (is (:any-progress? after)))))
 
-  (testing "with no thesis registered, exploration is still credited"
-    (is (state/advances-thesis? (branch-with) "anything at all"))))
+  (testing "with no thesis registered, the problem statement stands in"
+    ;; vf-8fl. Returning true unconditionally was defensible while the only
+    ;; consumer was the stall counter. It is not defensible now: this is the
+    ;; harness's only relevance signal, and a branch that never called `thesis`
+    ;; had no guard at all. Observed live — B3 of run 0d0c3560 confirmed
+    ;; "Diagnostic: between(-1,1,X) succeeds for X = -1,0,1." at turn 4, was
+    ;; congratulated by the milestone gate for it, and exported it to all three
+    ;; siblings through the shared pool.
+    (let [b (branch-with :problem (str "Characterise how non-unique the L1"
+                                       " minimum-cost-flow unwrapping is, and"
+                                       " exhibit a canonical tie-breaking rule."))]
+      (is (not (state/advances-thesis? b "Diagnostic: between(-1,1,X) succeeds for X = -1,0,1.")))
+      (is (state/advances-thesis? b "the two-path gadget has exactly two optimal flows")
+          (str "exploration that engages the problem is still credited, which"
+               " is the whole reason this was permissive to begin with"))))
+
+  (testing "a problem with no vocabulary of its own credits everything"
+    ;; Nothing to be irrelevant to. Keeps the permissive behaviour wherever
+    ;; there is genuinely nothing to measure against.
+    (is (state/advances-thesis? (branch-with) "anything at all"))
+    (is (state/advances-thesis? (state/new-branch {:id "B1"}) "anything at all"))))
+
+(deftest an-off-topic-confirmation-fires-no-gate-and-crosses-no-branch
+  ;; The other two consequences of the same hole. The milestone and branch-out
+  ;; gates both read "this branch has confirmed something" as their fitness
+  ;; signal, and with sharing on, a confirmation is exported to every sibling.
+  ;; A tooling diagnostic should trip none of that.
+  (let [problem "Characterise the non-uniqueness of the L1 min-cost-flow unwrapping."
+        tooling {:claim "Diagnostic: between(-1,1,X) succeeds for X = -1,0,1."
+                 :claim-status :confirmed :kind :prolog :tier :fast :turn 4}
+        real {:claim "the two-path gadget has exactly two optimal flows"
+              :claim-status :confirmed :kind :prolog :tier :fast :turn 4}
+        with (fn [a] (branch-with :problem problem :artifacts [a]
+                                  :turns (vec (repeat 5 {}))))]
+    (testing "the branch has a confirmation either way — that is not the question"
+      (is (state/has-confirmed? (with tooling))))
+    (testing "but only a relevant one counts as one"
+      (is (not (state/has-relevant-confirmed? (with tooling))))
+      (is (state/has-relevant-confirmed? (with real))))
+    (testing "so the milestone gate stays silent on the tooling check"
+      (is (not ((:when (gates/by-name :milestone)) {:branch (with tooling)})))
+      (is ((:when (gates/by-name :milestone)) {:branch (with real)})))
+    (testing "and branch-out does not spend a fork on it"
+      (let [ctx (fn [b] {:branch b :branch-count 1 :max-turns 40})]
+        (is (not ((:when (gates/by-name :branch-out)) (ctx (with tooling)))))
+        (is ((:when (gates/by-name :branch-out)) (ctx (with real))))))))
 
 ;; --- safe state -------------------------------------------------------------
 

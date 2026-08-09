@@ -168,11 +168,29 @@
     "clpfd" "prolog" "smt" "lean" "works" "available" "loaded" "basic"
     "supports" "simple" "test" "check" "verify" "verified" "example"})
 
+(defn- singularize
+  "Strip one trailing `s`. `flow` and `flows` are the same noun, and a
+  set-intersection that cannot see that misses the commonest way two people
+  write the same mathematical term — it cost the relevance guard a true match
+  the first time it was asked a real question.
+
+  Applied AFTER the stopword filter, so a stopword's stem is never resurrected
+  (`supports` is on the list; `support` is not). Never to a word ending in
+  `ss`, and never below five characters, so nothing is stemmed into a
+  collision."
+  [w]
+  (if (and (>= (count w) 5)
+           (str/ends-with? w "s")
+           (not (str/ends-with? w "ss")))
+    (subs w 0 (dec (count w)))
+    w))
+
 (defn- claim-tokens [s]
   (->> (str/split (str/lower-case (or s "")) #"[^a-z0-9]+")
        (remove str/blank?)
        (remove claim-stopwords)
        (filter #(>= (count %) 4))
+       (map singularize)
        set))
 
 (defn advances-thesis?
@@ -186,16 +204,38 @@
   tooling, and that is precisely the successful-but-useless turn the progress
   monitor exists for.
 
-  With no thesis registered any confirmation counts, because there is nothing
-  to measure against and refusing to credit exploration would be worse."
+  With no thesis registered the PROBLEM stands in for one. That case used to
+  return true unconditionally, which was defensible while the stall counter was
+  the only consumer and stopped being so once this became the harness's only
+  relevance signal: a branch that never called `thesis` had no guard at all.
+  Run 0d0c3560's B3 confirmed `Diagnostic: between(-1,1,X) succeeds for
+  X = -1,0,1.` at turn 4, was congratulated for it by the milestone gate, and
+  exported it to all three siblings through the shared pool (vf-8fl).
+
+  Only when there is nothing to measure against at all — no thesis, and a
+  problem with no substantive vocabulary of its own — does everything count.
+  Refusing to credit exploration would be worse than crediting too much, and
+  the bar is very low: any one shared substantive word clears it."
   [branch claim]
   (let [sub-claims (get-in branch [:thesis :subClaims])
-        goal (get-in branch [:thesis :goal])]
-    (if (empty? (remove str/blank? (conj (vec sub-claims) goal)))
+        goal (get-in branch [:thesis :goal])
+        targets (remove str/blank? (conj (vec sub-claims) goal))
+        targets (if (seq targets) targets (remove str/blank? [(:problem branch)]))
+        ct (claim-tokens claim)]
+    (if (every? empty? (map claim-tokens targets))
       true
-      (let [ct (claim-tokens claim)]
-        (boolean (some #(seq (clojure.set/intersection ct (claim-tokens %)))
-                       (conj (vec sub-claims) goal)))))))
+      (boolean (some #(seq (clojure.set/intersection ct (claim-tokens %)))
+                     targets)))))
+
+(defn has-relevant-confirmed?
+  "Whether the branch has confirmed anything that engages what it is working
+  on. What the gates whose signal is \"you proved something, now act on it\"
+  should read: `has-confirmed?` cannot tell a lemma from a check of the
+  harness's own tooling, and both of those gates spend something real — a
+  milestone nudge, or a fork."
+  [branch]
+  (boolean (some #(advances-thesis? branch (:claim %))
+                 (confirmed-artifacts branch))))
 
 (defn record-outcome
   "Apply a turn's outcome to the counters the gates read.

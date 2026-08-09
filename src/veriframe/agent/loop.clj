@@ -67,6 +67,20 @@
   []
   (str (hash [(system-prompt) (gates/config) (judge-exemptions)])))
 
+(defn shareable?
+  "Whether a just-produced artifact belongs in the run's shared pool.
+
+  Engine-confirmed is the entry condition that separates this from UCLA's
+  self-reported results, and relevance is the second one. An artifact that
+  engages neither the branch's thesis nor the problem cost its own branch a
+  turn and nothing more; exported, it becomes every branch's context. Run
+  0d0c3560 shipped `Diagnostic: between(-1,1,X) succeeds for X = -1,0,1.` to
+  three siblings four turns in (vf-8fl)."
+  [branch artifact share?]
+  (boolean (and share?
+                (= :confirmed (:claim-status artifact))
+                (state/advances-thesis? branch (:claim artifact)))))
+
 (defn- truncate [s]
   (let [s (str s)]
     (if (> (count s) max-result-chars)
@@ -263,11 +277,10 @@
             (when-let [a (:artifact result)]
               (journal/record-artifact! conn run-id
                                         (assoc a :branch-id (:id branch) :turn turn))
-              ;; Only engine-confirmed artifacts enter the shared pool — the
-              ;; entry condition that separates this from UCLA's self-reported
-              ;; results. The flag is the diversity trade-off's off switch.
-              (when (and (get-in ctx [:config :run :share-artifacts?])
-                         (= :confirmed (:claim-status a)))
+              ;; Only engine-confirmed, on-topic artifacts enter the shared
+              ;; pool — see shareable?. The flag is the diversity trade-off's
+              ;; off switch.
+              (when (shareable? branch a (get-in ctx [:config :run :share-artifacts?]))
                 (artifacts/record! conn run-id
                                    {:branch-id (:id branch) :turn turn
                                     :kind (:kind a) :tier (:tier a)
