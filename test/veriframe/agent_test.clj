@@ -2526,6 +2526,65 @@
     (runs/open-branch! c rid {:branch-id "B1" :created-at-turn 0})
     [c rid (state/new-branch {:id "B1" :problem "p"})]))
 
+(deftest every-engine-puts-its-objection-in-the-shared-failure-log
+  ;; vf-9p2, and the second half of vf-i26. verify and verify_smt carried the
+  ;; reviewer's objection across branches; verify_octave, verify_lean,
+  ;; verify_template and measure recorded a generic sentence and let the
+  ;; reasoning die with the branch that earned it.
+  ;;
+  ;; The cost, measured in run 0d0c3560: FOUR branches independently wrote a
+  ;; counter over feasible flows, called it a count of L1-optimal flows, and
+  ;; were each told separately that they had dropped the cost-minimality
+  ;; constraint. The failure log exists so the second one does not have to
+  ;; make the first one's mistake, and it was carrying "the Octave expression
+  ;; does not answer the claim".
+  (let [objection (str "GAP: the artifact counts FEASIBLE flows and never"
+                       " encodes edge costs, so it does not count L1-optimal"
+                       " flows.\nVERDICT: FAIL")
+        judge (fn [& _] {:content objection})
+        carries? (fn [label r]
+                   (is (= :unfaithful (get-in r [:artifact :claim-status])) label)
+                   (is (re-find #"(?i)never encodes edge costs" (str (:result r)))
+                       (str label ": the branch is told why"))
+                   (is (re-find #"(?i)never encodes edge costs"
+                                (str (get-in r [:failure :reason])))
+                       (str label ": and so is every sibling")))]
+
+    (testing "verify_octave"
+      (let [[c rid b] (fresh-run)]
+        (with-redefs [octave/create-session (fn [& _] {:dir "/tmp/x" :log (atom [{:code "n = count();"}])
+                                                       :alive (atom true)})
+                      octave/check (fn [& _] {:ok true :verdict true :tol 0 :exact true})
+                      llm/chat judge]
+          (carries? "verify_octave"
+                    (tools/run-tool {:branch b :turn 1 :conn c :run-id rid
+                                     :tool-name "verify_octave"
+                                     :args {:claim "there are 8 optimal flows" :expr "n == 8"}})))))
+
+    (testing "measure"
+      (let [[c rid b] (fresh-run)]
+        (with-redefs [octave/create-session (fn [& _] {:dir "/tmp/x" :log (atom [{:code "n = count();"}])
+                                                       :alive (atom true)})
+                      octave/measure (fn [& _] {:ok true :value 8 :text "8"})
+                      llm/chat judge]
+          (carries? "measure"
+                    (tools/run-tool {:branch b :turn 1 :conn c :run-id rid
+                                     :tool-name "measure"
+                                     :args {:claim "the number of optimal flows" :expr "n"}})))))
+
+    (testing "verify_lean"
+      (let [[c rid b] (fresh-run)]
+        (with-redefs [lean-repl/create-session (fn [& _] {:id "s"})
+                      lean-repl/mathlib-env (fn [& _] nil)
+                      lean-pool/checkout! (fn [& _] {:id "s"})
+                      lean-repl/run-command (fn [& _] {:ok true :sorries []})
+                      llm/chat judge]
+          (carries? "verify_lean"
+                    (tools/run-tool {:branch b :turn 1 :conn c :run-id rid
+                                     :tool-name "verify_lean"
+                                     :args {:claim "there are 8 optimal flows"
+                                            :lean "theorem foo : 1 + 1 = 2 := by rfl"}})))))))
+
 (deftest an-octave-check-over-literals-is-blocked-before-the-judge
   ;; gen-13 a#344: a CONFIRMED artifact whose whole code was `1.014488 > 1`.
   ;; The glpk solve behind that number ran on an earlier turn and appears

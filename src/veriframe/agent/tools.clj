@@ -634,13 +634,14 @@
                              (str "\n\nBoth encodings agree — but they were built from"
                                   " the same slots, and review found those slots do"
                                   " not say what the claim says. The template did its"
-                                  " job on the numbers you gave it. Check each slot"
-                                  " against the claim's wording and re-run.")))
+                                  " job on the numbers you gave it.\n\n" objection
+                                  "\n\nCheck each slot against the claim's wording"
+                                  " and re-run.")))
               :artifact artifact}
              (when-not confirmed?
                {:failure {:claim claim
                           :reason (if (= :unfaithful status)
-                                    "the template's slots do not match the claim"
+                                    objection
                                     (:note r))}}))))))))
 
 ;; --- planning ---------------------------------------------------------------
@@ -1346,14 +1347,19 @@
                     :failure {:claim claim :reason "the proof contained sorry"})
 
               (:ok r)
-              (let [code (arg ctx :lean)]
-                (if (:ok? (encoding-faithful?
-                     ctx claim code
-                     {:engine "a Lean 4 declaration"
-                      :outcome "Lean accepted it with no goals left open"
-                      :direction :confirms
-                      :extra lean-faithfulness-note
-                      :structural (faithful/check-lean claim code)}))
+              (let [code (arg ctx :lean)
+                    ;; The whole verdict, not just its boolean. Dropping the
+                    ;; reason here left the branch a paragraph of generic
+                    ;; advice — check your quantifiers — when the reviewer had
+                    ;; already said which quantifier (vf-9p2).
+                    faithful? (encoding-faithful?
+                               ctx claim code
+                               {:engine "a Lean 4 declaration"
+                                :outcome "Lean accepted it with no goals left open"
+                                :direction :confirms
+                                :extra lean-faithfulness-note
+                                :structural (faithful/check-lean claim code)})]
+                (if (:ok? faithful?)
                   {:branch branch :category :success :progress? true
                    :result "Lean accepted it. Claim CONFIRMED."
                    :artifact {:kind :lean :claim claim :code code
@@ -1361,12 +1367,13 @@
                   (fail branch
                         (str "Lean accepted the declaration, so the PROOF is sound —"
                              " but review found the STATEMENT is not the claim, so"
-                             " what you proved is not what you said. Check the"
-                             " quantifiers, their ranges, the hypotheses and the"
-                             " direction of each inequality against the claim's"
-                             " wording, then state the theorem the claim describes.")
-                        :failure {:claim claim
-                                  :reason "the Lean statement does not match the claim"}
+                             " what you proved is not what you said.\n\n"
+                             (:reason faithful?)
+                             "\n\nCheck the quantifiers, their ranges, the"
+                             " hypotheses and the direction of each inequality"
+                             " against the claim's wording, then state the theorem"
+                             " the claim describes.")
+                        :failure {:claim claim :reason (:reason faithful?)}
                         :artifact {:kind :lean :claim claim :code code
                                    :claim-status :unfaithful :tier :fast})))
 
@@ -1579,8 +1586,11 @@
                          " `measure` records it as itself, with no comparison"
                          " to get wrong. Forcing a measurement into a boolean"
                          " is how an expression ends up true by construction.")
-                    :failure {:claim claim
-                              :reason "the Octave expression does not answer the claim"}
+                    ;; The objection, not a generic sentence. A sibling reading
+                    ;; the failure log has to learn what went wrong, or the log
+                    ;; is a list of claims nobody may retry for no stated
+                    ;; reason (vf-9p2).
+                    :failure {:claim claim :reason objection}
                     :artifact artifact)
 
               :refuted
@@ -1656,9 +1666,7 @@
                          "\n\nState the claim about the run you actually did — the"
                          " parameters, the range swept, the number of trials —"
                          " rather than about the phenomenon behind it.")
-                    :failure {:claim claim
-                              :reason (str "the Octave expression does not measure"
-                                           " the claim")}
+                    :failure {:claim claim :reason (:reason faithful?)}
                     :artifact artifact)))))
       (catch Throwable e
         (fail branch (str "Octave is unavailable: " (ex-message e)))))))
