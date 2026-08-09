@@ -1031,7 +1031,8 @@
     "establishing" "demonstrate" "demonstrates" "demonstrated"
     ;; Deictics. A word that points at the document rather than at the
     ;; mathematics cannot be an assertion about the mathematics.
-    "here" "above" "below" "within" "throughout"})
+    "here" "above" "below" "within" "throughout"
+    "reach" "reaches" "reached" "give" "gives" "yield" "yields" "open"})
 
 ;; A tool name followed by its version. Stripped BEFORE tokenizing, because the
 ;; version is a bare number and numbers are the part of this gate that must not
@@ -1054,6 +1055,17 @@
        (map #(str/replace % #"^[.-]+|[.-]+$" ""))
        (remove str/blank?)
        (remove stopwords)
+       ;; A hyphenated compound is one token, so `lean-verified` and
+       ;; `engine-confirmed` survived a list holding every one of their parts.
+       ;; Both are provenance, which is the one thing an artifact can never
+       ;; mention: an artifact is about the problem and says nothing about the
+       ;; engine that ran it. A compound with a substantive half —
+       ;; `optimal-flow` — is not exempt.
+       (remove #(and (str/includes? % "-")
+                     (let [parts (remove str/blank? (str/split % #"-"))]
+                       (and (seq parts)
+                            (every? (fn [p] (or (stopwords p) (< (count p) 4)))
+                                    parts)))))
        (filter #(or (re-matches #"[0-9]+(\.[0-9]+)?" %) (>= (count %) 4)))
        distinct))
 
@@ -1096,7 +1108,13 @@
         (and (str/includes? token "-")
              (or (str/includes? word-text (str/replace token "-" " "))
                  (str/includes? word-text (str/replace token "-" ""))))
-        (when-let [s (stem token)] (str/includes? word-text s)))))
+        (when-let [s (stem token)] (str/includes? word-text s))
+        ;; One derivational step further, for long words only: `computability`
+        ;; against `computable` is the same complaint as `residues` against
+        ;; `residue`, and no suffix list reaches it. Deliberately coarse — the
+        ;; haystack is a handful of artifacts, and this half of the rung is a
+        ;; check on vocabulary rather than on arithmetic.
+        (and (>= (count token) 8) (str/includes? word-text (subs token 0 6))))))
 
 (defn uncovered-tokens
   "Answer tokens no confirmed artifact mentions.
@@ -1106,17 +1124,27 @@
   fabricated verification report, which is the failure dirge PR 749 was
   written for."
   ([answer artifacts] (uncovered-tokens answer artifacts nil))
-  ([answer artifacts audit-established]
+  ([answer artifacts word-context]
    (let [artifact-text (str/lower-case
                         (str/join " " (for [a artifacts]
                                         (str (:claim a) " " (:code a) " "
                                              (pr-str (:witness a))))))
-         ;; Words may also be covered by a PASSING audit's own restatement of
-         ;; what the evidence establishes: that is the harness's account of the
-         ;; artifacts, written in prose the answer may legitimately echo.
-         ;; Numbers may NOT. A fabricated figure is what this rung exists to
-         ;; catch, and the audit did not run an engine.
-         word-text (str artifact-text " " (str/lower-case (str audit-established)))]
+         ;; Words may also come from `word-context`: the problem statement the
+         ;; harness handed the branch, and a PASSING audit's restatement of
+         ;; what the evidence establishes. Neither is something the model can
+         ;; fabricate — one the harness wrote, the other a gate that already
+         ;; passed on the merits — and an answer that says which of the
+         ;; problem's questions it did not settle has to name them, using
+         ;; words that are absent from the evidence for the only reason that
+         ;; matters: nobody established them.
+         ;;
+         ;; Numbers get none of this. A figure has to come from an artifact.
+         ;; That is the strict half and the whole reason the rung exists.
+         word-text (str artifact-text " "
+                        (str/lower-case
+                         (if (coll? word-context)
+                           (str/join " " (remove nil? word-context))
+                           (str word-context))))]
      (remove #(covered? % artifact-text word-text) (answer-tokens answer)))))
 
 ;; --- and the answer has to answer THIS problem ------------------------------
@@ -1240,9 +1268,10 @@
         ;; would leave a branch unable to state its own measurement (vf-0of).
         ;; The strength of the evidence is the audit's question, not this one's.
         evidence (concat confirmed (state/empirical-artifacts branch))
-        uncovered (uncovered-tokens answer evidence
-                                    (when (:passed audit) (:established audit)))
         problem (:problem branch)
+        uncovered (uncovered-tokens answer evidence
+                                    [problem
+                                     (when (:passed audit) (:established audit))])
         block (cond
                 (nil? answer)
                 (str "No answer was supplied and no audit has passed. Call"

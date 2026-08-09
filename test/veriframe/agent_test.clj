@@ -487,6 +487,42 @@
                         " The general question was asked but remains unsettled.")
                    artifacts))))
 
+    (testing "the problem's own vocabulary is never a fabrication"
+      ;; The rung exists to catch an answer asserting a number or a name that
+      ;; appears nowhere in the evidence — a fabricated verification report.
+      ;; A term the HARNESS put in front of the model cannot be fabricated by
+      ;; it. B4 of run 0d0c3560 was refused for `polynomial-time`,
+      ;; `canonical-selection-rule` and `recovery-guarantee`, every one of them
+      ;; lifted from the problem it had been asked to solve, and every one
+      ;; unavoidable in saying which parts of that problem it had not reached.
+      (let [problem (str "Is there a canonical selection rule, computable in"
+                         " polynomial time? No recovery guarantee exists for"
+                         " 2D unwrapping in any form.")
+            flagged (set (tools/uncovered-tokens
+                          (str "No canonical-selection-rule is given and"
+                               " polynomial-time computability and the"
+                               " recovery-guarantee are not reached.")
+                          artifacts problem))]
+        (is (empty? flagged) (str "still flagged: " (pr-str flagged))))
+      (testing "a hyphenated compound of framing words is still framing"
+        ;; `lean-verified` and `engine-confirmed` are single tokens, so both
+        ;; halves being stopwords did not save them. They are provenance —
+        ;; the one thing an artifact can never mention, since an artifact is
+        ;; about the problem and says nothing about the engine that ran it.
+        (let [flagged (set (tools/uncovered-tokens
+                            "what is lean-verified and engine-confirmed is stated above"
+                            artifacts))]
+          (is (empty? flagged) (str "still flagged: " (pr-str flagged))))
+        (is ((set (tools/uncovered-tokens "the optimal-flow set is large" artifacts))
+             "optimal-flow")
+            "but a compound with a substantive half is not exempt"))
+
+      (testing "but a term from outside the problem AND the evidence is caught"
+        (is ((set (tools/uncovered-tokens
+                   "the vortices unbind at the transition"
+                   artifacts "a canonical selection rule in polynomial time"))
+             "vortices"))))
+
     (testing "naming what you did NOT settle needs the audit's own restatement"
       ;; The hard half, and the one stopwords cannot reach. `polynomial-time`
       ;; is a substantive term and it is absent from the evidence for the only
