@@ -573,6 +573,55 @@
                        "there are 42 flows" artifacts established))
             "a number the audit restated but no engine confirmed is not covered")))))
 
+(deftest numbers-block-the-ship-and-words-only-advise
+  ;; vf-kpn. Three rounds of widening the stopword list got B4's refusals from
+  ;; eight words down to one — `formed` — and it still could not ship. Eleven
+  ;; done attempts across two branches, roughly forty turns, every audit
+  ;; passing. Ordinary English does not run out.
+  ;;
+  ;; The rung's own docstring says numbers are the point, and the number check
+  ;; has never produced a false positive. The word check is a lexical proxy for
+  ;; "does this assert something unsupported", which the audit answers with
+  ;; semantics and in context. So numbers refuse; words go to the audit and the
+  ;; journal, and never strand an audited answer.
+  (let [artifacts [{:claim "the graph has 8 optimal flows of cost 6"
+                    :claim-status :confirmed :kind :smt :tier :slow :code ""}]
+        ship (fn [answer]
+               (tools/run-tool
+                {:branch (branch-with :problem "How many optimal flows are there?"
+                                      :artifacts artifacts
+                                      :last-review {:passed true}
+                                      :last-audit {:passed true :proposed-answer answer
+                                                   :established answer :relaxation? false})
+                 :turn 1 :tool-name "done" :args {:answer answer}}))]
+
+    (testing "a number in no artifact still refuses"
+      (let [r (ship "the graph has 9 optimal flows")]
+        (is (= :failure (:category r)))
+        (is (str/includes? (:result r) "9"))))
+
+    (testing "an English word in no artifact does not"
+      (with-redefs [llm/chat (fn [& _] {:content "ASKS: a count\nSUPPLIES: a count\nVERDICT: PASS"})]
+        (let [r (ship "the graph formed by the gadgets has 8 optimal flows of cost 6")]
+          (is (= :success (:category r))
+              (str "refused over a word: " (:result r)))
+          (is (= :done (:status (:branch r)))))))
+
+    (testing "and the audit is handed those words to weigh in context"
+      (let [prompts (atom [])]
+        (with-redefs [llm/chat (fn [_ _ msgs _]
+                                 (swap! prompts conj (:content (second msgs)))
+                                 {:content "GAPS: none\nESTABLISHED: x\nRELAXATION: no\nVERDICT: PASS"})]
+          (tools/run-tool
+           {:branch (branch-with :thesis {:goal "count them" :subClaims []}
+                                 :artifacts artifacts)
+            :turn 1 :tool-name "audit"
+            :args {:claim "c" :proposedAnswer "the vortex density is 8"}}))
+        (is (re-find #"(?i)vortex" (str (first @prompts)))
+            "the audit sees the word the lexical check flagged")
+        (is (re-find #"(?i)appear in no artifact|no artifact" (str (first @prompts)))
+            "and is told what that means")))))
+
 (deftest verdict-parses-established-and-relaxation
   (testing "ESTABLISHED and RELAXATION lines are read"
     (let [j (verdict/parse (str "The artifacts cover the cases I checked.\n"

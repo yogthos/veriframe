@@ -139,6 +139,11 @@
 
 (declare judge)
 
+;; The done gate's lexical check, defined further down beside the rest of that
+;; gate. `audit` reaches back for it: the words it flags are advice for a model
+;; to weigh, not grounds to refuse a ship (vf-kpn).
+(declare number-token? uncovered-tokens)
+
 (defn- faithfulness-prompt
   "Ask whether `code` actually formalises `claim`, given what the engine said.
 
@@ -897,6 +902,16 @@
     (let [claim (arg ctx :claim)
           answer (arg ctx :proposedAnswer)
           confirmed (state/confirmed-artifacts branch)
+          ;; The lexical check, handed over rather than enforced. It cannot
+          ;; tell an unsupported assertion from ordinary English, and the
+          ;; done gate refusing on it stranded eleven audited answers in one
+          ;; run (vf-kpn). A model reading the answer in context can tell,
+          ;; and this is where that reading happens.
+          flagged (remove number-token?
+                          (uncovered-tokens answer
+                                            (concat confirmed
+                                                    (state/empirical-artifacts branch))
+                                            [(:problem branch)]))
           p (str "A harness is about to ship an answer. Decide whether the verified"
                  " evidence actually establishes it.\n\n"
                  "THESIS: " (get-in branch [:thesis :goal]) "\n"
@@ -908,6 +923,15 @@
                  (str/join "\n" (for [a confirmed]
                                   (str "- [" (name (:kind a)) "/" (name (:tier a)) "] "
                                        (:claim a))))
+                 (when (seq flagged)
+                   (str "\n\nThese words appear in the proposed answer and in no"
+                        " artifact: " (str/join ", " (map #(str "`" % "`") (take 12 flagged)))
+                        ".\nThat is a lexical observation, not a finding — most of"
+                        " them will be ordinary prose. Check each one: does it"
+                        " carry an assertion the evidence does not support, or is"
+                        " it framing, or a term from the problem statement the"
+                        " answer is entitled to use in saying what it did NOT"
+                        " settle? Only the first is a gap."))
                  "\n\nAnswer FAIL if the artifacts verify only instances of a claim"
                  " stated universally, if the proposed answer asserts anything no"
                  " artifact covers, or if the thesis and the evidence are about"
@@ -1089,6 +1113,13 @@
             (subs w 0 (- (count w) (count suf)))))
         word-suffixes))
 
+(defn number-token?
+  "Whether an answer token is a figure rather than a word. The two halves of
+  the coverage check treat them completely differently: a figure blocks a
+  ship, a word advises the audit."
+  [token]
+  (boolean (re-matches #"[0-9]+(\.[0-9]+)?" token)))
+
 (defn- covered?
   "Whether `token` appears in the evidence.
 
@@ -1102,7 +1133,7 @@
   refusal over `residues` when the evidence says `residue` teaches the model
   to strip its prose rather than to verify anything."
   [token artifact-text word-text]
-  (if (re-matches #"[0-9]+(\.[0-9]+)?" token)
+  (if (number-token? token)
     (str/includes? artifact-text token)
     (or (str/includes? word-text token)
         (and (str/includes? token "-")
@@ -1272,6 +1303,7 @@
         uncovered (uncovered-tokens answer evidence
                                     [problem
                                      (when (:passed audit) (:established audit))])
+        uncovered-numbers (filter number-token? uncovered)
         block (cond
                 (nil? answer)
                 (str "No answer was supplied and no audit has passed. Call"
@@ -1318,12 +1350,21 @@
                      " confirm evidence that establishes the full thesis and"
                      " re-run `audit`.")
 
-                (seq uncovered)
-                (str "Your answer asserts things no artifact supports: "
-                     (str/join ", " (map #(str "`" % "`") (take 8 uncovered)))
-                     ".\nEvery substantive claim in the answer has to appear in"
-                     " something an engine confirmed or measured. Either verify"
-                     " these or remove them from the answer.")
+                ;; NUMBERS ONLY. The word half of this check was a lexical
+                ;; proxy for "does the answer assert something unsupported",
+                ;; and the audit answers that question with semantics, in
+                ;; context, and had already passed. Three rounds of widening
+                ;; the stopword list took B4 from eight refused words to one
+                ;; and it still could not ship; ordinary English does not run
+                ;; out (vf-kpn). The uncovered words now go to the audit and
+                ;; the journal instead of the door.
+                (seq uncovered-numbers)
+                (str "Your answer states figures no artifact supports: "
+                     (str/join ", " (map #(str "`" % "`") (take 8 uncovered-numbers)))
+                     ".\nA number in an answer has to come from something an"
+                     " engine confirmed or measured — that is the difference"
+                     " between a verification report and a fabricated one."
+                     " Either verify these or remove them from the answer.")
 
                 (not (engages-problem? problem answer))
                 (str "This answer shares no substantive term with the problem"
@@ -1334,6 +1375,13 @@
                 (not (str/blank? (str problem)))
                 (relevance-block
                  (judge ctx :relevance (relevance-prompt problem answer))))]
+    ;; Journalled whether or not anything blocked, so the run record still
+    ;; shows what the lexical check saw even though it no longer decides.
+    (when-let [words (and (:conn ctx) (:run-id ctx)
+                          (seq (remove number-token? uncovered)))]
+      (journal/note! (:conn ctx) (:run-id ctx) :uncovered-words
+                     {:branch-id (:id branch) :turn (:turn ctx)
+                      :data {:words (vec (take 20 words)) :blocked? (some? block)}}))
     (if block
       (fail branch (str "`done` refused.\n\n" block) :done-block block)
       {:branch (assoc branch :final-answer answer :status :done)
