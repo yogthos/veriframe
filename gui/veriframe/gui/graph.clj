@@ -91,8 +91,13 @@
                                                               :tool (:tool data)
                                                               :category (:category data)}))))))
     "artifact"        (let [g (add-artifact g branch_id turn data)]
-                        (if (= "confirmed" (some-> (:claim-status data) name))
-                          (update-in g [:nodes branch_id :confirmed] (fnil inc 0))
+                        (case (some-> (:claim-status data) name)
+                          "confirmed" (update-in g [:nodes branch_id :confirmed] (fnil inc 0))
+                          ;; Counted separately, never folded into confirmed: a
+                          ;; branch's measurement tally is the thing that used
+                          ;; to be invisible, and merging it would make the
+                          ;; number it is shown beside a lie.
+                          "empirical" (update-in g [:nodes branch_id :measured] (fnil inc 0))
                           g))
     "critic-score"    (upd g branch_id {:critic data})
     "cull-spared"     (upd g branch_id {:spared? true})

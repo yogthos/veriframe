@@ -91,9 +91,17 @@ verify_octave({claim, expr, tol?})
                               is refused rather than guessed at, so wrap it in
                               all(...) or any(...) to say which you mean, and an
                               empty value or NaN is not a verdict.
+measure({claim, expr})        Bank a NUMBER rather than a verdict. `expr` gives
+                              a scalar or a short vector; the harness records
+                              what Octave returned, with the workspace behind
+                              it, as an empirical artifact.
 ```
 
 Floating point makes exact comparison a trap: `0.1+0.1+0.1 == 0.3` is false. Use the supplied `vf_approx(a, b, tol)` and pass the same `tol` to `verify_octave`, which records it on the artifact. A result stated as exact when it is not is the one way this engine will mislead you.
+
+**Simulation is work the harness counts, and `measure` is how you bank it.** A sweep that locates where a method breaks, a rate over a thousand trials, the size at which a bound stops holding — none of that is a boolean, so `verify_octave` has nowhere to put it, and before `measure` existed a branch could spend fifty turns measuring and have nothing to show. Measure the number instead. It scores, it protects the branch from being culled, and a number you measured can appear in your final answer.
+
+What it is not is a proof, and nothing will let it become one: an empirical artifact cannot ship a `done` on its own, and a claim that generalises past the parameters you actually ran — to all n, to the limit, to an infinite family — is rejected. Say what you ran. The value of a measurement is that it tells you which theorem is worth proving.
 
 ### Lean 4 + Mathlib
 
@@ -124,7 +132,9 @@ Reach for `proof_start` over `verify_lean` when you do not already know the whol
 
 `thesis` → a `verify_*` that confirms → `review` (or `verify_template`, whose cross-check is built in) → `audit` → `done`.
 
-`done` is refused unless the latest `audit` passed against the exact answer you are shipping, something was independently cross-checked, and every substantive claim in your answer appears in an artifact an engine confirmed. Those checks are mechanical. Arguing with them does not move them; supplying the evidence does. After an audit passes, call `done` with no answer to ship the audited text exactly — re-typing or reformatting it invites a verbatim mismatch and costs you the turn.
+`done` is refused unless the latest `audit` passed against the exact answer you are shipping, something was independently cross-checked, and every substantive claim in your answer appears in an artifact an engine confirmed or measured. Those checks are mechanical. Arguing with them does not move them; supplying the evidence does. After an audit passes, call `done` with no answer to ship the audited text exactly — re-typing or reformatting it invites a verbatim mismatch and costs you the turn.
+
+One further check, and it is not about evidence: **the answer has to be an answer to the problem you were given.** A verified lemma about the machinery, shipped as though it were the result, is refused however well supported it is. You do not have to solve the problem — a partial result ships, provided it says which of the questions asked it does not settle and what it establishes instead. That sentence is usually the difference between a refusal and a ship, and it costs one line.
 
 ## Two traps worth naming
 

@@ -96,6 +96,8 @@ function reply = vf_dispatch (req)
         tol = 0;
         if (isfield (req, "tol")) tol = req.tol; endif
         reply = vf_check (req.expr, tol);
+      case "value"
+        reply = vf_value (req.expr);
       otherwise
         reply = struct ("ok", false, "error", ["unknown op: " req.op]);
     endswitch
@@ -142,6 +144,37 @@ function reply = vf_check (expr, tol)
     reply = struct ("ok", false, "error", sprintf ("the expression produced a %dx%d value, not a scalar; wrap it in all(...) or any(...) to say which you mean", rows (val), columns (val)));
   else
     reply = struct ("ok", true, "verdict", logical (val), "tol", tol, "exact", (tol == 0));
+  endif
+endfunction
+
+% A MEASUREMENT rather than a verdict. vf_check answers true or false and
+% refuses everything else, which is right for a decision and leaves a whole
+% class of Octave's actual output with nowhere to go: a sweep locating where
+% recovery breaks is evidence, and there is no boolean anywhere in it. This
+% returns the value, and the value is what gets recorded.
+%
+% The refusals are the same in spirit. Empty measures nothing, NaN is not a
+% number, a string is not a measurement. The size cap is the one addition: a
+% whole field is not a measurement either, and a claim that turns on one has to
+% name the summary it turns on -- which is the number the artifact should carry.
+function reply = vf_value (expr)
+  try
+    val = evalin ("base", expr);
+  catch err
+    reply = struct ("ok", false, "error", err.message);
+    return;
+  end_try_catch
+
+  if (isempty (val))
+    reply = struct ("ok", false, "error", "the expression produced an empty value, which measures nothing");
+  elseif (! (islogical (val) || isnumeric (val)))
+    reply = struct ("ok", false, "error", ["the expression produced a " class(val) ", not a number"]);
+  elseif (any (isnan (val(:))))
+    reply = struct ("ok", false, "error", "the expression produced NaN, which is not a measurement");
+  elseif (numel (val) > 64)
+    reply = struct ("ok", false, "error", sprintf ("the expression produced %d values, and a measurement is one number or a short vector; summarise it first (a mean, a max, the point where it crosses) and measure that", numel (val)));
+  else
+    reply = struct ("ok", true, "value", double (val), "text", mat2str (double (val), 6));
   endif
 endfunction
 

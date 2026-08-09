@@ -90,11 +90,17 @@
 (defn- cull-or-keep
   "Apply the retention rule to a branch that just failed.
 
-  A branch holding a recent confirmation is never culled — incremental
+  A branch that banked something recently is never culled — incremental
   strategies naturally look like verify size N, fail at N+1, verify N+1, and
   culling them throws away the most productive branch in the beam. The
   emergency-review gate is what talks to it instead, and the arbiter has
   already had its say by the time this runs.
+
+  A recent MEASUREMENT counts here as well as a confirmation. A branch
+  locating something empirically confirms nothing by construction, and the run
+  that motivated this culled exactly such a branch at turn 12 with most of its
+  simulation already done (vf-0of). The gates that ask a branch to ship still
+  read confirmations only.
 
   The scalar rule (consecutive failures, no recent confirmation) is the
   TRIGGER; the critic's Pareto frontier is the verdict. A triggered branch
@@ -121,8 +127,8 @@
         hard-floor (* (gates/threshold :cull-hard-multiple) threshold)]
     (cond
       (not (and (>= fails threshold)
-                (not (state/confirmed-in-last branch
-                                              (gates/threshold :cull-recent-window)))
+                (not (state/banked-in-last branch
+                                           (gates/threshold :cull-recent-window)))
                 (pos? survivors)))
       branch
 

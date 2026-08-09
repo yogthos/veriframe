@@ -396,13 +396,14 @@
                    (for [{:keys [turn status engine claim]} (take-last 10 cs)]
                      (str (case status
                             :confirmed "✓" :refuted "✗"
-                            :existential "∃" "?")
+                            :existential "∃" :empirical "◆" "?")
                           " T" turn " " (mt/dim (str "[" (some-> engine name) "]")) " " (mt/math claim)))))))
 
 (defn- branch-text [graph node detail err]
   (str "status: " (name (or (:status node) :unknown))
        (when-let [reason (:reason node)] (str "\n" (mt/plain reason)))
        "\nconfirmed artifacts: " (or (:confirmed node) 0)
+       (when-let [m (:measured node)] (str " · measurements: " m))
        (when-let [c (:critic node)]
          (str "\ncritic: progress " (:progress c) " · momentum " (:momentum c)
               " · distinctness " (:distinctness c) " · viability " (:viability c)
@@ -433,7 +434,19 @@
                                                  " T" (:turn %) "]")) " "
                               (mt/math (:claim %))))
                    (str/join "\n\n"))))
-       (when-let [bad (seq (remove #(= "confirmed" (:claim_status %))
+       ;; Measurements get their own section rather than falling into the
+       ;; catch-all below. "DID NOT HOLD" is a claim about a claim that failed,
+       ;; and a measurement did not fail — nothing was decided about it at all.
+       (when-let [meas (seq (filter #(= "empirical" (:claim_status %))
+                                    (:artifacts detail)))]
+         (str "\n\n" (mt/heading (str "MEASURED (" (count meas) ")")) "\n"
+              (mt/dim "what a computation produced at the parameters it was run at, not a decision")
+              "\n"
+              (->> (take-last 6 meas)
+                   (map #(str "◆ " (mt/dim (str "[" (:kind %) " T" (:turn %) "]")) " "
+                              (mt/math (:claim %))))
+                   (str/join "\n"))))
+       (when-let [bad (seq (remove #(#{"confirmed" "empirical"} (:claim_status %))
                                    (:artifacts detail)))]
          (str "\n\n" (mt/heading (str "DID NOT HOLD, IN FULL (" (count bad) ")")) "\n"
               (->> (take-last 4 bad)
@@ -456,6 +469,7 @@
            "confirmed" "✓ CONFIRMED"
            "refuted" "✗ REFUTED"
            "existential" "∃ EXISTENTIAL — proves something exists, not which"
+           "empirical" "◆ MEASURED — a computation at these parameters, not a decision"
            "ambiguous" "? AMBIGUOUS"
            (str status))
          "  ·  " (mt/plain (or (:kind art) (some-> (:engine node) name)))

@@ -159,26 +159,31 @@
   Measured cost: three of five consecutive failed turns on one gen-14 branch,
   which was building an LP check and kept losing the turn to this. vf_check
   already explains itself when handed a matrix — `wrap it in all(...) or
-  any(...) to say which you mean` — and these two cases had been left raw."
-  [error]
-  (let [e (str error)]
-    (cond
-      (or (str/includes? e "invalid use of statement list")
-          (re-find #"(?i)parse error.*\n.*=\s*$" e))
-      (str "`expr` must be ONE expression that reduces to a scalar logical, and"
-           " this is a list of statements. Run the statements with octave_eval"
-           " first — the workspace persists across calls, so anything they"
-           " define is still there — then pass verify_octave just the"
-           " comparison that decides the claim. Octave said: " e)
+  any(...) to say which you mean` — and these two cases had been left raw.
 
-      (re-find #"'([^']+)' undefined" e)
-      (let [n (second (re-find #"'([^']+)' undefined" e))]
-        (str "`" n "` does not exist in the workspace. verify_octave only"
-             " EVALUATES an expression; it cannot define anything. If `" n "`"
-             " is a helper function or a value you meant to compute, create it"
-             " with octave_eval first and then check it here. Octave said: " e))
+  `shape` says what the caller's `expr` has to reduce to, because `check` and
+  `measure` want different things out of it. Both messages point at
+  octave_eval, which is the actual fix either way."
+  ([error] (explain-check-error error "reduces to a scalar logical"))
+  ([error shape]
+   (let [e (str error)]
+     (cond
+       (or (str/includes? e "invalid use of statement list")
+           (re-find #"(?i)parse error.*\n.*=\s*$" e))
+       (str "`expr` must be ONE expression that " shape ", and"
+            " this is a list of statements. Run the statements with octave_eval"
+            " first — the workspace persists across calls, so anything they"
+            " define is still there — then pass just the expression that"
+            " settles the claim. Octave said: " e)
 
-      :else e)))
+       (re-find #"'([^']+)' undefined" e)
+       (let [n (second (re-find #"'([^']+)' undefined" e))]
+         (str "`" n "` does not exist in the workspace. This tool only"
+              " EVALUATES an expression; it cannot define anything. If `" n "`"
+              " is a helper function or a value you meant to compute, create it"
+              " with octave_eval first and then use it here. Octave said: " e))
+
+       :else e))))
 
 (defn check
   "Evaluate `expr`, which must reduce to a logical scalar.
@@ -196,5 +201,24 @@
      (cond-> r
        (and (not (:ok r)) (:error r))
        (update :error explain-check-error)))))
+
+(defn measure
+  "Evaluate `expr` for its VALUE: {:ok true :value v :text s}.
+
+  `check` is the decision path and takes a scalar logical, which for a long
+  time was the only way an Octave turn banked anything. That left the engine's
+  most characteristic output — a sweep, a rate, the point at which something
+  breaks — with nowhere to go, because none of it is a boolean. A branch doing
+  exactly the work the problem called for scored nothing for it (vf-0of).
+
+  What comes back is the number Octave computed, not a claim about it. The tool
+  layer writes that number into the artifact, so a measurement cannot cite a
+  value the run never produced."
+  [session expr]
+  (let [r (run-op session {:op "value" :expr (str expr)})]
+    (cond-> r
+      (and (not (:ok r)) (:error r))
+      (update :error explain-check-error
+              "produces a number or a short vector"))))
 
 (defn snapshot [session] @(:log session))

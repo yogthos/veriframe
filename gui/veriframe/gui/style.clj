@@ -59,7 +59,7 @@
       (#{"add_rule" "retract_rule" "verify"} t) :prolog
       (#{"verify_smt" "verify_template"} t) :smt
       (or (#{"verify_lean" "lean_search"} t) (.startsWith t "proof_")) :lean
-      (#{"octave_eval" "verify_octave"} t) :octave
+      (#{"octave_eval" "verify_octave" "measure"} t) :octave
       :else :meta)))
 
 (def claim-color
@@ -68,6 +68,10 @@
   {:confirmed  [0.30 0.78 0.42]
    :refuted    [0.88 0.33 0.28]
    :existential [0.93 0.68 0.24]
+   ;; A measurement is neither. Deliberately not on the green-to-red axis:
+   ;; nothing was decided, so reading it as a weak confirmation or a soft
+   ;; refutation is the one mistake this colour exists to prevent.
+   :empirical  [0.38 0.62 0.95]
    :ambiguous  [0.55 0.55 0.60]})
 
 (defn node-style

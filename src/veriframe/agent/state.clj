@@ -65,6 +65,13 @@
 (defn has-confirmed? [branch]
   (boolean (seq (confirmed-artifacts branch))))
 
+(defn empirical-artifacts
+  "Measurements this branch banked: a value an engine computed, recorded for
+  what it is. Never confirmations — nothing was decided — but not nothing
+  either, which is what they counted for before (vf-0of)."
+  [branch]
+  (filter #(= :empirical (:claim-status %)) (:artifacts branch)))
+
 (defn confirmed-in-last
   "Whether a confirmed artifact landed within the last `n` turns. Incremental
   strategies naturally look like verify size N, fail at N+1, verify N+1, and
@@ -72,6 +79,22 @@
   [branch n]
   (let [cutoff (- (count (:turns branch)) n)]
     (boolean (some #(and (= :confirmed (:claim-status %))
+                         (>= (:turn %) cutoff))
+                   (:artifacts branch)))))
+
+(defn banked-in-last
+  "Whether the branch banked anything in the last `n` turns — a confirmation or
+  a measurement.
+
+  What the cull trigger reads, where `confirmed-in-last` used to. A branch
+  halfway through a parameter sweep has confirmed nothing by construction, and
+  culling it for that is the same mistake as culling the incremental prover:
+  the work is going somewhere and the beam cannot see it. The gates that ask a
+  branch to SHIP still read `confirmed-in-last`, because a measurement is not
+  something to ship."
+  [branch n]
+  (let [cutoff (- (count (:turns branch)) n)]
+    (boolean (some #(and (#{:confirmed :empirical} (:claim-status %))
                          (>= (:turn %) cutoff))
                    (:artifacts branch)))))
 
@@ -210,6 +233,8 @@
        " turns=" (turn-count branch)
        " artifacts=" (count (:artifacts branch))
        " confirmed=" (count (confirmed-artifacts branch))
+       (let [m (count (empirical-artifacts branch))]
+         (when (pos? m) (str " measured=" m)))
        (when-let [r (:inactive-reason branch)] (str " (" r ")"))))
 
 (defn residual
@@ -238,13 +263,14 @@
 
 (defn- artifact-substantiates
   "What an artifact's claim-status lets it substantiate. Only :confirmed
-  artifacts may be presented as established; the existential and ambiguous
-  buckets get their own clearly-labeled sections, and anything else (refuted,
-  unknown) substantiates nothing and never renders."
+  artifacts may be presented as established; the existential, measured and
+  ambiguous buckets get their own clearly-labeled sections, and anything else
+  (refuted, unknown) substantiates nothing and never renders."
   [a]
   (cond
     (= :confirmed (:claim-status a)) :established
     (= :existential (:claim-status a)) :existential
+    (= :empirical (:claim-status a)) :measured
     (= :ambiguous (:claim-status a)) :ambiguous
     :else :neither))
 
@@ -276,6 +302,7 @@
                       :proved (vec (filter proved subClaims))
                       :established (provenance (get grouped :established))
                       :existential (provenance (get grouped :existential))
+                      :measured (provenance (get grouped :measured))
                       :ambiguous (provenance (get grouped :ambiguous))}
                ;; Drift is only reportable when the audit actually restated
                ;; what the evidence establishes; an audit with no ESTABLISHED
@@ -309,6 +336,11 @@
                           (when (seq (:existential b))
                             (str "\n\nExistential only — the engine confirmed existence, not an instance:\n"
                                  (str/join "\n" (for [a (:existential b)]
+                                                  (str "- [" (:kind a) "/" (:tier a) "] " (:claim a))))))
+                          (when (seq (:measured b))
+                            (str "\n\nMeasured — what a computation produced at the"
+                                 " parameters it was run at, not a proof:\n"
+                                 (str/join "\n" (for [a (:measured b)]
                                                   (str "- [" (:kind a) "/" (:tier a) "] " (:claim a))))))
                           (when (seq (:ambiguous b))
                             (str "\n\nAmbiguous — the engine returned no decisive verdict; substantiates nothing:\n"

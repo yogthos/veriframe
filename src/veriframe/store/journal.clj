@@ -95,10 +95,12 @@
 (defn record-artifact!
   "A machine-checked result.
 
-  `claim-status` is the confirmed / refuted / ambiguous / existential split.
-  The existential bucket is the one that earns its keep: a SAT verdict over
-  free variables says a solution exists and does not hand you one, and the
-  done gate refuses to let it substantiate a concrete answer."
+  `claim-status` is the confirmed / refuted / ambiguous / existential /
+  empirical / unfaithful split. Two of those earn their keep by being neither
+  a yes nor a no: existential, where a SAT verdict over free variables says a
+  solution exists and does not hand you one, and empirical, where a
+  computation produced a number and decided nothing. The done gate refuses to
+  let either substantiate an answer on its own."
   [conn run-id {:keys [branch-id turn kind claim code verdict witness
                        claim-status tier]}]
   (db/with-writer

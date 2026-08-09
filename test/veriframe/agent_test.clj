@@ -746,6 +746,138 @@
         (is (str/includes? (:result r) "audit")
             "the refusal points at the missing audit")))))
 
+;; --- the answer has to be an answer to THIS problem -------------------------
+;;
+;; vf-eq9. The phase-unwrapping run shipped, as its answer to "when can 2D
+;; phase unwrapping be done exactly, and by a polynomial-time algorithm?", a
+;; true statement about four oriented edges of a 4-cycle. No phase field, no
+;; noise parameter, no torus, no threshold, no algorithm.
+;;
+;; Both existing gates passed it, correctly by their own criteria. The audit
+;; answered GAPS: none, because it compares the answer to the THESIS and the
+;; thesis had itself drifted. The coverage check found every substantive token
+;; in a confirmed artifact, because the answer WAS a confirmed artifact,
+;; verbatim. Nothing in the harness asked whether it answers the question.
+
+(def ^:private unwrap-problem
+  (str "When can two-dimensional phase unwrapping be done exactly, and by a"
+       " polynomial-time algorithm? Locate the noise threshold sigma at which"
+       " exact recovery of the wrapped field on the torus becomes impossible,"
+       " and say whether the unwrapper everyone ships attains it. That"
+       " unwrapper minimises a weighted sum over integer flows on the dual"
+       " grid, which is a minimum cost flow and runs in polynomial time."))
+
+(deftest an-answer-with-nothing-of-the-problem-in-it-is-caught-without-a-judge
+  ;; The free rung. Zero shared vocabulary is not a judgement call, and it is
+  ;; the one case that still gets caught when the judge cannot be reached.
+  (is (false? (tools/engages-problem?
+               unwrap-problem
+               "The five-element Sidon set {1, 2, 5, 11, 13} is optimal.")))
+  (testing "an answer about the problem's own subject matter passes this rung"
+    (is (true? (tools/engages-problem?
+                unwrap-problem
+                "Exact recovery holds for every sigma below 0.31."))))
+  (testing "and so does the bad answer — lexical overlap cannot see relevance"
+    ;; Which is exactly why this rung is not the fix, only the floor. The
+    ;; shipped 4-cycle answer shares `flow` and `cost` with the problem.
+    (is (true? (tools/engages-problem?
+                unwrap-problem
+                (str "On the 4-cycle there are two integer flows of minimum"
+                     " cost, so the uniqueness lemma is false.")))))
+  (testing "no problem statement means nothing to be irrelevant to"
+    (is (true? (tools/engages-problem? nil "anything")))
+    (is (true? (tools/engages-problem? "  " "anything")))))
+
+(deftest relevance-refusal-names-what-the-answer-does-not-address
+  (testing "a FAIL blocks and quotes both halves back"
+    (let [b (tools/relevance-block
+             {:verdict :fail
+              :text (str "ASKS: the value of the noise threshold sigma and"
+                         " whether min-cost flow attains it\n"
+                         "SUPPLIES: a counterexample to a uniqueness lemma"
+                         " on one 4-vertex graph\nVERDICT: FAIL")})]
+      (is (some? b))
+      (is (str/includes? b "noise threshold sigma"))
+      (is (str/includes? b "4-vertex graph"))
+      (is (re-find #"(?i)which .*did not settle|what you did not" b)
+          "and names the way out, which is one turn's work")))
+  (testing "a PASS does not block"
+    (is (nil? (tools/relevance-block {:verdict :pass :text "VERDICT: PASS"}))))
+  (testing "a judge that could not answer does not block"
+    ;; Deliberately fail-OPEN, against the convention everywhere else here.
+    ;; The other gates guard evidence, where a check that cannot run must not
+    ;; wave a claim through. This one is editorial: the evidence rungs have
+    ;; already passed by the time it runs, and stranding a verified answer
+    ;; because a judge call died is the worse failure. `judge` retries an
+    ;; unparseable answer three times and journals every attempt before it
+    ;; gets here.
+    (is (nil? (tools/relevance-block {:verdict :unparseable :text ""})))
+    (is (nil? (tools/relevance-block {:verdict :ambiguous :text ""})))))
+
+(deftest done-refuses-an-answer-to-a-different-question
+  ;; End to end, with every other rung satisfied: a passing audit against this
+  ;; exact text, an independent review, and full token coverage — the state
+  ;; the phase-unwrapping run was in when it shipped.
+  (let [answer (str "On the 4-cycle there are two integer flows of minimum"
+                    " cost, so the uniqueness lemma is false.")
+        b (branch-with :problem unwrap-problem
+                       :thesis {:goal "characterise when the min-cost flow is unique"
+                                :technique "t" :subClaims []}
+                       :artifacts [{:claim answer :claim-status :confirmed
+                                    :kind :smt :tier :slow :code "c"}]
+                       :last-review {:passed true}
+                       :last-audit {:passed true :proposed-answer answer
+                                    :established answer :relaxation? false})
+        prompts (atom [])]
+    (with-redefs [llm/chat (fn [_ _ msgs _]
+                             (swap! prompts conj (:content (second msgs)))
+                             {:content (str "ASKS: a threshold sigma and whether"
+                                            " min-cost flow attains it\n"
+                                            "SUPPLIES: a counterexample about"
+                                            " one 4-vertex graph\n"
+                                            "VERDICT: FAIL")})]
+      (let [r (tools/run-tool {:branch b :turn 1 :tool-name "done"
+                               :args {:answer answer}})]
+        (is (= :failure (:category r)))
+        (is (not= :done (:status (:branch r))))
+        (is (str/includes? (:result r) "threshold sigma")
+            "the refusal names what the problem asked for")
+        (is (str/includes? (str (first @prompts)) "polynomial-time algorithm")
+            "the judge is shown the problem, which is what the audit never sees")
+        (is (re-find #"(?i)partial" (str (first @prompts)))
+            "and told that an honestly-scoped partial result is a PASS")))))
+
+(deftest done-ships-an-answer-that-scopes-itself-honestly
+  ;; The escape hatch, and the outcome this gate is actually for. The run did
+  ;; not reach sigma; saying so and stating what it did reach is a legitimate
+  ;; answer, and is worth more than the same evidence shipped as though it
+  ;; were the whole thing.
+  (let [answer (str "This does not locate the noise threshold sigma. What is"
+                    " established is that the minimum-cost flow is not unique.")
+        b (branch-with :problem unwrap-problem
+                       :thesis {:goal "characterise when the min-cost flow is unique"
+                                :technique "t" :subClaims []}
+                       :artifacts [{:claim answer :claim-status :confirmed
+                                    :kind :smt :tier :slow :code "c"}]
+                       :last-review {:passed true}
+                       :last-audit {:passed true :proposed-answer answer
+                                    :established answer :relaxation? false})]
+    (with-redefs [llm/chat (fn [& _] {:content "ASKS: sigma\nSUPPLIES: what it says it does\nVERDICT: PASS"})]
+      (let [r (tools/run-tool {:branch b :turn 1 :tool-name "done"
+                               :args {:answer answer}})]
+        (is (= :success (:category r)))
+        (is (= :done (:status (:branch r))))))))
+
+(deftest the-relevance-judge-runs-last-and-only-once-the-evidence-holds
+  ;; It is the one rung that costs a model call, so an answer that fails a
+  ;; cheap deterministic rung must never reach it.
+  (let [b (branch-with :problem unwrap-problem :artifacts [])]
+    (with-redefs [llm/chat (fn [& _] (throw (ex-info "judge must not be called" {})))]
+      (let [r (tools/run-tool {:branch b :turn 1 :tool-name "done"
+                               :args {:answer "sigma is 0.31"}})]
+        (is (= :failure (:category r)))
+        (is (str/includes? (:result r) "no confirmed artifact"))))))
+
 (deftest free-variables-detection
   (testing "a constant pinned to a literal is not free"
     (is (= [] (tools/free-variables "(declare-const a Int)(assert (= a 5))"))))
@@ -766,7 +898,7 @@
            "thesis" "branch_theses" "review" "audit" "done" "give_up"
            "verify_lean" "lean_search" "proof_start" "proof_step"
            "proof_state" "proof_abandon"
-           "octave_eval" "verify_octave"}
+           "octave_eval" "verify_octave" "measure"}
          (set (tools/tool-names))))
   (is (some? (get-method tools/run-tool :default))
       "an unknown tool name must land somewhere that names the alternatives"))
@@ -1164,7 +1296,14 @@
       ;; Found by the width sweep: the width-1 arm was culled at turn 9 of 12
       ;; and the run ended there, which reads as evidence against narrow beams
       ;; and is actually a rule fired outside the situation it was written for.
-      (is (= :active (:status (#'beam/cull-or-keep {} failing 0 [])))))))
+      (is (= :active (:status (#'beam/cull-or-keep {} failing 0 [])))))
+    (testing "a recent measurement protects it too"
+      ;; vf-0of. A branch locating something empirically confirms nothing by
+      ;; construction, so the confirmation-only trigger culled exactly the
+      ;; branch whose thesis was the measurement.
+      (let [measuring (assoc failing :artifacts [{:claim "the rate at sigma = 0.7 is 0.72"
+                                                  :claim-status :empirical :turn 5}])]
+        (is (= :active (:status (#'beam/cull-or-keep {} measuring 2 []))))))))
 
 ;; --- the evolutionary loop --------------------------------------------------
 
@@ -2360,6 +2499,110 @@
                      :artifact :code)]
         (is (str/includes? code "A = solve_lp();"))
         (is (str/includes? code "val > 1"))))))
+
+;; --- measurements are evidence, of a kind that is not proof ------------------
+;;
+;; vf-0of. The phase-unwrapping run made 84 octave_eval calls and banked
+;; nothing from any of them, and the branch whose whole thesis was "empirically
+;; locate sigma_MCF" was culled at turn 12 having done most of that simulation.
+;; Everything the critic scores is a confirmed artifact; the only route to one
+;; is a verify_* that needs a decidable claim, and verify_octave wants a scalar
+;; logical. "Recovery breaks near sigma = 0.7" is not one, so the most valuable
+;; output available scored zero and the beam walked downhill into whatever was
+;; easiest to state as a proposition.
+
+(defn- measuring [value text judge-reply]
+  (fn [f]
+    (with-redefs [octave/create-session (fn [& _] {:dir "/tmp/x"
+                                                   :log (atom [{:code "rate = sweep ();"}])
+                                                   :alive (atom true)})
+                  octave/measure (fn [& _] {:ok true :value value :text text})
+                  llm/chat (fn [& _] {:content judge-reply})]
+      (f))))
+
+(deftest a-measurement-banks-as-evidence
+  (let [[c rid b] (fresh-run)]
+    ((measuring 0.72 "0.72" "GAPS: none\nVERDICT: PASS")
+     (fn []
+       (let [r (tools/run-tool
+                {:branch b :turn 1 :conn c :run-id rid :tool-name "measure"
+                 :args {:claim (str "the exact-recovery rate at sigma = 0.7,"
+                                    " n = 32, over 200 trials")
+                        :expr "rate"}})]
+         (is (= :empirical (get-in r [:artifact :claim-status]))
+             "a measurement is banked, and is its own status — not a proof")
+         (is (= :success (:category r)))
+         (is (true? (:progress? r))
+             "so a branch measuring things is not a branch standing still")
+         (is (str/includes? (get-in r [:artifact :claim]) "0.72")
+             "the value Octave returned is written into the claim, so no artifact
+              can cite a number the run never computed")
+         (is (= {:value 0.72} (get-in r [:artifact :witness])))
+         (is (str/includes? (get-in r [:artifact :code]) "rate = sweep ();")
+             "with the workspace that produced it, like every other Octave row"))))))
+
+(deftest a-measurement-is-not-a-proof-and-cannot-ship-as-one
+  (let [measured {:claim "the recovery rate at sigma = 0.7 is 0.72 (measured: 0.72)"
+                  :claim-status :empirical :kind :octave :tier :fast
+                  :witness {:value 0.72} :code "rate"}
+        b (branch-with :artifacts [measured]
+                       :last-audit {:passed true :proposed-answer "a"})
+        r (tools/run-tool {:branch b :turn 1 :tool-name "done" :args {:answer "a"}})]
+    (is (= :failure (:category r)))
+    (is (str/includes? (:result r) "no confirmed artifact")
+        "the done gate still wants something an engine decided")))
+
+(deftest a-measured-number-covers-an-answer-that-cites-it
+  ;; The coverage gate exists to catch fabricated numbers. A number Octave
+  ;; computed and the harness recorded is not fabricated, so it covers — which
+  ;; is what lets a branch state its measurement in the answer at all.
+  (let [measured {:claim "the recovery rate at sigma = 0.7 is 0.72"
+                  :claim-status :empirical :witness {:value 0.72} :code "rate"}]
+    (is (empty? (tools/uncovered-tokens "the recovery rate is 0.72" [measured])))
+    (is (= ["0.91"] (tools/uncovered-tokens "the recovery rate is 0.91" [measured])))))
+
+(deftest a-measurement-that-does-not-answer-its-claim-is-refused
+  ;; The faithfulness layer applies here exactly as it does to a verification.
+  ;; A claim quantified over an infinite family is not reached by a
+  ;; computation, however many points it covers, and a measurement is the
+  ;; easiest place in the harness to forget that.
+  (let [[c rid b] (fresh-run)]
+    ((measuring 0.72 "0.72" "GAP: the claim is about all n\nVERDICT: FAIL")
+     (fn []
+       (let [r (tools/run-tool
+                {:branch b :turn 1 :conn c :run-id rid :tool-name "measure"
+                 :args {:claim "recovery holds for every n" :expr "rate"}})]
+         (is (= :unfaithful (get-in r [:artifact :claim-status])))
+         (is (= :failure (:category r)))
+         (is (str/includes? (:result r) "all n")
+             "with the reviewer's objection, not a bare rejection"))))))
+
+(deftest the-critic-is-shown-what-a-branch-measured
+  ;; The load-bearing half. The critic's summary listed confirmed artifacts and
+  ;; nothing else, so a branch three hours into a parameter sweep looked
+  ;; identical to one that had done nothing.
+  (let [b (branch-with :id "B1"
+                       :thesis {:goal "locate the threshold empirically"}
+                       :artifacts [{:claim "recovery rate at sigma = 0.7 is 0.72"
+                                    :claim-status :empirical :kind :octave}])
+        s (#'critic/summary b [])]
+    (is (str/includes? s "0.72"))
+    (is (re-find #"(?i)measure" s))))
+
+(deftest measurements-render-in-the-residual-report-as-measurements
+  (let [b (branch-with :id "B1" :thesis {:goal "prove G" :subClaims []}
+                       :artifacts [{:claim "recovery rate at sigma = 0.7 is 0.72"
+                                    :claim-status :empirical :kind :octave
+                                    :tier :fast :turn 3}])
+        report (state/build-residual-report {:branches [b] :failures [] :gate-tally []})
+        text (state/render-residual-report report)]
+    (is (= ["recovery rate at sigma = 0.7 is 0.72"]
+           (map :claim (:measured (first (:branches report))))))
+    (is (empty? (:established (first (:branches report))))
+        "never in the established bucket")
+    (is (str/includes? text "0.72"))
+    (is (re-find #"(?i)measured.*not a proof|not a proof" text)
+        "labeled for exactly what it does and does not substantiate")))
 
 (deftest a-lean-theorem-that-is-not-the-claim-is-not-confirmed
   ;; Lean checks proofs, not statements. A declaration can elaborate perfectly

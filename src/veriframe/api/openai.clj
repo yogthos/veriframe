@@ -46,12 +46,21 @@
   an unverifiable answer from a verification harness is worth less than one
   whose artifacts are listed."
   [answer artifacts]
-  (let [confirmed (filter #(= "confirmed" (:claim_status %)) artifacts)]
+  (let [confirmed (filter #(= "confirmed" (:claim_status %)) artifacts)
+        measured (filter #(= "empirical" (:claim_status %)) artifacts)]
     (str answer
          (when (seq confirmed)
            (str "\n\n---\n\nVerified along the way:\n"
                 (str/join "\n" (for [a confirmed]
-                                 (str "- [" (:kind a) "/" (:tier a) "] " (:claim a)))))))))
+                                 (str "- [" (:kind a) "/" (:tier a) "] " (:claim a))))))
+         ;; Listed apart from the verified block and labeled, because the whole
+         ;; value of that block is that everything in it was decided by an
+         ;; engine. A measurement was not.
+         (when (seq measured)
+           (str "\n\nMeasured along the way — computations at the parameters"
+                " stated, not proofs:\n"
+                (str/join "\n" (for [a measured]
+                                 (str "- [" (:kind a) "] " (:claim a)))))))))
 
 (defn chat-completion
   "Run the harness on the last user message and answer in OpenAI's shape."

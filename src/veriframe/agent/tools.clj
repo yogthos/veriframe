@@ -144,27 +144,43 @@
 
   `engine` names the artifact for the reader (\"an SMT-LIB encoding\"),
   `outcome` describes what came back (\"Z3 returned unsat\"), and `direction`
-  is whether the harness read that outcome as confirming or refuting. The
-  question is the same either way — is this a faithful formalisation — but
+  is whether the harness read that outcome as confirming, refuting, or — for
+  `measure`, the one tool that decides nothing — merely measuring. The
+  question is the same in every case — is this a faithful formalisation — but
   what rides on the answer is not, and saying which is at stake stops the
   reviewer from grading a refutation as though a PASS were an endorsement of
   the claim."
   [claim code {:keys [engine outcome extra direction]}]
-  (let [refuting? (= :refutes direction)]
+  (let [refuting? (= :refutes direction)
+        measuring? (= :measures direction)]
     (str "A verifier was asked to substantiate this CLAIM by writing " engine "."
          " " outcome ", "
-         (if refuting?
+         (cond
+           measuring?
+           (str "which the harness has recorded as a MEASUREMENT: evidence about"
+                " this computation at these parameters, and not a decision"
+                " about anything.")
+
+           refuting?
            (str "which is the opposite of what the author predicted, so the"
                 " harness has recorded the claim as REFUTED.")
-           "which is the outcome the author predicted.")
+
+           :else "which is the outcome the author predicted.")
          " Your ONE job is to decide whether the artifact actually formalises"
          " the claim.\n\n"
          "CLAIM:\n" claim "\n\nARTIFACT:\n" code "\n\n"
-         (if refuting?
+         (cond
+           measuring?
+           (str "Answer PASS only if the claim describes exactly what THIS"
+                " artifact computed, at the parameters it actually used.")
+
+           refuting?
            (str "Answer PASS only if this outcome on THIS artifact refutes"
                 " exactly the claim above — that is, only if the artifact is a"
                 " faithful formalisation, so that what failed here is the claim"
                 " and not something else wearing its words.")
+
+           :else
            (str "Answer PASS only if this outcome on THIS artifact establishes"
                 " exactly the claim above."))
          " Answer FAIL if the artifact expresses something"
@@ -212,6 +228,21 @@
        " these inputs. A claim quantified over all reals, all integers, or an"
        " infinite family is NOT established by a finite computation, however"
        " many cases it covers — that is FAIL no matter how clean the code is."))
+
+(def ^:private measurement-faithfulness-note
+  "`measure` records a number rather than a verdict, which removes the usual
+  question — did the engine decide the right thing — and leaves only the one
+  that is left: is the claim about what was computed. The generalisation trap
+  is worse here than for `verify_octave`, because a measurement invites a
+  sentence about the phenomenon rather than about the run."
+  (str "Nothing was DECIDED here: Octave computed a value and the harness"
+       " recorded it, so the only question is whether the claim describes that"
+       " computation. Check that every parameter the claim names — sizes,"
+       " counts, trial numbers, the point it was measured at — is one the code"
+       " actually used, and that the claim stops where the run stopped. A claim"
+       " that generalises past the parameters swept, to all n or to the limit"
+       " or to an infinite family, is FAIL: what was measured is what was run."
+       " A claim reporting a trend the numbers do not show is also FAIL."))
 
 (def ^:private lean-faithfulness-note
   "Lean's proof checking is not in question; its statements are. Everything
@@ -1010,6 +1041,103 @@
                                   (str (:claim a) " " (:code a) " " (pr-str (:witness a))))))]
     (remove #(str/includes? haystack %) (answer-tokens answer))))
 
+;; --- and the answer has to answer THIS problem ------------------------------
+;;
+;; Everything above checks the answer against the EVIDENCE. Nothing checked it
+;; against the QUESTION, and a run shipped a true, verified, independently
+;; reviewed statement about four oriented edges of a 4-cycle as its answer to
+;; "when can 2D phase unwrapping be done exactly, and by a polynomial-time
+;; algorithm?" (vf-eq9).
+;;
+;; Both gates were right by their own criteria. The audit compares the answer
+;; to the THESIS, and the thesis had itself drifted off the problem over a
+;; hundred turns. The coverage rung found every token supported, because the
+;; answer WAS a confirmed artifact copied out verbatim. `advances-thesis?`
+;; guards claims against the thesis for exactly this reason; nothing guarded
+;; the thesis, or the answer, against the problem.
+
+(defn engages-problem?
+  "Whether the answer shares any substantive vocabulary with the problem.
+
+  The free rung, and deliberately the weakest one: lexical overlap cannot tell
+  an answer to the question from an answer about the question's machinery — the
+  4-cycle answer shares `flow` and `cost` with its problem and passes here. Zero
+  overlap is the only thing it decides, and it decides it with no model in the
+  path, which is what makes it the floor under a judge that fails open.
+
+  A problem with no substantive vocabulary of its own — a stub, a test
+  fixture — means there is nothing to be irrelevant to, and this passes."
+  [problem answer]
+  (let [terms (set (answer-tokens problem))]
+    (or (empty? terms)
+        (boolean (some terms (answer-tokens answer))))))
+
+(defn- relevance-prompt
+  "Ask whether the answer responds to the problem, and to nothing else.
+
+  Deliberately not the audit's question. The audit asks whether the evidence
+  supports the answer, which is why it can pass an answer that is fully
+  supported and about something else. This one is not shown the artifacts at
+  all, so there is nothing here to be talked into: only the problem and the
+  text about to ship."
+  [problem answer]
+  (str "A harness is about to ship this answer as its response to the problem"
+       " below. Decide ONE thing: does the answer respond to what the problem"
+       " asks?\n\n"
+       "PROBLEM:\n" problem "\n\n"
+       "PROPOSED ANSWER:\n" answer "\n\n"
+       "The answer does NOT have to solve the problem. A partial result is a"
+       " legitimate answer provided it says that is what it is: an answer that"
+       " settles none of what was asked, states plainly which questions it"
+       " leaves open, and gives what it established instead, is PASS.\n\n"
+       "Answer FAIL when the answer offers something else AS THOUGH it were the"
+       " answer — a lemma about the machinery, a corollary, a side result —"
+       " without saying what the problem asked for and did not get. An answer"
+       " that is true, and verified, and simply about a different question than"
+       " the one posed is FAIL.\n\n"
+       "Do not judge whether the answer is correct or well supported; other"
+       " gates have already done that, and you are not being shown the evidence."
+       " Judge only whether it responds to the question.\n\n"
+       "On a line reading `ASKS: <text>`, state in one sentence what the problem"
+       " asks for.\nOn a line reading `SUPPLIES: <text>`, state in one sentence"
+       " what the answer actually supplies."))
+
+(defn- labelled-line
+  "The text after `LABEL:` on the last line carrying one, or nil."
+  [text label]
+  (last (keep (fn [line]
+                (when-let [m (re-matches
+                              (re-pattern (str "(?i)" label "\\s*:\\s*(.+)"))
+                              (str/trim line))]
+                  (str/trim (second m))))
+              (str/split-lines (str text)))))
+
+(defn relevance-block
+  "The done-gate refusal for an answer that does not respond to the problem, or
+  nil to let it through.
+
+  Only an explicit FAIL blocks. This rung fails OPEN, against the convention
+  everywhere else here, and the difference is what it guards: the other gates
+  guard evidence, where a check that could not run must never wave a claim
+  through. This one is editorial, it runs only after every evidence rung has
+  already passed, and stranding a verified answer because a judge call died is
+  the worse of the two failures. `judge` already retries an unparseable verdict
+  three times and journals every attempt before it reaches here."
+  [j]
+  (when (= :fail (:verdict j))
+    (let [asks (labelled-line (:text j) "ASKS")
+          supplies (labelled-line (:text j) "SUPPLIES")]
+      (str "This answer does not respond to the problem.\n\n"
+           (when asks (str "The problem asks for: " asks "\n"))
+           (when supplies (str "Your answer supplies: " supplies "\n"))
+           (when (or asks supplies) "\n")
+           "A partial result is a perfectly good answer here, but it has to say"
+           " that is what it is. State which of the problem's questions you did"
+           " not settle, and then what you established instead — that ships."
+           " What does not ship is a side result presented as though it were the"
+           " answer.\n\n"
+           (or (not-empty (str/trim (str (:text j)))) (:reason j))))))
+
 (defmethod run-tool "done" [{:keys [branch] :as ctx}]
   ;; The answer may be omitted, in which case the last PASSING audit's
   ;; approved text ships verbatim. Two consecutive live runs produced
@@ -1028,7 +1156,14 @@
         template-confirmed? (some #(and (= :slow (:tier %))
                                         (= :confirmed (:claim-status %)))
                                   (:artifacts branch))
-        uncovered (uncovered-tokens answer confirmed)
+        ;; Measurements cover tokens even though they cannot carry the answer.
+        ;; This rung exists to catch FABRICATED specifics, and a number Octave
+        ;; computed with the harness watching is not fabricated — refusing it
+        ;; would leave a branch unable to state its own measurement (vf-0of).
+        ;; The strength of the evidence is the audit's question, not this one's.
+        evidence (concat confirmed (state/empirical-artifacts branch))
+        uncovered (uncovered-tokens answer evidence)
+        problem (:problem branch)
         block (cond
                 (nil? answer)
                 (str "No answer was supplied and no audit has passed. Call"
@@ -1076,11 +1211,21 @@
                      " re-run `audit`.")
 
                 (seq uncovered)
-                (str "Your answer asserts things no confirmed artifact supports: "
+                (str "Your answer asserts things no artifact supports: "
                      (str/join ", " (map #(str "`" % "`") (take 8 uncovered)))
                      ".\nEvery substantive claim in the answer has to appear in"
-                     " something an engine confirmed. Either verify these or"
-                     " remove them from the answer."))]
+                     " something an engine confirmed or measured. Either verify"
+                     " these or remove them from the answer.")
+
+                (not (engages-problem? problem answer))
+                (str "This answer shares no substantive term with the problem"
+                     " statement. Whatever it establishes, it is not an answer to"
+                     " the question that was asked.")
+
+                ;; Last, because it is the only rung that costs a model call.
+                (not (str/blank? (str problem)))
+                (relevance-block
+                 (judge ctx :relevance (relevance-prompt problem answer))))]
     (if block
       (fail branch (str "`done` refused.\n\n" block) :done-block block)
       {:branch (assoc branch :final-answer answer :status :done)
@@ -1436,6 +1581,79 @@
               :refuted
               (fail branch "Octave evaluated it to FALSE, so the claim is not supported."
                     :failure {:claim claim :reason "the Octave check evaluated to false"}
+                    :artifact artifact)))))
+      (catch Throwable e
+        (fail branch (str "Octave is unavailable: " (ex-message e)))))))
+
+(defn- measurement-claim-text
+  "The claim with the number Octave actually returned written into it.
+
+  Same discipline as the tolerance on an Octave check, and for a sharper
+  reason: a measurement's whole content is its value, so a claim recorded
+  without one is a sentence about a computation nobody can see. Writing it in
+  also means the coverage gate can tell a number the run produced from a number
+  the model remembered."
+  [claim text]
+  (str claim " (measured: " text ")"))
+
+(defmethod run-tool "measure" [{:keys [branch] :as ctx}]
+  ;; The bankable-measurement path (vf-0of). Everything else that records an
+  ;; artifact needs a decidable claim, and the beam only scores artifacts, so
+  ;; a branch doing the empirical work a problem asked for scored zero for it
+  ;; and got culled. What lands here is an :empirical artifact: real evidence,
+  ;; visible to the critic and the cull rule, and explicitly not a proof — the
+  ;; done gate still refuses to ship on measurements alone.
+  (if-let [m (missing ctx :claim :expr)]
+    (fail branch m)
+    (try
+      (let [[s branch] (octave-session! ctx)
+            claim (arg ctx :claim)
+            expr (arg ctx :expr)
+            r (octave/measure s expr)]
+        (if-not (:ok r)
+          (fail branch (str "The expression did not produce a measurement: "
+                            (:error r))
+                :failure {:claim claim :reason (:error r)})
+          (let [code (octave-artifact-code s expr)
+                faithful? (encoding-faithful?
+                           ctx claim code
+                           {:engine (str "an Octave workspace and an expression"
+                                         " to measure against it")
+                            :outcome (str "The expression evaluated to " (:text r))
+                            :direction :measures
+                            :extra (str octave-faithfulness-note "\n\n"
+                                        measurement-faithfulness-note)
+                            :structural (faithful/check-octave claim expr)})
+                measured? (:ok? faithful?)
+                artifact {:kind :octave
+                          :claim (if measured?
+                                   (measurement-claim-text claim (:text r))
+                                   claim)
+                          :code code
+                          :witness {:value (:value r)}
+                          :claim-status (if measured? :empirical :unfaithful)
+                          :tier :fast}]
+            (if measured?
+              {:branch branch :category :success :progress? true
+               :artifact artifact
+               :result (str "Measured: " (:text r) " — banked as an empirical"
+                            " artifact, with the workspace that produced it.\n\n"
+                            "This is a fact about the computation you ran at the"
+                            " parameters you ran it at, not a decision, and it"
+                            " cannot ship as one: `done` still needs something an"
+                            " engine confirmed. What it is for is telling you"
+                            " which theorem is worth proving, and standing behind"
+                            " a number your final answer states.")}
+              (fail branch
+                    (str "Octave computed " (:text r) ", but the claim does not"
+                         " describe what that expression measures, so the number"
+                         " substantiates nothing.\n\n" (:reason faithful?)
+                         "\n\nState the claim about the run you actually did — the"
+                         " parameters, the range swept, the number of trials —"
+                         " rather than about the phenomenon behind it.")
+                    :failure {:claim claim
+                              :reason (str "the Octave expression does not measure"
+                                           " the claim")}
                     :artifact artifact)))))
       (catch Throwable e
         (fail branch (str "Octave is unavailable: " (ex-message e)))))))

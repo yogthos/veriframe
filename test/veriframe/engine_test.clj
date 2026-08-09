@@ -546,3 +546,33 @@ sidon(S) :- sums(S, Sums), sort(Sums, Sorted), length(Sums, N), length(Sorted, N
         (is (false? (:verdict r))))
       (is (not (:ok (octave/check s "chol([1 2; 2 1])")))
           "a genuine error is not a false verdict"))))
+
+(deftest octave-measures-a-value-where-check-wants-a-verdict
+  ;; vf-0of. `check` is the only way an Octave turn banked anything and it
+  ;; takes a scalar logical, so a sweep that locates where recovery breaks —
+  ;; the most valuable thing this engine produces — had nowhere to go. This
+  ;; op returns the VALUE, and the value is the evidence.
+  (with-octave
+    (fn [s]
+      (octave/eval-code! s "sigmas = [0.25 0.5 0.75]; rate = mean (sigmas);")
+      (let [r (octave/measure s "rate")]
+        (is (:ok r) (str "a scalar is a measurement: " (:error r)))
+        (is (= 0.5 (:value r)))
+        (is (str/includes? (str (:text r)) "0.5")
+            "with a rendering the artifact can quote"))
+      (testing "a short vector is a measurement too — a sweep is the point"
+        (let [r (octave/measure s "sigmas")]
+          (is (:ok r))
+          (is (= [0.25 0.5 0.75] (:value r)))))
+      (testing "a verdict is a perfectly good measurement"
+        (is (= 1 (:value (octave/measure s "rate > 0")))))
+      (testing "but a non-answer is still not one"
+        (are [expr] (not (:ok (octave/measure s expr)))
+          "[]"                ; empty measures nothing
+          "0/0"               ; NaN is not a value
+          "'a string'"        ; not numeric
+          "nosuchvariable"    ; an error is not a measurement
+          "zeros (40, 40)"))  ; a whole field is not a measurement, summarise it
+      (testing "and the refusal of a big one says to summarise it"
+        (is (re-find #"(?i)summaris|summariz|mean|max"
+                     (str (:error (octave/measure s "zeros (40, 40)")))))))))

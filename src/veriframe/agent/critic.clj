@@ -89,6 +89,7 @@
   critic is a per-branch recurring cost."
   [branch siblings]
   (let [confirmed (state/confirmed-artifacts branch)
+        measured (state/empirical-artifacts branch)
         recent-user (->> (:messages branch)
                          (filter #(= "user" (:role %)))
                          (take-last 2)
@@ -103,6 +104,14 @@
          (when (seq confirmed)
            (str "; the most recent:\n"
                 (str/join "\n" (for [a (take-last 3 confirmed)]
+                                 (str "  - " (:claim a))))))
+         ;; Measurements are listed because leaving them out made a branch
+         ;; three hours into a parameter sweep read as a branch that had done
+         ;; nothing, and the beam culled it accordingly (vf-0of).
+         "\nMeasurements banked: " (count measured)
+         (when (seq measured)
+           (str "; the most recent:\n"
+                (str/join "\n" (for [a (take-last 3 measured)]
                                  (str "  - " (:claim a))))))
          "\n\nSibling theses (the diversity this branch is judged against):\n"
          (if (seq siblings)
@@ -122,7 +131,10 @@
   (let [p (str "You are the research director over parallel proof attempts on"
                " one problem. Score the branch below on four objectives,"
                " 1 (worst) to 5 (best):\n\n"
-               "progress: engine-confirmed results accumulated so far.\n"
+               "progress: engine-confirmed results accumulated so far, plus"
+               " measurements banked. A measurement is not a proof and does not"
+               " weigh as one, but a branch that has located a phenomenon"
+               " empirically is further along than a branch with neither.\n"
                "momentum: are the RECENT turns productive, or flailing?\n"
                "distinctness: how different is this approach from the sibling"
                " theses? The beam's diversity is worth protecting.\n"

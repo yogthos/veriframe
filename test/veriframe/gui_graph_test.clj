@@ -92,6 +92,19 @@
     (testing "branch nodes stay branch-kinded"
       (is (= :branch (get-in g [:nodes "B1" :kind]))))))
 
+(deftest measurements-are-counted-apart-from-confirmations
+  ;; vf-0of. A measurement is banked evidence and belongs on the node, but
+  ;; folding it into :confirmed would make the number the inspector prints
+  ;; beside the word "confirmed" untrue.
+  (let [g (graph/fold (conj events
+                            {:id 15 :branch_id "B1" :turn 9 :kind "artifact"
+                             :data {:kind "octave"
+                                    :claim "the rate at sigma = 0.7 is 0.72"
+                                    :claim-status "empirical"}}))]
+    (is (= 1 (get-in g [:nodes "B1" :confirmed])))
+    (is (= 1 (get-in g [:nodes "B1" :measured])))
+    (is (= :empirical (get-in g [:nodes "B1@9" :status])))))
+
 (deftest live-activity-comes-from-the-event-stream
   ;; What a branch is doing must be knowable from the events the GUI already
   ;; has. The branch-detail endpoint returns every turn and artifact in full
