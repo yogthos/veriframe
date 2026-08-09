@@ -1003,7 +1003,35 @@
     ;; Generic mathematical prose. "equals" and "numbers" carry no specific
     ;; content — the specific part is the number or name they connect.
     "number" "numbers" "equal" "equals" "integer" "integers" "natural"
-    "naturals" "first" "sums" "pairwise" "distinct" "positive"})
+    "naturals" "first" "sums" "pairwise" "distinct" "positive"
+
+    ;; The vocabulary of SCOPING an answer: saying what was and was not
+    ;; settled, and how sure of it you are. The relevance rung requires this —
+    ;; a partial result ships only if it states which questions it leaves open
+    ;; — and the coverage rung was refusing the answer for containing it, so
+    ;; the two could not both be satisfied. B4 of run 0d0c3560 called `done`
+    ;; eight times over twenty turns against a PASSING audit and was refused
+    ;; for asserting `stated`, `together`, `asked` and `settled` (vf-w2k).
+    ;;
+    ;; What you failed to establish is, by construction, not in your evidence.
+    ;; A gate that reads naming it as asserting it makes honesty impossible.
+    "stated" "states" "fact" "facts" "establish" "establishes" "established"
+    "evidence" "check" "checks" "checked" "unchecked" "found" "finds"
+    "finding" "findings" "showed" "shown" "showing"
+    "prove" "proves" "proving" "support" "supports"
+    "supported" "settle" "settles" "settled" "unsettled" "unresolved"
+    "resolve" "resolves" "resolved" "ask" "asks" "asked" "question"
+    "questions" "answers" "answered" "unanswered" "claim" "claims"
+    "claimed" "assert" "asserts" "asserted" "conclude" "concludes"
+    "remain" "remains" "remaining"
+    "outstanding" "together" "against" "general" "generally" "partial"
+    "partially" "whenever" "conditional" "conditionally" "arbitrary"
+    "computation" "computations" "computed" "search" "searched" "taken"
+    "what" "branch" "branches" "verify" "verifies" "verification"
+    "establishing" "demonstrate" "demonstrates" "demonstrated"
+    ;; Deictics. A word that points at the document rather than at the
+    ;; mathematics cannot be an assertion about the mathematics.
+    "here" "above" "below" "within" "throughout"})
 
 ;; A tool name followed by its version. Stripped BEFORE tokenizing, because the
 ;; version is a bare number and numbers are the part of this gate that must not
@@ -1029,6 +1057,47 @@
        (filter #(or (re-matches #"[0-9]+(\.[0-9]+)?" %) (>= (count %) 4)))
        distinct))
 
+(def ^:private word-suffixes
+  "Stripped longest-first, one only. Enough to see that `enumeration` and
+  `enumerating` are the same word, which raw substring matching cannot."
+  ["ations" "ation" "ising" "izing" "ings" "ing" "ions" "ion" "ies" "ied"
+   "es" "ed" "s"])
+
+(defn- stem
+  "The token with one morphological suffix removed, or nil.
+
+  Never below five characters, so nothing is shortened into a prefix that
+  matches everything. `enumeration` becomes `enumerat`, which the evidence's
+  `enumerating` contains; `residues` becomes `residu`, which `residue`
+  contains."
+  [w]
+  (some (fn [suf]
+          (when (and (str/ends-with? w suf)
+                     (>= (- (count w) (count suf)) 5))
+            (subs w 0 (- (count w) (count suf)))))
+        word-suffixes))
+
+(defn- covered?
+  "Whether `token` appears in the evidence.
+
+  Numbers are matched exactly, against the artifacts alone. That is the strict
+  half and it stays strict: an answer naming a size, a bound or a witness that
+  no engine produced is the fabricated verification report this whole rung
+  exists to catch.
+
+  Words get three chances — the token itself, the token with hyphens
+  normalised (`optimal-flow` against `optimal flow`), and its stem — because a
+  refusal over `residues` when the evidence says `residue` teaches the model
+  to strip its prose rather than to verify anything."
+  [token artifact-text word-text]
+  (if (re-matches #"[0-9]+(\.[0-9]+)?" token)
+    (str/includes? artifact-text token)
+    (or (str/includes? word-text token)
+        (and (str/includes? token "-")
+             (or (str/includes? word-text (str/replace token "-" " "))
+                 (str/includes? word-text (str/replace token "-" ""))))
+        (when-let [s (stem token)] (str/includes? word-text s)))))
+
 (defn uncovered-tokens
   "Answer tokens no confirmed artifact mentions.
 
@@ -1036,11 +1105,19 @@
   answer asserting a number that appears nowhere in the evidence is a
   fabricated verification report, which is the failure dirge PR 749 was
   written for."
-  [answer artifacts]
-  (let [haystack (str/lower-case
-                  (str/join " " (for [a artifacts]
-                                  (str (:claim a) " " (:code a) " " (pr-str (:witness a))))))]
-    (remove #(str/includes? haystack %) (answer-tokens answer))))
+  ([answer artifacts] (uncovered-tokens answer artifacts nil))
+  ([answer artifacts audit-established]
+   (let [artifact-text (str/lower-case
+                        (str/join " " (for [a artifacts]
+                                        (str (:claim a) " " (:code a) " "
+                                             (pr-str (:witness a))))))
+         ;; Words may also be covered by a PASSING audit's own restatement of
+         ;; what the evidence establishes: that is the harness's account of the
+         ;; artifacts, written in prose the answer may legitimately echo.
+         ;; Numbers may NOT. A fabricated figure is what this rung exists to
+         ;; catch, and the audit did not run an engine.
+         word-text (str artifact-text " " (str/lower-case (str audit-established)))]
+     (remove #(covered? % artifact-text word-text) (answer-tokens answer)))))
 
 ;; --- and the answer has to answer THIS problem ------------------------------
 ;;
@@ -1163,7 +1240,8 @@
         ;; would leave a branch unable to state its own measurement (vf-0of).
         ;; The strength of the evidence is the audit's question, not this one's.
         evidence (concat confirmed (state/empirical-artifacts branch))
-        uncovered (uncovered-tokens answer evidence)
+        uncovered (uncovered-tokens answer evidence
+                                    (when (:passed audit) (:established audit)))
         problem (:problem branch)
         block (cond
                 (nil? answer)

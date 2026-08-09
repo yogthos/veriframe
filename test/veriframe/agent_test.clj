@@ -467,6 +467,76 @@
                                         [{:claim "solved" :code ""
                                           :witness [{:A "knave"}]}])))))
 
+(deftest coverage-does-not-refuse-the-words-an-honest-partial-answer-needs
+  ;; vf-w2k. B4 of run 0d0c3560 called `done` eight times over twenty turns
+  ;; with a PASSING audit, and was refused six times for asserting `stated`,
+  ;; `facts`, `against`, `together`, `asked`, `settled`, `establish`,
+  ;; `evidence`, `found`, `showed`. None of those is an assertion.
+  ;;
+  ;; Worse, the relevance rung added the same morning TELLS a branch to state
+  ;; which questions it did not settle — and the thing you failed to establish
+  ;; is, by construction, absent from your evidence. The two rungs could not
+  ;; both be satisfied.
+  (let [artifacts [{:claim "enumerating all 2^12 assignments gives 8 flows of cost 6"
+                    :code "" :witness nil}
+                   {:claim "the residue at the top-left square is +1" :code "" :witness nil}]]
+
+    (testing "framing vocabulary is not an assertion"
+      (is (empty? (tools/uncovered-tokens
+                   (str "Taken together, what the evidence establishes is 8 flows."
+                        " The general question was asked but remains unsettled.")
+                   artifacts))))
+
+    (testing "naming what you did NOT settle needs the audit's own restatement"
+      ;; The hard half, and the one stopwords cannot reach. `polynomial-time`
+      ;; is a substantive term and it is absent from the evidence for the only
+      ;; reason that matters: nobody established it. The relevance rung asks
+      ;; the branch to say so. The audit — which has passed, and whose job was
+      ;; to state what the evidence does and does not cover — is where that
+      ;; sentence is licensed from.
+      (let [answer "polynomial-time computability is not settled here"]
+        (is (seq (tools/uncovered-tokens answer artifacts))
+            "with nothing but artifacts, the honest sentence is refused")
+        (is (empty? (tools/uncovered-tokens
+                     answer artifacts
+                     (str "8 flows of cost 6 on that graph; polynomial-time"
+                          " computability of the tie-break is not established")))
+            "and the passing audit's ESTABLISHED line licenses it")))
+
+    (testing "an inflection of a word in the evidence is covered"
+      ;; str/includes? on the raw haystack sees none of these.
+      (let [flagged (set (tools/uncovered-tokens
+                          "the residues and the enumeration give 8 flows"
+                          artifacts))]
+        (is (not (flagged "residues")) "evidence says `residue`")
+        (is (not (flagged "enumeration")) "evidence says `enumerating`")))
+
+    (testing "a hyphen is not a different word"
+      (is (not ((set (tools/uncovered-tokens "the top-left residue is +1" artifacts))
+                "top-left"))))
+
+    (testing "a number in no artifact is still refused — that is what this is for"
+      (is (= ["9"] (tools/uncovered-tokens "there are 9 flows" artifacts)))
+      (is ((set (tools/uncovered-tokens "the threshold is 0.31" artifacts)) "0.31")))
+
+    (testing "a substantive word in no artifact is still refused"
+      (is ((set (tools/uncovered-tokens "a vortex is present" artifacts)) "vortex")))
+
+    (testing "the passing audit's own restatement covers WORDS but never numbers"
+      ;; The audit is a gate that already passed on the merits and its
+      ;; ESTABLISHED line is the harness's account of what the evidence shows,
+      ;; so an answer may echo its prose. It may not inherit its arithmetic:
+      ;; a number still has to come from an artifact, which is the whole
+      ;; reason this rung exists.
+      (let [established (str "the lexicographic tie-break selects a unique flow"
+                             " whenever the optimal set is finite, and 42 of them exist")]
+        (is (empty? (tools/uncovered-tokens
+                     "the lexicographic tie-break selects a unique flow"
+                     artifacts established)))
+        (is (= ["42"] (tools/uncovered-tokens
+                       "there are 42 flows" artifacts established))
+            "a number the audit restated but no engine confirmed is not covered")))))
+
 (deftest verdict-parses-established-and-relaxation
   (testing "ESTABLISHED and RELAXATION lines are read"
     (let [j (verdict/parse (str "The artifacts cover the cases I checked.\n"
