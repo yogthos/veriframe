@@ -361,6 +361,11 @@
               some-unbound (when (seq bindings)
                              (->> (first bindings) (filter (comp unbound? val)) (map key)))
               code (prolog-artifact-code (:prolog branch) (arg ctx :check))
+              ;; Hoisted out of the opts map so the objection can be quoted
+              ;; back to the branch. It used to be journalled and nowhere
+              ;; else, which is how a branch repeated the identical defect on
+              ;; the turn after being caught: it was told the goal succeeded.
+              structural (faithful/check-prolog claim code)
               status (cond
                        all-unbound? :existential
                        ;; A ground goal reports {} bindings, which is neither
@@ -372,12 +377,13 @@
                              {:engine "a Prolog program and a goal to run against it"
                               :outcome "The goal succeeded"
                               :extra prolog-faithfulness-note
-                              :structural (faithful/check-prolog claim code)}))
+                              :structural structural}))
                        :unfaithful
-                       :else :confirmed)]
+                       :else :confirmed)
+              unfaithful? (= :unfaithful status)]
           {:branch branch
-           :category (if all-unbound? :failure :success)
-           :progress? (not all-unbound?)
+           :category (if (or all-unbound? unfaithful?) :failure :success)
+           :progress? (not (or all-unbound? unfaithful?))
            :result (str "The goal succeeded with " (count answers)
                         (if (:truncated reply) "+ (truncated)" "") " solution(s):\n"
                         (str/join "\n" (map #(str "  " (:formatted %)) shown))
@@ -387,6 +393,19 @@
                                " is satisfiable and nothing about which assignment holds."
                                " It does NOT confirm your claim. Bind the variables the"
                                " claim is about, or query them directly.")
+
+                          unfaithful?
+                          (str "\n\nBut the goal SUCCEEDING is not the claim being"
+                               " established, and this artifact does not establish it."
+                               (if (seq (:warnings structural))
+                                 (str " " (str/join " " (:warnings structural)))
+                                 (str " Review read the program beside the claim and"
+                                      " found it does not formalise it. Check that every"
+                                      " predicate the claim depends on is defined here and"
+                                      " that the goal enforces what the claim asserts."))
+                               "\n\nFix the program and re-run. Restating the claim to"
+                               " match a goal that enforces nothing is not a fix.")
+
                           (seq some-unbound)
                           (str "\n\nNote: " (str/join ", " (map name some-unbound))
                                " came back unbound, so the claim rests on the variables"

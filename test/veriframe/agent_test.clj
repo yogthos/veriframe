@@ -23,7 +23,7 @@
             [veriframe.agent.claims :as claims]
             [veriframe.agent.consensus :as consensus]
             [veriframe.agent.critic :as critic]
-            [veriframe.engine.prolog]
+            [veriframe.engine.prolog :as prolog]
             [veriframe.agent.gates :as gates]
             [veriframe.agent.loop :as aloop]
             [veriframe.agent.resume :as resume]
@@ -2143,6 +2143,44 @@
                              :judge-reply "irrelevant, must not be called"
                              :claim "c" :check "r"})
              :artifact :claim-status))))
+
+;; --- a rejected prolog artifact must SAY it was rejected ---------------------
+
+(deftest an-unfaithful-prolog-artifact-is-reported-as-a-failure-with-the-reason
+  ;; Watched this cost two consecutive turns live. A branch posted its
+  ;; constraints inside \+, the deterministic check caught it and journalled
+  ;; the objection, the artifact was marked :unfaithful — and the branch was
+  ;; told "The goal succeeded with 1 solution(s)". So it repeated the identical
+  ;; defect on the very next turn, because from where it sat the turn had
+  ;; worked.
+  ;;
+  ;; verify_smt, verify_octave and verify_lean all explain an :unfaithful
+  ;; outcome. The prolog path set the status and said nothing, and worse,
+  ;; still reported :success and scored progress for it.
+  (let [c (db/connect ":memory:")
+        _ (db/migrate! c)
+        rid (runs/start-run! c {:problem "p" :beam-width 1})
+        b (state/new-branch {:id "B1" :problem "p"})
+        ;; posts a clpfd constraint inside \+, which undoes it
+        bad "ok :- Xs ins 0..1, \\+ ( member(X,Xs), X #>= 1 ), label(Xs)."]
+    (runs/open-branch! c rid {:branch-id "B1" :created-at-turn 0})
+    (with-redefs [prolog/assert-rules! (fn [& _] {:ok true :clauses 1})
+                  prolog/snapshot (fn [& _] [{:code bad}])
+                  prolog/query (fn [& _] {:ok true :answers [{:bindings {:M 2}
+                                                              :formatted "M = 2"}]})
+                  llm/chat (fn [& _] (throw (ex-info "judge must not be called" {})))]
+      (let [r (tools/run-tool {:branch b :turn 5 :conn c :run-id rid
+                               :tool-name "verify"
+                               :args {:claim "the minimum cost is 2" :check "ok"}})]
+        (is (= :unfaithful (get-in r [:artifact :claim-status])))
+        (is (= :failure (:category r))
+            "a rejected artifact is not a success")
+        (is (false? (:progress? r))
+            "and it does not score progress")
+        (is (re-find #"(?i)constraint inside" (:result r))
+            "the result names the construct that swallowed the constraints")
+        (is (re-find #"(?i)does not|not established|enforc" (:result r))
+            "and says the goal did not establish the claim")))))
 
 ;; --- the deterministic gate blocks before the judge is paid for -------------
 
