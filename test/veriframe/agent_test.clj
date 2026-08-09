@@ -2212,7 +2212,10 @@
         (is (re-find #"(?i)constraint inside" (:result r))
             "the result names the construct that swallowed the constraints")
         (is (re-find #"(?i)does not|not established|enforc" (:result r))
-            "and says the goal did not establish the claim")))))
+            "and says the goal did not establish the claim")
+        (is (re-find #"(?i)constraint inside" (str (get-in r [:failure :reason])))
+            "and the objection reaches the cross-branch failure log, which is
+             what stops a sibling repeating it")))))
 
 ;; --- the deterministic gate blocks before the judge is paid for -------------
 

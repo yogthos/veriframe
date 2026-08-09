@@ -392,7 +392,8 @@
                        :else :confirmed)
               unfaithful? (= :unfaithful status)
               objection (when unfaithful? (:reason @prolog-review))]
-          {:branch branch
+          (cond->
+           {:branch branch
            :category (if (or all-unbound? unfaithful?) :failure :success)
            :progress? (not (or all-unbound? unfaithful?))
            :result (str "The goal succeeded with " (count answers)
@@ -423,7 +424,14 @@
                                " that did bind.")
                           :else ""))
            :artifact {:kind :prolog :claim claim :code code
-                      :claim-status status :tier :fast :witness bindings}})))))
+                      :claim-status status :tier :fast :witness bindings}}
+
+           ;; The failure log crosses branches; this path never wrote to it on
+           ;; an unfaithful outcome, so the objection reached the branch that
+           ;; earned it and no other. Half a fix is how a sibling repeats a
+           ;; lesson twenty turns later.
+           unfaithful?
+           (assoc :failure {:claim claim :reason objection})))))))
 
 ;; --- Z3 ---------------------------------------------------------------------
 
