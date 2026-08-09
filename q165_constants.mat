@@ -1,0 +1,32 @@
+# Created by Octave 11.3.0, Sun Aug 09 01:13:37 2026 UTC
+# name: gs
+# type: matrix
+# rows: 1
+# columns: 7
+ 3 5 11 15 33 55 165
+
+
+# name: As
+# type: matrix
+# rows: 1
+# columns: 7
+ 0.75 0.45833333333333348 0.28333333333333344 1.1875 0.92500000000000027 0.60416666666666674 1.40625
+
+
+# name: R
+# type: scalar
+0.83333333333333326
+
+
+# name: Q
+# type: scalar
+165
+
+
+# name: Qpr
+# type: matrix
+# rows: 1
+# columns: 3
+ 3 5 11
+
+

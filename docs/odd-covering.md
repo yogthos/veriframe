@@ -475,6 +475,47 @@ minimum). Both re-derived independently in exact rational arithmetic: all
 eight $q=13$ coefficients $(528,360,204,152,594,516,334,789)$ reproduce, and
 a full re-enumeration returns $335$ at the same assignment.
 
+## Finding 11 — the four-prime frontier is finite outside three families
+
+Generation 15. Every density-feasible four-prime support must contain $3$
+(largest product without it, $\{5,7,11,13\}$, is $1.7378$) and must contain
+$5$ or $7$ — with $3$ present but the next prime at least $11$, the best is
+$(3/2)(11/10)(13/12)(17/16) = 1.8992 < 2$. Pushing that further:
+
+**Outside the three dense base triples $\{3,5,7\}, \{3,5,11\}, \{3,5,13\}$,
+every density-feasible four-prime support has all primes $< 257$.** Four
+exhaustive cases, checked as one unsat disjunction:
+
+| region | bound |
+| ------ | ----- |
+| smallest prime $\ge 5$ | $(5/4)(7/6)(11/10)(13/12) = 1.7378$ |
+| $3$, then $\ge 11$ | $(3/2)(11/10)(13/12)(17/16) = 1.8992$ |
+| $3,5$, then $\ge 17$, then $\ge 257$ | $(3/2)(5/4)(17/16)(257/256) = \tfrac{65535}{32768}$ |
+| $3,7$, then $\ge 11$, then $\ge 29$ | $(3/2)(7/6)(11/10)(29/28) = 1.99375$ |
+
+The third is one part in $32768$ below $2$, and it is **sharp**: at $d = 251$
+the product is $2.000156 > 2$, so $\{3,5,17,251\}$ really is density-feasible.
+
+So the frontier is exactly three infinite families plus a finite list bounded
+by $257$. Of the families, $\{3,5,7,q\}$ is closed for $q \ge 13$ by
+Finding 10, and both $\{3,5,11,q\}$ and $\{3,5,13,q\}$ collapse by
+monotonicity to $q = 7$ — that is, to $\{3,5,7,11\}$ and $\{3,5,7,13\}$.
+
+**But the collapse needs the family's own partition, and for
+$\{3,5,13,q\}$ it fails.** At $Q = 195 = 3\cdot5\cdot13$ the minimum slack for
+$\{3,5,7,13\}$ is $-1729/576 \approx -3.0017$, at $(r_{15},r_{39},r_{65}) =
+(1,1,2)$ with $s = 78$. $\{3,5,7,13\}$ is closed at $Q = 105$, but $Q=105$ is
+not available to $\{3,5,13,q\}$ for $q \ne 7$, so that family stays open from
+below and needs its threshold found some other way. Re-enumerated
+independently: $-1729$ at the same assignment.
+
+*Also confirmed, but not new:* no subset of the squarefree divisors of $1155$
+reaches reciprocal sum $1$ — the total is $1149/1155 = 383/385$. True, and it
+means a covering on $\{3,5,7,11\}$ needs non-squarefree moduli, but it is a
+special case of Balister–Bollobás–Morris–Sahasrabudhe–Tiba, who rule out odd
+squarefree coverings entirely. Generation 15 shipped it as its final answer,
+which overstates what it is.
+
 ## The four-prime frontier
 
 Finding 9 retires every support with three primes or fewer, so individual
@@ -563,11 +604,12 @@ already settled. Expect the same one step up.
   `94452de2-0dfd-442a-bc4d-596ede4a1fc9` (2026-08-07), each after the first
   seeded from the run before it, all `deepseek-v4-flash` with artifact
   sharing on, beam width 2 through generation 4 and 3 thereafter.
-- Generations 10–14 (2026-08-07/08): `05ecb88a-52d7-4d72-acaf-d389aa367112`,
+- Generations 10–15 (2026-08-07/09): `05ecb88a-52d7-4d72-acaf-d389aa367112`,
   `90336412-b135-422c-a9cf-116064890e12`,
   `98d0423e-ddf6-46a5-97a6-b6493ec82e03`,
   `6f6704f4-00da-4a48-8db6-49bb56ca8ddb`,
-  `21104871-49a9-4b2c-b7c4-3f6959795e17`. Generations 12 onward were run
+  `21104871-49a9-4b2c-b7c4-3f6959795e17`,
+  `a6db156b-8e6d-4e4e-8d86-80e61f3713c8`. Generations 12 onward were run
   **unseeded**: generation 11 left false artifacts marked confirmed (see the
   corrections in Finding 9), and `seed_run` imports on `claim_status =
   'confirmed'`, so seeding would have carried them forward as established.
