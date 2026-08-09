@@ -53,13 +53,39 @@ bd close <id>         # Complete work
 
 ## Build & Test
 
-_Add your build and test commands here_
+```bash
+jolt -M:test          # the whole suite; exits non-zero on failure
+jolt serve            # HTTP on 3985, nREPL on 7888
+jolt -M:gui           # the GL scene graph; a strict HTTP client of the server
+```
+
+## Deploy changes WITHOUT restarting the server
+
+`jolt serve` already runs an nREPL (port from `HARNESS_NREPL_PORT`, default
+7888, written to `.nrepl-port`). **Use it.** A restart costs whatever is
+running — a campaign generation is hours of provider spend, and the Lean pool
+pays ~12s re-importing Mathlib on top.
 
 ```bash
-# Example:
-# npm install
-# npm test
+jolt -A:dev -M -m nrepl-client '(require (quote veriframe.store.journal) :reload)'
 ```
+
+It must be `-M -m nrepl-client`. Passing the file path — which the client's
+own docstring used to show — loads the namespace without calling `-main` and
+exits 0 having printed nothing, which reads exactly like a command that
+worked.
+
+Reloading takes effect immediately for every namespace except
+`veriframe.system`: the server holds handler **vars**, not the functions
+inside them. `veriframe.system/restart!` is there for the cases that need it.
+
+Reload every namespace you touched, in dependency order. Verify against the
+live server afterwards rather than assuming — a reload that throws leaves the
+old code in place and the process running.
+
+Worked example: `journal/branch-turns` plus `api.runs` were reloaded into a
+server mid-run, taking a branch-detail request from >50s (client timeout) to
+1.9s, with the generation still going.
 
 ## Architecture Overview
 

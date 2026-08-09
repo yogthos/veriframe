@@ -10,8 +10,12 @@
 (ns nrepl-client
   "Drive the running harness from the command line over nREPL.
 
-      jolt -A:dev dev/nrepl_client.clj '(+ 1 2)'
-      echo '(veriframe.system/config)' | jolt -A:dev dev/nrepl_client.clj -
+      jolt -A:dev -M -m nrepl-client '(+ 1 2)'
+      echo '(veriframe.system/config)' | jolt -A:dev -M -m nrepl-client -
+
+  It must be `-M -m nrepl-client`. Passing the file path instead loads the
+  namespace without calling -main, which exits 0 having printed nothing —
+  indistinguishable from a command that ran and returned nil.
 
   Reads the port from .nrepl-port. Prints stdout from the remote eval, then
   the value (or the exception). This is the same channel an editor uses, so
