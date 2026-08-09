@@ -2144,6 +2144,38 @@
                              :claim "c" :check "r"})
              :artifact :claim-status))))
 
+;; --- a rejection has to carry the reviewer's actual objection ---------------
+
+(deftest a-rejection-quotes-the-objection-to-the-branch-and-the-failure-log
+  ;; Watched this burn turns live. The reviewer found a sign error in one
+  ;; divergence equation and named the fix exactly — change `(+ (- k4) (- k7))`
+  ;; to `(+ k4 (- k7))`. The branch was shown "Check every coefficient, bound
+  ;; and index set against the claim's wording", which was all the tool ever
+  ;; said, and resubmitted the identical artifact on the next turn.
+  ;;
+  ;; The same boilerplate went into the failure log, which IS cross-branch, so
+  ;; every other branch inherited "z3 returned unsat (status unfaithful)" and
+  ;; learned nothing either. encoding-faithful? returned a bare boolean and
+  ;; threw the reasoning away.
+  (let [c (db/connect ":memory:")
+        _ (db/migrate! c)
+        rid (runs/start-run! c {:problem "p" :beam-width 1})
+        b (state/new-branch {:id "B1" :problem "p"})
+        objection "GAP: the vertex-6 divergence equation has the wrong sign.\nVERDICT: FAIL"]
+    (runs/open-branch! c rid {:branch-id "B1" :created-at-turn 0})
+    (with-redefs [smt/run-smt (fn [& _] {:status :ok :verdict :unsat})
+                  llm/chat (fn [& _] {:content objection})]
+      (let [r (tools/run-tool {:branch b :turn 3 :conn c :run-id rid
+                               :tool-name "verify_smt"
+                               :args {:claim "some claim"
+                                      :smtlib "(assert (>= x 1))(check-sat)"
+                                      :expectedVerdict "unsat"}})]
+        (is (= :unfaithful (get-in r [:artifact :claim-status])))
+        (is (str/includes? (:result r) "vertex-6 divergence equation")
+            "the branch is told what was actually wrong, not to go look again")
+        (is (str/includes? (str (get-in r [:failure :reason])) "vertex-6")
+            "and the failure log carries it, since that is what crosses branches")))))
+
 ;; --- a rejected prolog artifact must SAY it was rejected ---------------------
 
 (deftest an-unfaithful-prolog-artifact-is-reported-as-a-failure-with-the-reason

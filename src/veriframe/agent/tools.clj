@@ -280,8 +280,17 @@
             (journal/note! (:conn ctx) (:run-id ctx) :structural-objection
                            {:branch-id (:id (:branch ctx)) :turn (:turn ctx)
                             :data {:claim claim :warnings warnings}}))
-          false)
-      (verdict/passed? (judge ctx :faithfulness (faithfulness-prompt claim code opts))))))
+          {:ok? false :reason (str/join " " warnings)})
+      ;; The REASON travels with the verdict. It used to be dropped here and
+      ;; the caller told the branch to go and look again, which is not the
+      ;; same information: a reviewer that says "the vertex-6 divergence
+      ;; equation has the wrong sign, change (+ (- k4) (- k7)) to
+      ;; (+ k4 (- k7))" has done the work, and throwing that away had a
+      ;; branch resubmit the identical artifact on the next turn.
+      (let [j (judge ctx :faithfulness (faithfulness-prompt claim code opts))]
+        {:ok? (verdict/passed? j)
+         :reason (or (not-empty (str/trim (str (:text j))))
+                     (:reason j))}))))
 
 
 ;; --- Prolog -----------------------------------------------------------------
@@ -366,21 +375,23 @@
               ;; else, which is how a branch repeated the identical defect on
               ;; the turn after being caught: it was told the goal succeeded.
               structural (faithful/check-prolog claim code)
+              prolog-review
+              (delay (encoding-faithful?
+                      ctx claim code
+                      {:engine "a Prolog program and a goal to run against it"
+                       :outcome "The goal succeeded"
+                       :extra prolog-faithfulness-note
+                       :structural structural}))
               status (cond
                        all-unbound? :existential
                        ;; A ground goal reports {} bindings, which is neither
                        ;; bound nor all-unbound, so it used to reach :confirmed
                        ;; on the strength of having succeeded at all — with the
                        ;; rules that give it meaning nowhere in the artifact.
-                       (not (encoding-faithful?
-                             ctx claim code
-                             {:engine "a Prolog program and a goal to run against it"
-                              :outcome "The goal succeeded"
-                              :extra prolog-faithfulness-note
-                              :structural structural}))
-                       :unfaithful
+                       (not (:ok? @prolog-review)) :unfaithful
                        :else :confirmed)
-              unfaithful? (= :unfaithful status)]
+              unfaithful? (= :unfaithful status)
+              objection (when unfaithful? (:reason @prolog-review))]
           {:branch branch
            :category (if (or all-unbound? unfaithful?) :failure :success)
            :progress? (not (or all-unbound? unfaithful?))
@@ -397,8 +408,8 @@
                           unfaithful?
                           (str "\n\nBut the goal SUCCEEDING is not the claim being"
                                " established, and this artifact does not establish it."
-                               (if (seq (:warnings structural))
-                                 (str " " (str/join " " (:warnings structural)))
+                               (if (not-empty objection)
+                                 (str " " objection)
                                  (str " Review read the program beside the claim and"
                                       " found it does not formalise it. Check that every"
                                       " predicate the claim depends on is defined here and"
@@ -460,19 +471,25 @@
         (fail branch (:error r) :failure {:claim claim :reason (:error r)})
         (let [free (free-variables smtlib)
               status (smt-claim-status (:verdict r) expected (seq free))
-              faithful? #(encoding-faithful?
-                          ctx claim smtlib
-                          {:engine "an SMT-LIB encoding"
-                           :outcome (str "Z3 returned " (name (:verdict r)))
-                           :direction %
-                           :structural (faithful/check-smt claim smtlib
-                                                           {:verdict (:verdict r)})})
-              status (case status
-                       :confirmed (if (faithful? :confirms) :confirmed :unfaithful)
-                       ;; A refutation is an assertion too — of the negation —
-                       ;; and it settles the claim for every other branch.
-                       :refuted (if (faithful? :refutes) :refuted :unfaithful)
-                       status)]
+              review (fn [dir] (encoding-faithful?
+                                ctx claim smtlib
+                                {:engine "an SMT-LIB encoding"
+                                 :outcome (str "Z3 returned " (name (:verdict r)))
+                                 :direction dir
+                                 :structural (faithful/check-smt claim smtlib
+                                                                 {:verdict (:verdict r)})}))
+              verdict-review (case status
+                               :confirmed (review :confirms)
+                               ;; A refutation is an assertion too — of the
+                               ;; negation — and it settles the claim for every
+                               ;; other branch.
+                               :refuted (review :refutes)
+                               nil)
+              status (cond
+                       (nil? verdict-review) status
+                       (:ok? verdict-review) status
+                       :else :unfaithful)
+              objection (when (= :unfaithful status) (:reason verdict-review))]
           (merge
            {:branch branch
             :category (if (= :confirmed status) :success :failure)
@@ -482,12 +499,12 @@
                            :confirmed "That matches your expectedVerdict — claim CONFIRMED."
                            :refuted "That contradicts your expectedVerdict — claim REFUTED."
                            :unfaithful
-                           (str "Review found that the encoding does not formalise"
-                                " the claim, so this verdict does not settle it"
-                                " either way. Z3 answered the question you asked;"
-                                " the question was not the one you stated. Check"
-                                " every coefficient, bound and index set against"
-                                " the claim's wording and re-run. Narrowing the"
+                           (str "The encoding does not formalise the claim, so"
+                                " this verdict does not settle it either way."
+                                " Z3 answered the question you asked; the"
+                                " question was not the one you stated.\n\n"
+                                objection
+                                "\n\nFix the encoding and re-run. Narrowing the"
                                 " claim until it matches a formula you have"
                                 " already written is not a fix: state the claim"
                                 " you mean, then encode that.")
@@ -507,10 +524,15 @@
                            (str "\nWitness: " (pr-str (:model r)))))
             :artifact {:kind :smt :claim claim :code smtlib :verdict (:verdict r)
                        :witness (:model r) :claim-status status :tier :fast}}
+           ;; The failure log is what crosses branches, so it carries the
+           ;; objection rather than a description of the engine's output.
+           ;; "z3 returned unsat (status unfaithful)" taught the next branch
+           ;; nothing, and it made the same mistake.
            (when-not (= :confirmed status)
              {:failure {:claim claim
-                        :reason (str "z3 returned " (name (:verdict r))
-                                     " (status " (name status) ")")}})))))))
+                        :reason (or objection
+                                    (str "z3 returned " (name (:verdict r))
+                                         " (status " (name status) ")"))}})))))))
 
 (defmethod run-tool "verify_template" [{:keys [branch config] :as ctx}]
   (if-let [m (missing ctx :claim :template)]
@@ -535,8 +557,8 @@
                 ;; both encodings are built from the same slots, so agreement
                 ;; means the instantiation was consistent, not that the values
                 ;; are the claim's.
-                status (if (and (= :confirmed status)
-                                (not (encoding-faithful?
+                treview (when (= :confirmed status)
+                          (encoding-faithful?
                                       ctx claim smtlib
                                       {:engine (str "an SMT-LIB encoding generated"
                                                     " from the `" tname "` template")
@@ -546,9 +568,9 @@
                                        :direction :confirms
                                        :extra template-faithfulness-note
                                        :structural (faithful/check-smt
-                                                    claim smtlib {:verdict verdict})})))
-                         :unfaithful
-                         status)
+                                                    claim smtlib {:verdict verdict})}))
+                status (if (and treview (not (:ok? treview))) :unfaithful status)
+                objection (when (= :unfaithful status) (:reason treview))
                 confirmed? (= :confirmed status)
                 artifact {:kind :smt :claim claim
                           :code smtlib
@@ -1166,13 +1188,13 @@
 
               (:ok r)
               (let [code (arg ctx :lean)]
-                (if (encoding-faithful?
+                (if (:ok? (encoding-faithful?
                      ctx claim code
                      {:engine "a Lean 4 declaration"
                       :outcome "Lean accepted it with no goals left open"
                       :direction :confirms
                       :extra lean-faithfulness-note
-                      :structural (faithful/check-lean claim code)})
+                      :structural (faithful/check-lean claim code)}))
                   {:branch branch :category :success :progress? true
                    :result "Lean accepted it. Claim CONFIRMED."
                    :artifact {:kind :lean :claim claim :code code
@@ -1359,9 +1381,10 @@
                             :direction (if true? :confirms :refutes)
                             :extra octave-faithfulness-note
                             :structural (faithful/check-octave claim expr)})
-                status (cond (not faithful?) :unfaithful
+                status (cond (not (:ok? faithful?)) :unfaithful
                              true? :confirmed
                              :else :refuted)
+                objection (when (= :unfaithful status) (:reason faithful?))
                 artifact {:kind :octave
                           :claim (octave-claim-text claim tol exact?)
                           :code code
@@ -1384,8 +1407,9 @@
               :unfaithful
               (fail branch
                     (str "Octave evaluated it to " (if true? "true" "false")
-                         ", but review found the expression does not answer the"
-                         " claim, so the verdict settles nothing either way."
+                         ", but the expression does not answer the"
+                         " claim, so the verdict settles nothing either way.\n\n"
+                         objection "\n\n"
                          " Check that the expression reads the values the"
                          " workspace computed, that any tolerance matches what"
                          " the claim states, and that the claim is about these"
