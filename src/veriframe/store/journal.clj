@@ -64,8 +64,31 @@
   (emit! conn run-id :turn {:branch-id branch-id :turn turn
                             :data {:tool tool-name :category category}}))
 
-(defn turns [conn run-id]
+(defn turns
+  "Every turn of a run, whole rows. `assistant_text` comes back with them, so
+  this is what resume replays from — and it is why nothing that merely
+  DISPLAYS turns should call it. See `branch-turns`."
+  [conn run-id]
   (db/fetch conn ["SELECT * FROM turns WHERE run_id = ? ORDER BY id" run-id]))
+
+(defn branch-turns
+  "One branch's turns, carrying only what a reader renders.
+
+  Both halves matter. Filtering by branch in SQL uses the
+  (run_id, branch_id, turn) index instead of dragging the whole run into
+  memory to throw most of it away; dropping assistant_text and
+  reasoning_text drops the bulk, which on one real run was 5.5MB against
+  62KB of results. The branch panel used to fetch all of it, spend over two
+  minutes doing so, and exceed the client's socket timeout — so the branch
+  never rendered at all."
+  [conn run-id branch-id]
+  (db/fetch conn
+            ["SELECT id, run_id, branch_id, turn, tool_name, args, result,
+                     category, parse_error, auto_repaired, created_at
+                FROM turns
+               WHERE run_id = ? AND branch_id = ?
+               ORDER BY turn, id"
+             run-id branch-id]))
 
 ;; --- artifacts --------------------------------------------------------------
 

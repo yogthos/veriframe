@@ -108,6 +108,42 @@
                            :result "timeout" :category "neutral"})
     (is (nil? (:assistant_text (first (journal/turns c rid))))))))
 
+(deftest branch-turns-reads-one-branch-and-leaves-the-bulk-behind
+  ;; The GUI's branch panel hung forever on gen-14. branch-detail called
+  ;; journal/turns, which selects EVERY turn of the whole run with every
+  ;; column and then filters for one branch in Clojure — so opening one
+  ;; branch fetched 5.5MB of assistant_text that the panel never renders,
+  ;; took over two minutes, and blew the client's 45s socket timeout. The
+  ;; run's index on (run_id, branch_id, turn) was sitting unused.
+  ;;
+  ;; assistant_text and reasoning_text stay out of this projection on
+  ;; purpose. They are the bulk, nothing displaying a branch wants them, and
+  ;; resume — which does — keeps using journal/turns.
+  (with-db [c]
+    (let [rid (runs/start-run! c {:problem "p" :beam-width 1})]
+      (runs/open-branch! c rid {:branch-id "B1" :created-at-turn 0})
+      (runs/open-branch! c rid {:branch-id "B2" :created-at-turn 0})
+      (journal/record-turn! c rid {:branch-id "B1" :turn 1 :tool-name "verify"
+                                   :result "ok" :category "success"
+                                   :assistant-text "a very long reply"
+                                   :reasoning-text "private reasoning"})
+      (journal/record-turn! c rid {:branch-id "B2" :turn 1 :tool-name "thesis"
+                                   :result "registered" :category "neutral"
+                                   :assistant-text "another long reply"})
+      (let [ts (journal/branch-turns c rid "B1")
+            t (first ts)]
+        (is (= 1 (count ts)) "only the branch asked for")
+        (is (= "verify" (:tool_name t)))
+        (is (= "ok" (:result t)) "the result is what gets rendered, so it stays")
+        (is (not (contains? t :assistant_text))
+            "the bulk column is not in the projection at all")
+        (is (not (contains? t :reasoning_text))))
+      (is (= 1 (count (journal/branch-turns c rid "B2"))))
+      (is (empty? (journal/branch-turns c rid "nosuch")))
+      ;; resume still needs the full row, so the old accessor keeps its shape.
+      (is (= "a very long reply"
+             (:assistant_text (first (journal/turns c rid))))))))
+
 ;; --- liveness ---------------------------------------------------------------
 
 (deftest last-progress-tracks-the-newest-journal-entry

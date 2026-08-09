@@ -73,6 +73,6 @@
 (defn branch-detail [conn run-id branch-id]
   (when-let [b (runs/get-branch conn run-id branch-id)]
     {:branch (update b :thesis parse-json)
-     :turns (filterv #(= branch-id (:branch_id %)) (journal/turns conn run-id))
+     :turns (journal/branch-turns conn run-id branch-id)
      :artifacts (mapv #(update % :witness parse-json)
                       (journal/artifacts conn run-id branch-id))}))

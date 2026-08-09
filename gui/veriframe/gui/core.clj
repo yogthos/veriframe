@@ -47,6 +47,7 @@
            :event-count 0
            :selected nil                ; selected branch node
            :branch-log nil              ; branch-detail body for :selected
+           :branch-log-error nil        ; why it is missing, when it failed
            :connected? false
            :notice nil                  ; transient feedback line
            :budget ""                   ; resume budget-extension entry
@@ -65,18 +66,31 @@
   (when (and selected (not= "seed" selected))
     (or (get-in graph [:nodes selected :branch]) selected)))
 
-(defn- refresh-branch-log! []
+(defn- refresh-branch-log!
+  "Fetch the selected branch's turns and artifacts, off the main thread.
+
+  A failure is RECORDED, not dropped. It used to be discarded silently, which
+  left the panel saying `(loading …)` forever with no way to tell a slow fetch
+  from a dead one — the same shape of bug as a crashed run whose row still
+  read `running`. Worse, the poll loop refired it on every event touching the
+  branch, so a branch too big to fetch queued a new doomed request every
+  second."
+  []
   (let [{:keys [base-url run] :as st} @state
         branch (selected-branch-id st)
         sel (:selected st)]
     (when (and run branch)
       (future
         (let [r (api/branch-detail base-url run branch)]
-          (when (and (:ok r) (= sel (:selected @state)))
-            (swap! state assoc :branch-log (:body r))))))))
+          (when (= sel (:selected @state))
+            (if (:ok r)
+              (swap! state assoc :branch-log (:body r) :branch-log-error nil)
+              (swap! state assoc :branch-log-error
+                     (or (:error r) (str "HTTP " (:status r)))))))
+        (glpane/request-render!)))))
 
 (defn- select-node! [id]
-  (swap! state assoc :selected id :branch-log nil)
+  (swap! state assoc :selected id :branch-log nil :branch-log-error nil)
   (refresh-branch-log!)
   (glpane/request-render!))
 
@@ -95,7 +109,7 @@
   (let [base (:base-url @state)]
     (when-let [{:keys [stop!]} @poller] (stop!))
     (swap! state assoc :run run-id :graph (graph/empty-graph) :event-count 0
-           :selected nil :branch-log nil :notice nil)
+           :selected nil :branch-log nil :branch-log-error nil :notice nil)
     (glpane/request-render!)
     (when run-id
       (reset! poller
@@ -107,8 +121,11 @@
                          (fn [s] (-> s
                                      (update :graph #(reduce graph/apply-event % evs))
                                      (update :event-count + (count evs)))))
-                  (let [sel (:selected @state)]
-                    (when (some #(= sel (:branch_id %)) evs)
+                  ;; Compare against the selected node's BRANCH: an artifact
+                  ;; node's id is "<branch>@<turn>", which matches no event's
+                  ;; branch_id, so artifact panels never refreshed at all.
+                  (let [b (selected-branch-id @state)]
+                    (when (and b (some #(= b (:branch_id %)) evs))
                       (refresh-branch-log!)))
                   (glpane/request-render!))
                 :on-status
@@ -382,7 +399,7 @@
                             :existential "∃" "?")
                           " T" turn " " (mt/dim (str "[" (some-> engine name) "]")) " " (mt/math claim)))))))
 
-(defn- branch-text [graph node detail]
+(defn- branch-text [graph node detail err]
   (str "status: " (name (or (:status node) :unknown))
        (when-let [reason (:reason node)] (str "\n" (mt/plain reason)))
        "\nconfirmed artifacts: " (or (:confirmed node) 0)
@@ -395,7 +412,12 @@
        (activity-text node)
        (claims-text graph node)
        (when-not detail
-         (str "\n\n" (mt/dim "(loading full turn results and encodings…)")))
+         (str "\n\n"
+              (if err
+                (mt/dim (str "(could not load turn results: " err
+                             " — the live activity and attempts above are"
+                             " from the event stream and are complete)"))
+                (mt/dim "(loading full turn results and encodings…)"))))
        (when-let [turns (seq (:turns detail))]
          (str "\n\n" (mt/heading "TURN RESULTS") "\n"
               (->> (take-last 12 turns)
@@ -453,7 +475,7 @@
            (str "\n\n" (mt/heading "CODE THAT RAN") "\n" (mt/mono c))))))
 
 (defn- log-panel []
-  (let [{:keys [graph selected branch-log]} @state
+  (let [{:keys [graph selected branch-log branch-log-error]} @state
         node (get-in graph [:nodes selected])]
     [:frame {:label (cond
                       (= :artifact (:kind node)) (str "attempt " selected)
@@ -468,7 +490,7 @@
                        (str (mt/heading "inherited artifacts") "\n" (mt/plain (:label node)))
                        (= :artifact (:kind node))
                        (attempt-text node branch-log)
-                       :else (branch-text graph node branch-log))
+                       :else (branch-text graph node branch-log branch-log-error))
                :wrap true :xalign 0.0 :margin 8}]]]))
 
 (defn- input-bar []
