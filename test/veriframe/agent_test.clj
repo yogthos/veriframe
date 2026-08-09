@@ -448,6 +448,20 @@
     (is (empty? (tools/uncovered-tokens "the answer is that it exists"
                                         [{:claim "x" :code "" :witness nil}]))))
 
+  (testing "grammar that slipped through the inflections is not an assertion"
+    ;; A live refusal listed `does`, `follow`, `from` and `having` beside the
+    ;; genuine catches, telling the branch to verify or remove the word "from".
+    ;; `follows`, `have` and `has` were already stopwords; their other forms
+    ;; were not, and `from` and `does` were missing outright. All four are
+    ;; framing by the list's own test — none can carry a specific claim — so
+    ;; adding them costs the gate nothing.
+    (let [artifacts [{:claim "the minimum is 2" :code "" :witness nil}]]
+      (is (empty? (tools/uncovered-tokens
+                   "this does follow from having the minimum 2" artifacts)))
+      (is (= ["residue"] (tools/uncovered-tokens
+                          "this does follow from having a residue" artifacts))
+          "and the substantive term is still caught")))
+
   (testing "the witness counts as evidence, not only the claim text"
     (is (empty? (tools/uncovered-tokens "a is knave"
                                         [{:claim "solved" :code ""

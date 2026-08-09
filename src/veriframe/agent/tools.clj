@@ -945,6 +945,12 @@
     "answer" "solution" "solutions" "result" "results" "value" "values"
     "therefore" "hence" "conclusion" "shows" "show" "proved" "proven"
     "verified" "confirms" "confirmed" "follows" "given" "which" "where"
+    ;; Inflections of entries already here, plus two plain prepositions that
+    ;; were simply missing. A refusal once listed `does`, `follow`, `from` and
+    ;; `having` beside its real catches and told the branch to verify or
+    ;; remove the word "from".
+    "does" "do" "did" "follow" "following" "having" "from" "into" "than"
+    "when" "while" "because" "since" "about" "over" "under" "between"
     "unique" "uniquely" "only" "exactly" "such" "these" "those" "each"
     "every" "must" "also" "both" "same" "case" "cases" "holds" "true" "false"
 
