@@ -183,6 +183,19 @@
               " is a helper function or a value you meant to compute, create it"
               " with octave_eval first and then use it here. Octave said: " e))
 
+       ;; The vector case, which the all(...)/any(...) advice sends the wrong
+       ;; way when what the branch holds is a SWEEP. Told to collapse a column
+       ;; of counts to one boolean, a model writes a comparison against a
+       ;; closed form — and run 0d0c3560's B2 wrote one that was true by
+       ;; construction, comparing `size(states,1).^m` to `2.^m` without ever
+       ;; reading the counts it had measured. `measure` takes the column.
+       (str/includes? e "not a scalar")
+       (str e "\n\nIf that vector IS the result — a sweep, a column of counts,"
+            " a rate per parameter — then it is a measurement and not a"
+            " verdict, and `measure` banks it as itself. Collapsing it to a"
+            " boolean here is how a check ends up comparing a formula to"
+            " itself instead of to what was computed.")
+
        :else e))))
 
 (defn check

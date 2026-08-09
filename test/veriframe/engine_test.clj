@@ -504,6 +504,16 @@ sidon(S) :- sums(S, Sums), sort(Sums, Sorted), length(Sums, N), length(Sorted, N
       (is (str/includes? m "octave_eval"))
       (is (str/includes? m "check_farkas")
           "naming it, so the branch knows which one is missing")))
+  (testing "a vector says a sweep is a measurement, not a verdict to collapse"
+    ;; Observed in run 0d0c3560: told to wrap its column of counts in all(...),
+    ;; the branch wrote `size(states,1).^m == 2.^m`, which is true by
+    ;; construction and never reads the sweep it had just run. The all/any
+    ;; advice is right for a predicate over a matrix and wrong for a result.
+    (let [m (octave/explain-check-error
+             "the expression produced a 8x1 value, not a scalar; wrap it in all(...) or any(...) to say which you mean")]
+      (is (str/includes? m "all(...)") "the original advice survives")
+      (is (str/includes? m "measure"))
+      (is (re-find #"(?i)true by construction|comparing a formula to itself" m))))
   (testing "anything else is passed through untouched"
     (is (= "the expression produced NaN, which is not a verdict"
            (octave/explain-check-error

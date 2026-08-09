@@ -1573,7 +1573,12 @@
                          " workspace computed, that any tolerance matches what"
                          " the claim states, and that the claim is about these"
                          " inputs rather than an infinite family a computation"
-                         " cannot reach.")
+                         " cannot reach.\n\nAnd check that you wanted a verdict"
+                         " at all. If what you have is a measured value — a"
+                         " count, a rate, the point where something crosses —"
+                         " `measure` records it as itself, with no comparison"
+                         " to get wrong. Forcing a measurement into a boolean"
+                         " is how an expression ends up true by construction.")
                     :failure {:claim claim
                               :reason "the Octave expression does not answer the claim"}
                     :artifact artifact)
