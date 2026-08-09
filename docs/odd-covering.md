@@ -527,6 +527,59 @@ special case of Balister–Bollobás–Morris–Sahasrabudhe–Tiba, who rule ou
 squarefree coverings entirely. Generation 15 shipped it as its final answer,
 which overstates what it is.
 
+## Finding 12 — $\{3,5,7,11\}$ falls, and with it every $\{3,5,7,q\}$
+
+The $M_g$ bound never closes $\{3,5,7,11\}$ at any partition. Replacing it with
+the **per-class assignment LP** does.
+
+**The bound.** Fix the unit-weight residues at $Q=105$ (WLOG
+$r_3=r_5=r_7=0$). Moduli coprime to $105$ — the powers of $11$ — give every
+class $F_1 = \tfrac1{10}$, so each uncovered class still needs
+$D = \tfrac9{10}$. For each $g \mid 105$ let the family's total density $A_g$
+be split among the $g$ blocks by variables $y_{g,b} \ge 0$ with
+$\sum_b y_{g,b} \le A_g$, and require
+$\sum_g y_{g,\,c \bmod g} \ge D$ for every uncovered class $c$. Splitting each
+family arbitrarily is *weaker* than the truth, where a modulus commits its
+whole density to one block, so **LP infeasible implies the real problem
+infeasible**.
+
+**Why it is stronger than $S$.** In the Farkas dual — weights $\lambda_c \ge 0$
+per uncovered class, $\mu_g \ge 0$ per family, with
+$\sum_{c \equiv b \,(g)} \lambda_c \le \mu_g$ — infeasibility means
+$D\sum_c \lambda_c > \sum_g A_g \mu_g$. Setting $\lambda_c \equiv 1$ forces
+$\mu_g = M_g$ and recovers $S > 0$ exactly. **The old bound is the
+uniform-weight dual**; the strengthening is nothing more than allowing the
+class weights to vary.
+
+**The computation.** Distinct assignments $(r_{15},r_{21},r_{35},r_{105})$
+number $467{,}985$ — an $r_{105}$ landing on an already-covered class
+duplicates the "covers nothing new" case, so the naive $1{,}157{,}625$
+overcounts. Multiplication by any $u$ coprime to $105$ permutes the classes,
+maps blocks mod $g$ to blocks mod $g$, fixes $r_3=r_5=r_7=0$ and changes no
+$A_g$, so it carries the LP at $a$ to the LP at $u\cdot a$ isomorphically.
+Verified directly: $U(u\cdot a) = u\cdot U(a)$. That group has order
+$\varphi(105) = 48$ and cuts the space to **9,835 orbits**.
+
+**All 9,835 are infeasible**, in exact rationals. At the tightest assignment
+$(1,1,2,4)$ — the worst case for the old bound at $-647/480$ — the optimal
+dual gap is $1589/1440$ and the best attainable minimum class density is
+$59093/69120 \approx 0.8549$ against $0.9$ needed.
+
+**So no covering system is supported on $\{3,5,7,11\}$**, and with Finding 10
+none is supported on $\{3,5,7,q\}$ for any prime $q$.
+
+*Status: hand-computed, not engine-confirmed.* Nine thousand LP solves is a
+computation, not an argument. The argument would be an explicit rule for
+$\lambda_c$ proved valid for every assignment — and note that reading one off
+a solved instance will not work, because the dual is degenerate: at
+$(1,1,2,4)$ the classes $38$, $83$ and $68$ share the block profile
+$(23,11,7,6,4,2)$ and receive $\tfrac{13}{15}$, $\tfrac7{15}$ and $0$.
+
+*Still open at four primes:* the $\{3,5,11,q\}$ and $\{3,5,13,q\}$ families —
+neither closes from its smallest member, $-2303/480$ at $Q=165$ and
+$-1729/576$ at $Q=195$ under the old bound, both untried under the LP — and
+the finite list of supports with all primes $< 257$.
+
 ## The four-prime frontier
 
 Finding 9 retires every support with three primes or fewer, so individual
@@ -549,7 +602,7 @@ from the support gives:
 | $\{3,5,11,13\}$ | $15$ | $+283/960$   | closed |
 | $\{3,7,11,13\}$ | $21$ | $+3313/1440$ | closed |
 | $\{3,5,7,q\},\ q \ge 13$ | $105$ | $\ge +335/576$ | closed — Finding 10 |
-| $\{3,5,7,11\}$  | $105$ | $-647/480$   | **open** |
+| $\{3,5,7,11\}$  | $105$ | $-647/480$ ($M_g$); LP infeasible | **closed** — Finding 12 |
 
 The $q=15$ column that once showed $\{3,5,7,13\}$ at $-553/576$ is superseded:
 the bound is much stronger at $q=105$, where that support is $+335/576$.
