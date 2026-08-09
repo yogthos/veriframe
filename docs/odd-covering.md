@@ -353,9 +353,20 @@ masses be real. Over *all* $3,5,7$-smooth odd $m>1$ the group totals are
 $\tfrac16$ ($g{=}1$), $\tfrac74$ ($g{=}3$), $\tfrac{35}{24}$ ($g{=}5$),
 $\tfrac{35}{16}$ ($g{=}15$). That relaxation is **feasible** — a witness
 exists with eleven of the fifteen classes tight at exactly $\tfrac56$. So no
-LP, density or Farkas certificate can ever prove $\{3,5,7\}$ impossible;
-confirmed dually by the non-existence of a weighted contradiction over the
-fifteen class inequalities. Any proof must use integrality.
+LP, density or Farkas certificate over *this* relaxation can ever prove
+$\{3,5,7\}$ impossible; confirmed dually by the non-existence of a weighted
+contradiction over the fifteen class inequalities. Any proof must use
+integrality.
+
+**Read that scope carefully.** What is feasible is the relaxation in which the
+unit-weight residues are themselves chosen fractionally. Fix those residues
+*integrally* and relax only the tail that remains, and you have a different
+and far smaller polytope, which can perfectly well be infeasible — generation
+16 found exactly that for $\{3,5,7,11\}$ at $Q=105$ (see Finding 12). Stated
+without that qualification, as it was in two problem statements, this reads as
+"no LP argument can work" and steers away from the one that does. Integrality
+still does the work; it does it by pinning the unit-weight residues, and an LP
+is then a legitimate way to decide what is left.
 
 **Integrality decides it.** The moduli $3$, $5$ and $15$ have $g/m = 1$
 exactly, so each *fully covers* its classes — five, three and one of the
