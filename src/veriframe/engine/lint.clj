@@ -182,8 +182,28 @@
 (def ^:private lean-decl-tokens
   ["theorem" "example" "lemma" "def" "abbrev" "instance"])
 
+(defn strip-lean-imports
+  "Drop `import` lines from a Lean snippet.
+
+  Snippets are elaborated against a session that already has Mathlib, so an
+  import inside one is illegal and Lean says only \"invalid 'import' command,
+  it must be used in the beginning of the file\" — true, unactionable, and
+  identical every time. It cost 19 turns across gen-17 and gen-18 and reached
+  seven of gen-18's branches; B3 spent two of the six failures that culled it
+  on this alone. The harness supplies the import, so the snippet does not need
+  one and the proof should just run.
+
+  Only a line whose first token is `import` goes. `open` is left alone — it is
+  legal against an existing environment — and so is any line that merely
+  mentions the word."
+  [snippet]
+  (->> (str/split-lines (or snippet ""))
+       (remove #(re-matches #"\s*import\s+\S.*" %))
+       (str/join "\n")))
+
 (defn lint-lean [snippet]
-  (let [trimmed (str/trim (or snippet ""))]
+  (let [snippet (strip-lean-imports snippet)
+        trimmed (str/trim (or snippet ""))]
     (if (str/blank? trimmed)
       (result ["Lean snippet is empty."])
       (let [stripped (strip-lean-comments snippet)

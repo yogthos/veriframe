@@ -586,3 +586,24 @@ sidon(S) :- sums(S, Sums), sort(Sums, Sorted), length(Sums, N), length(Sorted, N
       (testing "and the refusal of a big one says to summarise it"
         (is (re-find #"(?i)summaris|summariz|mean|max"
                      (str (:error (octave/measure s "zeros (40, 40)")))))))))
+
+(deftest an-import-line-does-not-cost-a-turn
+  ;; Snippets are elaborated against a session that already has Mathlib, so an
+  ;; `import` inside one is illegal and Lean says only "invalid 'import'
+  ;; command, it must be used in the beginning of the file" — which tells the
+  ;; model nothing it can act on. It cost 19 turns across two runs and hit 7 of
+  ;; gen-18's branches; B3 burned two of the six failures that culled it on
+  ;; exactly this. The harness supplies the import, so strip it and run the
+  ;; proof.
+  (testing "imports are removed, the declaration survives"
+    (let [snippet "import Mathlib\nimport Mathlib.Tactic\n\ntheorem t : 1 = 1 := by rfl"]
+      (is (= "theorem t : 1 = 1 := by rfl" (str/trim (lint/strip-lean-imports snippet))))
+      (is (:ok (lint/lint-lean snippet))
+          "and the snippet is no longer rejected for having them")))
+  (testing "a line that merely mentions import in a name or comment is left alone"
+    (are [s] (= s (lint/strip-lean-imports s))
+      "theorem important_lemma : 1 = 1 := by rfl"
+      "-- import Mathlib is supplied by the harness\ntheorem t : 2 = 2 := by rfl"))
+  (testing "open lines are untouched — those are legal against an existing env"
+    (let [s "open Finset\ntheorem t : 1 = 1 := by rfl"]
+      (is (= s (lint/strip-lean-imports s))))))

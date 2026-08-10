@@ -28,6 +28,7 @@
             [clojure.java.io :as io]
             [clojure.string :as str]
             [jolt.process :as p]
+            [veriframe.engine.lint :as lint]
             [clojure.tools.logging :as log]))
 
 ;; import Mathlib is the slow case; a tactic step after it is sub-second.
@@ -188,7 +189,11 @@
   Returns {:ok bool :env n :messages [...] :sorries [...] :errors [...]}."
   ([session code] (run-command session code nil))
   ([session code env]
-   (let [base (or env (mathlib-env session))
+   ;; Imports are illegal against an existing env and the harness has already
+   ;; supplied Mathlib. Stripping here covers every caller rather than each
+   ;; tool remembering to.
+   (let [code (lint/strip-lean-imports code)
+         base (or env (mathlib-env session))
          r (send-command session {:cmd code :env base})]
      (if-not (:ok r)
        r
