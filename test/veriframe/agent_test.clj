@@ -3040,3 +3040,56 @@
                                  :args {:answer invented}}))]
         (is (= :failure (:category r)))
         (is (str/includes? (:result r) "512"))))))
+
+(deftest an-engine-outage-is-not-the-branch-s-fault
+  ;; gen-18 B3 was culled after six consecutive failures while pursuing the
+  ;; reduction to a separable convex cost flow — the most promising line in the
+  ;; run. One of those six was `Lean is unavailable`, which is a fact about the
+  ;; process pool and says nothing about the branch. An outage must not spend a
+  ;; branch's cull budget.
+  (let [[c rid b] (fresh-run)
+        down (fn [tool args]
+               (with-redefs [lean-pool/checkout! (fn [& _] (throw (ex-info "pool down" {})))
+                             lean-repl/create-session (fn [& _] (throw (ex-info "pool down" {})))
+                             octave/create-session (fn [& _] (throw (ex-info "no octave" {})))
+                             llm/chat (fn [& _] (throw (ex-info "judge must not be called" {})))]
+                 (tools/run-tool {:branch b :turn 1 :conn c :run-id rid
+                                  :tool-name tool :args args})))]
+    (doseq [[tool args] [["verify_lean" {:claim "c" :lean "theorem t : True := trivial"}]
+                         ["octave_eval" {:code "x = 1;"}]]]
+      (let [r (down tool args)]
+        (is (= :neutral (:category r))
+            (str tool " reported an outage as a branch failure: " (:result r)))
+        (is (re-find #"(?i)unavailable" (str (:result r)))
+            (str tool " should still say the engine is down"))))
+    (testing "and it never raises the counter the cull gate reads"
+      (let [b3 (assoc b :consecutive-failures 3)]
+        (is (<= (:consecutive-failures
+                 (state/record-outcome b3 {:category :neutral :progress? false}))
+                3))))))
+
+(deftest turns-that-run-clean-work-off-the-cull-budget
+  ;; gen-18 B1 made three malformed tool calls, then three clean Octave runs
+  ;; that produced dual potentials — and was culled on a counter last
+  ;; incremented three turns earlier. `consecutive-failures` drives the cull
+  ;; gate, so it has to mean consecutive. The guard against well-formed but
+  ;; useless calls is `turns-since-progress`, which a neutral turn still
+  ;; increments, so nothing is lost by letting a clean turn work the failure
+  ;; count down.
+  (let [b (reduce (fn [b _] (state/record-outcome b {:category :failure}))
+                  (state/new-branch {:id "B1" :problem "p"})
+                  (range 3))]
+    (is (= 3 (:consecutive-failures b)))
+    (let [b1 (state/record-outcome b {:category :neutral :progress? false})
+          b2 (state/record-outcome b1 {:category :neutral :progress? false})]
+      (is (= 2 (:consecutive-failures b1)) "one clean turn decays it")
+      (is (= 1 (:consecutive-failures b2)) "and another")
+      (is (= 5 (:turns-since-progress b2))
+          "while the useless-call guard keeps counting")
+      (is (= 0 (:consecutive-failures
+                (state/record-outcome b2 {:category :neutral :progress? false})))
+          "and it floors at zero rather than going negative"))
+    (testing "sustained failure still accumulates"
+      (let [b (reduce (fn [b c] (state/record-outcome b {:category c}))
+                      b [:neutral :failure :failure :neutral :failure :failure])]
+        (is (>= (:consecutive-failures b) 3))))))

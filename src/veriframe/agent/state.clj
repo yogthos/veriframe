@@ -245,13 +245,25 @@
   no error-keyed guard and just burns the run, which is the case dirge PR 738's
   progress monitor exists for. And a confirmation that has nothing to do with
   the branch's own plan is the same failure wearing a success's clothes; see
-  `advances-thesis?`."
+  `advances-thesis?`.
+
+  `consecutive-failures` drives the cull gate, so it has to mean consecutive.
+  It used to be cleared only by :success — in practice only by banking an
+  artifact — so a branch that hit a rough patch and then worked cleanly for
+  several turns still carried the old count into the gate. gen-18 B1 made
+  three malformed tool calls, recovered, ran three clean Octave sessions that
+  produced dual potentials, and was culled on a counter last incremented three
+  turns earlier. A clean turn now works one off the tally. Sustained failure
+  still accumulates faster than recovery clears it, and the guard against
+  well-formed but useless calls is `turns-since-progress`, which a neutral
+  turn still increments — so nothing is given away here."
   [branch {:keys [category progress? claim]}]
   (let [real-progress? (and progress?
                             (or (nil? claim) (advances-thesis? branch claim)))]
     (cond-> branch
       (= :failure category) (update :consecutive-failures inc)
       (= :success category) (assoc :consecutive-failures 0)
+      (= :neutral category) (update :consecutive-failures #(max 0 (dec (or % 0))))
       real-progress? (assoc :turns-since-progress 0 :any-progress? true)
       (not real-progress?) (update :turns-since-progress inc))))
 

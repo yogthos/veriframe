@@ -54,6 +54,18 @@
 (defn- fail [branch result & {:as extra}]
   (merge {:result result :category :failure :progress? false :branch branch} extra))
 
+(defn- unavailable
+  "An engine could not be reached. Not the branch's fault, so not its failure.
+
+  gen-18 B3 was culled after six consecutive failures while pursuing the
+  reduction to a separable convex cost flow — the strongest line in the run.
+  One of the six was `Lean is unavailable`, a fact about the process pool. A
+  branch cannot answer for an outage and must not spend cull budget on one, so
+  this is neutral: the failure counter neither rises nor resets, and
+  turns-since-progress still ticks because nothing was established."
+  [branch engine e]
+  (ok branch (str engine " is unavailable: " (ex-message e))))
+
 (defn- arg [ctx k] (get-in ctx [:args k]))
 
 (defn- patches-section
@@ -1567,7 +1579,7 @@
                                                             (str/replace #"\s+" " ")
                                                             (subs 0 (min 160 (count (str (:data (first (:errors r)))))))))})))
           (catch Throwable e
-            (fail branch (str "Lean is unavailable: " (ex-message e)))))))))
+            (unavailable branch "Lean" e)))))))
 
 (defmethod run-tool "lean_search" [{:keys [branch config] :as ctx}]
   (if-let [m (missing ctx :query)]
@@ -1578,7 +1590,7 @@
                                      (or (arg ctx :top_k) 10))]
         (ok branch (lean-search/render hits q)))
       (catch Throwable e
-        (fail branch (str "Mathlib search is unavailable: " (ex-message e)))))))
+        (unavailable branch "Mathlib search" e)))))
 
 (defmethod run-tool "proof_start" [{:keys [branch] :as ctx}]
   (if-let [m (missing ctx :claim :theorem)]
@@ -1598,7 +1610,7 @@
                 (str "The theorem statement did not elaborate:\n"
                      (lean-error-text (:errors r))))))
       (catch Throwable e
-        (fail branch (str "Lean is unavailable: " (ex-message e)))))))
+        (unavailable branch "Lean" e)))))
 
 (defmethod run-tool "proof_step" [{:keys [branch] :as ctx}]
   (cond
@@ -1672,7 +1684,7 @@
               :progress? true)
           (fail branch (str "Octave rejected it:\n" (:error r)))))
       (catch Throwable e
-        (fail branch (str "Octave is unavailable: " (ex-message e)))))))
+        (unavailable branch "Octave" e)))))
 
 (defn- octave-claim-text
   "How the claim is recorded. An approximate result says so IN the claim, so
@@ -1774,7 +1786,7 @@
                     :failure {:claim claim :reason "the Octave check evaluated to false"}
                     :artifact artifact)))))
       (catch Throwable e
-        (fail branch (str "Octave is unavailable: " (ex-message e)))))))
+        (unavailable branch "Octave" e)))))
 
 (defn- measurement-claim-text
   "The claim with the number Octave actually returned written into it.
@@ -1845,4 +1857,4 @@
                     :failure {:claim claim :reason (:reason faithful?)}
                     :artifact artifact)))))
       (catch Throwable e
-        (fail branch (str "Octave is unavailable: " (ex-message e)))))))
+        (unavailable branch "Octave" e)))))
