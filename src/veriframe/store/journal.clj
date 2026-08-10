@@ -127,6 +127,23 @@
                      WHERE run_id = ? AND branch_id = ? AND claim_status = 'confirmed'
                      ORDER BY id" run-id branch-id]))
 
+(defn corroborating-artifacts
+  "Everything the rest of the run confirmed or measured.
+
+  A fork opens with its parent's confirmed claims quoted into its first
+  message, and every branch sees the shared-artifact block. Both are context
+  and neither is an artifact, so the done gate's coverage rung — which read
+  only the branch's own list — refused answers that cited what the harness had
+  just handed the branch (vf-b9c). Same run, same database, same engines: a
+  sibling's confirmed claim is support.
+
+  Own-branch rows are excluded; the caller already holds those."
+  [conn run-id branch-id]
+  (db/fetch conn ["SELECT * FROM artifacts
+                     WHERE run_id = ? AND branch_id <> ?
+                       AND claim_status IN ('confirmed', 'empirical')
+                     ORDER BY id" run-id branch-id]))
+
 ;; --- gate firings -----------------------------------------------------------
 
 (defn record-gate!

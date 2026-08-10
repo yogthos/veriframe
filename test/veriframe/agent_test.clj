@@ -2983,3 +2983,60 @@
                              {:content "still thinking" :finish-reason "length"})]
       (#'aloop/call-model {:llm-adapter :a :llm-config {:max-tokens 16384}} {:messages []})
       (is (= 2 @calls)))))
+
+(deftest done-lets-a-branch-cite-a-number-a-sibling-branch-confirmed
+  ;; vf-b9c. The coverage rung read only (:artifacts branch). Artifacts
+  ;; confirmed elsewhere in the run reach a branch through the shared-artifact
+  ;; block and the crossover block — the PROMPT, never the artifact list — so
+  ;; the harness showed a branch evidence and then refused the answer that
+  ;; cited it.
+  ;;
+  ;; Run 0d0c3560, B4.2.2.2 T92: refused for stating `8` and `6`, which are the
+  ;; m=3 optimal count and cost that its own parent B4.2.2 had verified
+  ;; exhaustively in Prolog and already shipped in an accepted answer. The
+  ;; child rewrote around them and, in the same edit, dropped a Lean theorem it
+  ;; had proved. Every fork inherits its parent's reasoning and none of its
+  ;; evidence, which penalises exactly the structure the beam is built on.
+  (let [[c rid _] (fresh-run)
+        _ (runs/open-branch! c rid {:branch-id "B2" :parent-id "B1"
+                                    :created-at-turn 0})
+        _ (journal/record-artifact!
+           c rid {:branch-id "B1" :turn 3 :kind :prolog
+                  :claim (str "The disjoint union of three two-path unit-weight"
+                              " dipole gadgets has exactly 8 optimal integer"
+                              " flows, each of total cost 6.")
+                  :code "count(S)." :verdict :confirmed
+                  :claim-status :confirmed :tier :slow})
+        mine (str "For every m, the cost-optimal split vectors on m two-path"
+                  " unit-weight dipole gadgets number exactly 2^m.")
+        answer (str "The minimum cost flow on the dual grid is not unique: for"
+                    " every m, the optimal integer flows on m two-path dipole"
+                    " gadgets number exactly 2^m. In particular the three-gadget"
+                    " instance has exactly 8 optimal flows, each of cost 6.")
+        b (-> (branch-with :id "B2" :problem unwrap-problem
+                           :thesis {:goal "count the optimal flows"
+                                    :technique "t" :subClaims []}
+                           :artifacts [{:claim mine :claim-status :confirmed
+                                        :kind :lean :tier :slow :code "theorem"}]
+                           :last-review {:passed true}
+                           :last-audit {:passed true :proposed-answer answer
+                                        :established answer :relaxation? false}))
+        ship (fn [] (with-redefs [llm/chat (fn [& _] {:content "ASKS: x\nSUPPLIES: x\nVERDICT: PASS"})]
+                      (tools/run-tool {:branch b :turn 9 :tool-name "done"
+                                       :conn c :run-id rid
+                                       :args {:answer answer}})))]
+    (testing "the sibling's confirmed figures cover the answer"
+      (let [r (ship)]
+        (is (= :success (:category r))
+            (str "refused: " (:result r)))
+        (is (= :done (:status (:branch r))))))
+    (testing "a figure nobody in the run verified is still refused"
+      (let [invented (str answer " The nine-gadget instance has exactly 512.")
+            b (assoc b :last-audit {:passed true :proposed-answer invented
+                                    :established invented :relaxation? false})
+            r (with-redefs [llm/chat (fn [& _] {:content "ASKS: x\nSUPPLIES: x\nVERDICT: PASS"})]
+                (tools/run-tool {:branch b :turn 9 :tool-name "done"
+                                 :conn c :run-id rid
+                                 :args {:answer invented}}))]
+        (is (= :failure (:category r)))
+        (is (str/includes? (:result r) "512"))))))

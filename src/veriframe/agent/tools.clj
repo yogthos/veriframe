@@ -1298,12 +1298,28 @@
         ;; computed with the harness watching is not fabricated — refusing it
         ;; would leave a branch unable to state its own measurement (vf-0of).
         ;; The strength of the evidence is the audit's question, not this one's.
-        evidence (concat confirmed (state/empirical-artifacts branch))
+        own (concat confirmed (state/empirical-artifacts branch))
+        ;; And what the rest of the run established. A fork is shown its
+        ;; parent's confirmed claims in its opening message and every branch
+        ;; sees the shared-artifact block, so refusing the answer that cites
+        ;; them punishes a branch for reading what the harness handed it
+        ;; (vf-b9c). B4.2.2.2 was refused for stating `8` and `6` — its own
+        ;; parent's exhaustively verified count and cost, already shipped in
+        ;; an accepted answer one branch over.
+        elsewhere (when (and (:conn ctx) (:run-id ctx))
+                    (journal/corroborating-artifacts
+                     (:conn ctx) (:run-id ctx) (:id branch)))
+        evidence (concat own elsewhere)
         problem (:problem branch)
-        uncovered (uncovered-tokens answer evidence
-                                    [problem
-                                     (when (:passed audit) (:established audit))])
+        word-context [problem (when (:passed audit) (:established audit))]
+        uncovered (uncovered-tokens answer evidence word-context)
         uncovered-numbers (filter number-token? uncovered)
+        ;; Tokens only a sibling covers. Provenance, not a rung: the answer is
+        ;; leaning on evidence this branch did not produce, and the run record
+        ;; should say so rather than the write-up having to reconstruct it.
+        borrowed (when (seq elsewhere)
+                   (seq (remove (set uncovered)
+                                (uncovered-tokens answer own word-context))))
         block (cond
                 (nil? answer)
                 (str "No answer was supplied and no audit has passed. Call"
@@ -1382,6 +1398,11 @@
       (journal/note! (:conn ctx) (:run-id ctx) :uncovered-words
                      {:branch-id (:id branch) :turn (:turn ctx)
                       :data {:words (vec (take 20 words)) :blocked? (some? block)}}))
+    (when (and borrowed (:conn ctx) (:run-id ctx))
+      (journal/note! (:conn ctx) (:run-id ctx) :cross-branch-citation
+                     {:branch-id (:id branch) :turn (:turn ctx)
+                      :data {:tokens (vec (take 20 borrowed))
+                             :sources (vec (distinct (keep :branch_id elsewhere)))}}))
     (if block
       (fail branch (str "`done` refused.\n\n" block) :done-block block)
       {:branch (assoc branch :final-answer answer :status :done)
