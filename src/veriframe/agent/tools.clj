@@ -195,19 +195,29 @@
            (str "Answer PASS only if this outcome on THIS artifact refutes"
                 " exactly the claim above — that is, only if the artifact is a"
                 " faithful formalisation, so that what failed here is the claim"
-                " and not something else wearing its words.")
+                " and not something else wearing its words. Generality is NOT a"
+                " licence here, and the polarity is the reverse of a proof: a"
+                " witness has to satisfy every hypothesis the claim makes, so"
+                " an encoding that dropped one may have found a counterexample"
+                " the claim never covered, which refutes nothing.")
 
            :else
-           (str "Answer PASS only if this outcome on THIS artifact establishes"
-                " exactly the claim above."))
+           (str "Answer PASS if this outcome on THIS artifact establishes the"
+                " claim above — either exactly, or as a special case of"
+                " something MORE GENERAL that the artifact proves. Proving a"
+                " universal statement by refuting its negation, an encoding"
+                " that drops a hypothesis, widens a domain, or leaves a sort"
+                " unconstrained proves a HARDER theorem, and the claim follows"
+                " from it: that is a PASS, not a defect. The failure runs the"
+                " other way — an encoding carrying extra hypotheses the claim"
+                " does not make, a narrowed domain, or constants hardcoded"
+                " where the claim quantifies, proves something weaker than the"
+                " claim and establishes nothing about it. That is a FAIL."))
          " Answer FAIL if the artifact expresses something"
-         " stronger, weaker, or simply different — in particular check that every"
+         " weaker, or simply different — in particular check that every"
          " coefficient, bound, threshold and index set matches what the claim"
          " says, that the quantity being summed or compared is the one named, and"
-         " that no case the claim covers is missing. An artifact that is harder"
-         " to satisfy than the claim requires makes a negative result prove less"
-         " than it appears to; one that is easier makes a positive result prove"
-         " less. Both are FAIL."
+         " that no case the claim covers is missing."
          (when extra (str "\n\n" extra))
          "\n\nDo not re-derive the mathematics or re-check the engine's work."
          " Only compare the claim to the formalisation. Judge the artifact as"

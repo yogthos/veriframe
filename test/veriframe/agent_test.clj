@@ -3093,3 +3093,38 @@
       (let [b (reduce (fn [b c] (state/record-outcome b {:category c}))
                       b [:neutral :failure :failure :neutral :failure :failure])]
         (is (>= (:consecutive-failures b) 3))))))
+
+(deftest an-encoding-that-proves-more-than-the-claim-still-proves-the-claim
+  ;; gen-18 B4 T33. The claim was a theorem about a finite set D; the encoding
+  ;; declared D as an unconstrained sort, so Z3's unsat proved it for every D,
+  ;; finite or not. The judge failed it for formalising "a stronger statement
+  ;; than the claimed finite-set theorem" — but a proof of the general
+  ;; statement entails the finite case. That was one of the three strikes that
+  ;; culled the leading Q-A branch.
+  ;;
+  ;; The polarity is what the prompt has to get right. Proving a universal by
+  ;; refuting its negation: DROPPING a hypothesis makes the theorem harder and
+  ;; the claim still follows, so PASS. ADDING one makes it easier and the claim
+  ;; does not follow, so FAIL. For a counterexample the rule inverts — the
+  ;; witness has to satisfy every hypothesis the claim makes — and a
+  ;; measurement has to be at the claim's own parameters.
+  (let [prompt (fn [direction]
+                 (#'tools/faithfulness-prompt
+                  "for any finite set D ..." "(declare-sort D 0)"
+                  {:engine "an SMT-LIB encoding"
+                   :outcome "Z3 returned unsat"
+                   :direction direction}))]
+    (testing "proving: a strictly more general formalisation passes"
+      (let [p (prompt :proves)]
+        (is (re-find #"(?i)more general" p)
+            "the proving prompt has to say generality is allowed")
+        (is (re-find #"(?i)claim follows|entails" p)
+            "and say why: the claim follows from the stronger statement")
+        (is (re-find #"(?i)extra hypothes|additional hypothes|narrow" p)
+            "while still refusing an encoding that assumes more than the claim")))
+    (testing "refuting: generality is not licensed, the witness must be in scope"
+      (let [p (prompt :refutes)]
+        (is (not (re-find #"(?i)more general" p))
+            "a counterexample outside the claim's hypotheses refutes nothing")))
+    (testing "measuring: unchanged"
+      (is (not (re-find #"(?i)more general" (prompt :measures)))))))
