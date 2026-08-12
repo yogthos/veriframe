@@ -38,6 +38,11 @@
 (ffi/defcfn c-setsockopt "setsockopt" [:int :int :int :pointer :int] :int)
 (ffi/defcfn c-close      "close"      [:int] :int)
 (ffi/defcfn c-accept     "accept"     [:int :pointer :pointer] :int :blocking)
+;; fcntl is variadic (int fd, int cmd, ...). The :varargs marker sits at the
+;; fixed/variadic boundary; a fixed-arity binding silently corrupts the
+;; stack-passed argument on Apple arm64, which is the same trap jolt.http.net
+;; documents for its F_SETFL binding.
+(ffi/defcfn c-fcntl-set  "fcntl"      [:int :int :varargs :int] :int)
 (ffi/defcfn c-recv       "recv"       [:int :pointer :size_t :int] :ssize_t :blocking)
 (ffi/defcfn c-send       "send"       [:int :pointer :size_t :int] :ssize_t :blocking)
 
@@ -48,6 +53,26 @@
 ;; SOL_SOCKET / SO_REUSEADDR differ by platform: macOS 0xffff / 4, Linux 1 / 2.
 (def ^:private sol-socket  (if macos? 0xffff 1))
 (def ^:private so-reuse    (if macos? 4 2))
+;; F_SETFD / FD_CLOEXEC are 2 / 1 on both macOS and Linux.
+(def ^:private f-setfd     2)
+(def ^:private fd-cloexec  1)
+
+(defn- close-on-exec!
+  "Mark `fd` so it is NOT inherited across exec.
+
+  Every process the harness spawns — the Lean repl via `lake env`, prolog,
+  octave — forks from this one, and without this each child holds a duplicate
+  of whatever sockets were open. lsof showed jolt, lake and repl sharing fd 4
+  on the listening socket. The port then stays bound while ANY of them lives,
+  so killing the server with a Lean session still up leaves the next start
+  failing with address-in-use against a server that no longer exists.
+
+  SOCK_CLOEXEC on socket() would be cheaper but is Linux-only; fcntl is the
+  portable spelling. Best-effort: failing to set it costs inheritance, not
+  correctness, and is not worth refusing to serve over."
+  [fd]
+  (try (c-fcntl-set fd f-setfd fd-cloexec) (catch Throwable _ nil))
+  fd)
 
 ;; sockaddr_in for 127.0.0.1:port. macOS: byte0 = sin_len (16), byte1 = family;
 ;; Linux: bytes0-1 = family (little-endian, so byte0 = AF_INET).
@@ -75,7 +100,7 @@
         (c-close fd) (ffi/free sa) (throw (ex-info (str "bind() failed on port " port) {})))
       (ffi/free sa))
     (when (neg? (c-listen fd 64)) (c-close fd) (throw (ex-info "listen() failed" {})))
-    fd))
+    (close-on-exec! fd)))
 
 ;; --- request reading --------------------------------------------------------
 (def ^:private bufsize 65536)
@@ -212,6 +237,10 @@
         (do
           ;; VERIFRAME: thread per connection. The accept loop returns to
           ;; accept immediately, so a slow handler can't stall the server.
+          ;; accept(2) does not inherit the listener's close-on-exec, so each
+          ;; connection is marked too — otherwise a subprocess spawned while a
+          ;; request is in flight holds that client's socket open.
+          (close-on-exec! conn)
           (future (serve-conn conn handler port))
           (recur))))))
 

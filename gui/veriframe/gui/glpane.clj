@@ -149,6 +149,23 @@
   (when-let [{:keys [positions t]} (view (source))]
     (graph/nearest positions t [x y] pick-radius)))
 
+(defn unmount!
+  "Forget the widget, because it is being destroyed.
+
+  `:area` is a raw GTK pointer captured in on-realize. Nothing tells us when
+  that widget goes away — glimmer has no unrealize or destroy hook — so a
+  caller that removes the pane from the tree has to say so here, or every
+  later request-render! pokes freed memory. GTK catches it rather than
+  crashing:
+
+    Gtk-CRITICAL gtk_gl_area_queue_render: assertion 'GTK_IS_GL_AREA (area)' failed
+
+  and then does nothing, so the symptom is a pane that never repaints again
+  rather than a segfault. The GL objects go too: they belonged to the
+  destroyed context, and realize! creates a fresh set on the way back in."
+  []
+  (swap! st dissoc :area :prog :vao :vbo :vp-loc))
+
 (defn request-render! []
   (when-let [area (:area @st)]
     (glx/queue-render area)))

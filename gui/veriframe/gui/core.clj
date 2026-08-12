@@ -210,7 +210,14 @@
 (defn- form-field! [k v] (swap! state assoc-in [:form k] v))
 
 (defn- toggle-compose! []
-  (swap! state update :composing? not)
+  (let [composing? (:composing? (swap! state update :composing? not))]
+    ;; `root` renders a different tree while the form is open, one with no
+    ;; :gl-area in it, so opening the form DESTROYS the pane's widget. The
+    ;; poller keeps calling request-render! throughout, and glpane holds the
+    ;; widget as a raw pointer it has no way to learn is dead, so it has to be
+    ;; told. Closing the form mounts a fresh :gl-area whose on-realize
+    ;; repopulates it.
+    (when composing? (glpane/unmount!)))
   (notice! nil))
 
 (defn- copy-current-problem!
@@ -519,8 +526,11 @@
 (defn root []
   (if (:composing? @state)
     ;; The form takes the whole body rather than squeezing in beside the
-    ;; graph: a problem statement is paragraphs, and the GL pane keeps its
-    ;; context (and its poller) while this is open.
+    ;; graph: a problem statement is paragraphs. The poller keeps running
+    ;; while this is open, but the GL pane does NOT survive it — there is no
+    ;; :gl-area in this branch, so opening the form destroys the widget and
+    ;; closing it builds a new one. toggle-compose! tells glpane so, because
+    ;; the pointer it caches would otherwise outlive the widget.
     [:vbox {:spacing 8 :margin 8}
      [header]
      [:separator]

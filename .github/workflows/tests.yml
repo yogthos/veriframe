@@ -23,9 +23,21 @@ jobs:
       # Building jolt from source needs Chez and a C toolchain; the release
       # binary is self-contained, so the install script is the cheap path.
       - name: Install jolt
+        # Retried, and the download separated from running it. raw.githubusercontent
+        # rate-limits Actions runners and answers 403: run 31650998920 died exactly
+        # that way ("curl: (22) The requested URL returned error: 403") on a commit
+        # whose own tests were fine, and the same URL served 200 from elsewhere
+        # minutes later. Fetching to a file first also means a rate-limit page can
+        # never be fed to bash as if it were the installer.
         run: |
-          curl -sL https://raw.githubusercontent.com/jolt-lang/jolt/main/install \
-            | bash -s -- --dir "$HOME/.local/bin"
+          for i in 1 2 3; do
+            curl -fsSL https://raw.githubusercontent.com/jolt-lang/jolt/main/install \
+              -o /tmp/jolt-install && break
+            echo "attempt $i failed; retrying in $((i * 5))s" >&2
+            sleep $((i * 5))
+          done
+          test -s /tmp/jolt-install || { echo "could not fetch the jolt installer" >&2; exit 1; }
+          bash /tmp/jolt-install --dir "$HOME/.local/bin"
           echo "$HOME/.local/bin" >> $GITHUB_PATH
 
       - name: Install Z3, SWI-Prolog and Octave
@@ -86,9 +98,21 @@ jobs:
       - uses: actions/checkout@v4
 
       - name: Install jolt
+        # Retried, and the download separated from running it. raw.githubusercontent
+        # rate-limits Actions runners and answers 403: run 31650998920 died exactly
+        # that way ("curl: (22) The requested URL returned error: 403") on a commit
+        # whose own tests were fine, and the same URL served 200 from elsewhere
+        # minutes later. Fetching to a file first also means a rate-limit page can
+        # never be fed to bash as if it were the installer.
         run: |
-          curl -sL https://raw.githubusercontent.com/jolt-lang/jolt/main/install \
-            | bash -s -- --dir "$HOME/.local/bin"
+          for i in 1 2 3; do
+            curl -fsSL https://raw.githubusercontent.com/jolt-lang/jolt/main/install \
+              -o /tmp/jolt-install && break
+            echo "attempt $i failed; retrying in $((i * 5))s" >&2
+            sleep $((i * 5))
+          done
+          test -s /tmp/jolt-install || { echo "could not fetch the jolt installer" >&2; exit 1; }
+          bash /tmp/jolt-install --dir "$HOME/.local/bin"
           echo "$HOME/.local/bin" >> $GITHUB_PATH
 
       - name: Install Z3 and SWI-Prolog
@@ -121,9 +145,21 @@ jobs:
       - uses: actions/checkout@v4
 
       - name: Install jolt
+        # Retried, and the download separated from running it. raw.githubusercontent
+        # rate-limits Actions runners and answers 403: run 31650998920 died exactly
+        # that way ("curl: (22) The requested URL returned error: 403") on a commit
+        # whose own tests were fine, and the same URL served 200 from elsewhere
+        # minutes later. Fetching to a file first also means a rate-limit page can
+        # never be fed to bash as if it were the installer.
         run: |
-          curl -sL https://raw.githubusercontent.com/jolt-lang/jolt/main/install \
-            | bash -s -- --dir "$HOME/.local/bin"
+          for i in 1 2 3; do
+            curl -fsSL https://raw.githubusercontent.com/jolt-lang/jolt/main/install \
+              -o /tmp/jolt-install && break
+            echo "attempt $i failed; retrying in $((i * 5))s" >&2
+            sleep $((i * 5))
+          done
+          test -s /tmp/jolt-install || { echo "could not fetch the jolt installer" >&2; exit 1; }
+          bash /tmp/jolt-install --dir "$HOME/.local/bin"
           echo "$HOME/.local/bin" >> $GITHUB_PATH
 
       - name: Cache jolt gitlibs
@@ -168,9 +204,21 @@ jobs:
       - uses: actions/checkout@v4
 
       - name: Install jolt
+        # Retried, and the download separated from running it. raw.githubusercontent
+        # rate-limits Actions runners and answers 403: run 31650998920 died exactly
+        # that way ("curl: (22) The requested URL returned error: 403") on a commit
+        # whose own tests were fine, and the same URL served 200 from elsewhere
+        # minutes later. Fetching to a file first also means a rate-limit page can
+        # never be fed to bash as if it were the installer.
         run: |
-          curl -sL https://raw.githubusercontent.com/jolt-lang/jolt/main/install \
-            | bash -s -- --dir "$HOME/.local/bin"
+          for i in 1 2 3; do
+            curl -fsSL https://raw.githubusercontent.com/jolt-lang/jolt/main/install \
+              -o /tmp/jolt-install && break
+            echo "attempt $i failed; retrying in $((i * 5))s" >&2
+            sleep $((i * 5))
+          done
+          test -s /tmp/jolt-install || { echo "could not fetch the jolt installer" >&2; exit 1; }
+          bash /tmp/jolt-install --dir "$HOME/.local/bin"
           echo "$HOME/.local/bin" >> $GITHUB_PATH
 
       - name: Install Z3 and SWI-Prolog

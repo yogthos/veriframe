@@ -38,12 +38,15 @@
   (try (result (http/get (str base path) opts))
        (catch Throwable e {:ok false :error (ex-message e)})))
 
-(defn- POST [base path body]
-  (try (result (http/post (str base path)
-                          (assoc opts
-                                 :headers {"Content-Type" "application/json"}
-                                 :body (json/write-str (or body {})))))
-       (catch Throwable e {:ok false :error (ex-message e)})))
+(defn- POST
+  ([base path body] (POST base path body nil))
+  ([base path body socket-timeout-ms]
+   (try (result (http/post (str base path)
+                           (cond-> (assoc opts
+                                          :headers {"Content-Type" "application/json"}
+                                          :body (json/write-str (or body {})))
+                             socket-timeout-ms (assoc :socket-timeout socket-timeout-ms))))
+        (catch Throwable e {:ok false :error (ex-message e)}))))
 
 (defn health [base] (GET base "/health"))
 
@@ -69,6 +72,22 @@
                          (assoc opts :socket-timeout 45000)))
        (catch Throwable e {:ok false :error (ex-message e)})))
 
+(def start-timeout-ms
+  "How long to wait for POST /v1/runs.
+
+  Deliberately longer than the 30s api.control/start-run! itself waits on
+  (deref promised 30000). That endpoint does not answer when the run row is
+  written — beam/run! opens every branch in the beam first and only then
+  calls on-start — so a start can legitimately take tens of seconds, and how
+  long depends on the beam width and on what else the machine is doing.
+
+  Under the shared 10s default this reported a failure for a run that was
+  starting normally: the row was already committed, so the user was told the
+  run had failed AND left with a live run consuming provider spend, with the
+  same request succeeding under curl. Any client bound tighter than the
+  server's own budget has that bug; this one has to outlast it."
+  40000)
+
 (defn start-run!
   "Start a fresh run and return its id in the body.
 
@@ -77,7 +96,7 @@
   that case is folded to {:ok false} here rather than left for each caller
   to remember."
   [base body]
-  (let [r (POST base "/v1/runs" body)]
+  (let [r (POST base "/v1/runs" body start-timeout-ms)]
     (if (and (:ok r) (get-in r [:body :error]))
       {:ok false :error (get-in r [:body :error])}
       r)))
