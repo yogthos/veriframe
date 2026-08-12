@@ -41,8 +41,10 @@
 ;; fcntl is variadic (int fd, int cmd, ...). The :varargs marker sits at the
 ;; fixed/variadic boundary; a fixed-arity binding silently corrupts the
 ;; stack-passed argument on Apple arm64, which is the same trap jolt.http.net
-;; documents for its F_SETFL binding.
+;; documents for its F_SETFL binding. F_GETFD passes no variadic argument, so
+;; the reader is a safe fixed-arity binding.
 (ffi/defcfn c-fcntl-set  "fcntl"      [:int :int :varargs :int] :int)
+(ffi/defcfn c-fcntl-get  "fcntl"      [:int :int] :int)
 (ffi/defcfn c-recv       "recv"       [:int :pointer :size_t :int] :ssize_t :blocking)
 (ffi/defcfn c-send       "send"       [:int :pointer :size_t :int] :ssize_t :blocking)
 
@@ -53,12 +55,16 @@
 ;; SOL_SOCKET / SO_REUSEADDR differ by platform: macOS 0xffff / 4, Linux 1 / 2.
 (def ^:private sol-socket  (if macos? 0xffff 1))
 (def ^:private so-reuse    (if macos? 4 2))
-;; F_SETFD / FD_CLOEXEC are 2 / 1 on both macOS and Linux.
+;; F_GETFD / F_SETFD / FD_CLOEXEC are 1 / 2 / 1 on both macOS and Linux.
+(def ^:private f-getfd     1)
 (def ^:private f-setfd     2)
 (def ^:private fd-cloexec  1)
+;; Linux can ask socket(2) for the flag directly, which avoids fcntl on the
+;; listener entirely. macOS has no such bit and must use fcntl.
+(def ^:private sock-cloexec (if macos? 0 0x80000))
 
 (defn- close-on-exec!
-  "Mark `fd` so it is NOT inherited across exec.
+  "Mark `fd` so it is NOT inherited across exec, and say whether it took.
 
   Every process the harness spawns — the Lean repl via `lake env`, prolog,
   octave — forks from this one, and without this each child holds a duplicate
@@ -67,12 +73,21 @@
   so killing the server with a Lean session still up leaves the next start
   failing with address-in-use against a server that no longer exists.
 
-  SOCK_CLOEXEC on socket() would be cheaper but is Linux-only; fcntl is the
-  portable spelling. Best-effort: failing to set it costs inheritance, not
-  correctness, and is not worth refusing to serve over."
+  Returns true when the flag is readable back. An earlier version swallowed
+  the fcntl result and returned the fd regardless, which passed on macOS and
+  silently did nothing on CI — the whole failure mode this guards against,
+  reproduced in the guard itself. Callers that care must check."
   [fd]
-  (try (c-fcntl-set fd f-setfd fd-cloexec) (catch Throwable _ nil))
-  fd)
+  (try
+    (c-fcntl-set fd f-setfd fd-cloexec)
+    (pos? (bit-and (c-fcntl-get fd f-getfd) fd-cloexec))
+    (catch Throwable _ false)))
+
+(defn cloexec?
+  "Whether `fd` is marked close-on-exec. Exposed for the test that proves it."
+  [fd]
+  (try (pos? (bit-and (c-fcntl-get fd f-getfd) fd-cloexec))
+       (catch Throwable _ false)))
 
 ;; sockaddr_in for 127.0.0.1:port. macOS: byte0 = sin_len (16), byte1 = family;
 ;; Linux: bytes0-1 = family (little-endian, so byte0 = AF_INET).
@@ -89,7 +104,10 @@
     sa))
 
 (defn- listen-socket [port]
-  (let [fd (c-socket AF-INET SOCK-STREAM 0)]
+  ;; SOCK_CLOEXEC where the platform has it, so the fd is never briefly
+  ;; inheritable between socket() and fcntl(); close-on-exec! below still runs
+  ;; and is what macOS relies on.
+  (let [fd (c-socket AF-INET (bit-or SOCK-STREAM sock-cloexec) 0)]
     (when (neg? fd) (throw (ex-info "socket() failed" {})))
     (let [opt (ffi/alloc 4)]
       (ffi/write opt :int 0 1)
@@ -100,7 +118,11 @@
         (c-close fd) (ffi/free sa) (throw (ex-info (str "bind() failed on port " port) {})))
       (ffi/free sa))
     (when (neg? (c-listen fd 64)) (c-close fd) (throw (ex-info "listen() failed" {})))
-    (close-on-exec! fd)))
+    ;; Return the fd, not the flag: close-on-exec! answers whether it took, and
+    ;; ending the let on it handed run-server :socket true, which every later
+    ;; accept and close then used as the descriptor.
+    (close-on-exec! fd)
+    fd))
 
 ;; --- request reading --------------------------------------------------------
 (def ^:private bufsize 65536)

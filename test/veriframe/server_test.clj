@@ -58,6 +58,12 @@
         ;; Spawned while the server is up, so it forks with the fd open.
         child (p/process ["sleep" "20"] {})]
     (try
+      ;; Asserted separately from the consequence, because the two fail for
+      ;; different reasons and the first version could not tell them apart:
+      ;; it passed on macOS and failed on Linux CI with nothing to say about
+      ;; whether the flag had been set at all.
+      (is (adapter/cloexec? (:socket server))
+          "the listen fd is not marked FD_CLOEXEC — the mechanism itself failed")
       (adapter/stop-server server)
       (let [again (try {:ok true :server (adapter/run-server handler {:port port})}
                        (catch Throwable e {:ok false :error (ex-message e)}))]
