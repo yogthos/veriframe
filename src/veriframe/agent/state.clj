@@ -36,6 +36,11 @@
    :artifacts []
    ;; Consecutive failed verifications; reset by any success.
    :consecutive-failures 0
+   ;; Consecutive turns that produced no usable tool call, cleared by any
+   ;; well-formed one. Kept apart from :consecutive-failures because a
+   ;; malformed fence says nothing about whether the branch's line of inquiry
+   ;; is any good, and the cull gate reads that counter as if it did.
+   :consecutive-mechanics-failures 0
    ;; Turns since the last progress event. See gates/progress-stalled?.
    :turns-since-progress 0
    ;; Whether this branch has ever produced anything at all. The stall counter
@@ -256,7 +261,24 @@
   turns earlier. A clean turn now works one off the tally. Sustained failure
   still accumulates faster than recovery clears it, and the guard against
   well-formed but useless calls is `turns-since-progress`, which a neutral
-  turn still increments — so nothing is given away here."
+  turn still increments — so nothing is given away here.
+
+  `:mechanics` is a fourth category, for a turn that produced no usable tool
+  call. It does NOT touch `consecutive-failures`: gen-20 B2 was culled at turn
+  6 having called `thesis` and `lean_search` and nothing else, its four other
+  turns having emitted no ```tool-call block, and the reason it died with said
+  the critic had scored its line a dead end — when the branch had never made a
+  claim for the critic to score. loop.clj draws exactly this distinction one
+  branch up for a provider error; a fence the model malformed is the same kind
+  of fault, and the branch already tracks mechanics separately.
+
+  It gets its own tally rather than simply not counting, because separating
+  the counter is the point and softening it would be a different bug: the
+  `mechanics` map feeds only the capability tier, and `turns-since-progress`
+  feeds only progress-stalled, so with neither counter moving, a branch
+  emitting nothing but garbage would hold a beam slot to the turn budget. Any
+  well-formed call clears the tally — the branch has demonstrated it can work
+  the protocol, whatever the call then did."
   [branch {:keys [category progress? claim]}]
   (let [real-progress? (and progress?
                             (or (nil? claim) (advances-thesis? branch claim)))]
@@ -264,6 +286,10 @@
       (= :failure category) (update :consecutive-failures inc)
       (= :success category) (assoc :consecutive-failures 0)
       (= :neutral category) (update :consecutive-failures #(max 0 (dec (or % 0))))
+      (= :mechanics category)
+      (update :consecutive-mechanics-failures (fnil inc 0))
+      (contains? #{:failure :success :neutral} category)
+      (assoc :consecutive-mechanics-failures 0)
       real-progress? (assoc :turns-since-progress 0 :any-progress? true)
       (not real-progress?) (update :turns-since-progress inc))))
 

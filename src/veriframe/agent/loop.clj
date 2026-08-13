@@ -236,16 +236,23 @@
             ;; from one that emitted the wrong fence from one that answered in
             ;; prose. Nine of twenty turns in a Lean run landed here and the
             ;; question was unanswerable.
+            ;; `mechanics`, not `failure`. The branch produced no claim, so
+            ;; there is nothing here to hold against its line of inquiry —
+            ;; the same reasoning as the provider-error path above. gen-20 B2
+            ;; was culled at turn 6 for four malformed fences, having called
+            ;; only `thesis` and `lean_search`, and the cull reason blamed the
+            ;; critic for scoring a line the critic had never seen. The count
+            ;; is still kept and still bounds the branch; see record-outcome.
             (journal/record-turn! conn run-id
                                   {:branch-id (:id branch) :turn turn
                                    :tool-name (or (:name parsed) "__no_call__")
-                                   :result msg :category "failure"
+                                   :result msg :category "mechanics"
                                    :parse-error (:parse-error parsed)
                                    :auto-repaired (:auto-repaired? parsed)
                                    :assistant-text content
                                    :reasoning-text (:reasoning response)})
             (-> branch
-                (state/record-outcome {:category :failure :progress? false})
+                (state/record-outcome {:category :mechanics :progress? false})
                 (state/add-message "user" msg)))
 
           ;; A real tool call.

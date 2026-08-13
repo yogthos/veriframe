@@ -46,7 +46,10 @@
 (defn record-turn!
   "One model turn: what it called, with what, and what came back.
 
-  `category` is :success, :failure, or :neutral, and it is what the cull and
+  `category` is :success, :failure, :neutral or :mechanics — the last for a
+  turn that produced no usable tool call, kept distinct so the record can tell
+  a branch that was wrong from one that could not format a fence. It is what
+  the cull and
   progress guards read. It is recorded rather than derived later because the
   tool that produced it knows, and a reconstruction would be guessing."
   [conn run-id {:keys [branch-id turn tool-name args result category

@@ -122,10 +122,19 @@
   [{:keys [conn run-id]} branch survivors sibling-scores]
   (let [threshold (gates/threshold :cull-threshold)
         fails (or (:consecutive-failures branch) 0)
+        mech (or (:consecutive-mechanics-failures branch) 0)
         cull (fn [why] (assoc branch :status :culled :inactive-reason why))
         scores (get-in branch [:critic :scores])
         hard-floor (* (gates/threshold :cull-hard-multiple) threshold)]
     (cond
+      ;; A branch that cannot emit a well-formed tool call is bounded, but on
+      ;; its own looser threshold and with its own reason. Three bad fences is
+      ;; a model having a bad turn; twice that is a branch that cannot work the
+      ;; protocol, and saying so beats the dead-end line it used to die with.
+      (and (>= mech (* 2 threshold)) (pos? survivors))
+      (cull (str "culled after " mech " consecutive turns with no usable tool"
+                 " call; the branch could not emit a well-formed fence"))
+
       (not (and (>= fails threshold)
                 (not (state/banked-in-last branch
                                            (gates/threshold :cull-recent-window)))

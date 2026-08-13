@@ -3098,6 +3098,69 @@
                       b [:neutral :failure :failure :neutral :failure :failure])]
         (is (>= (:consecutive-failures b) 3))))))
 
+(deftest a-malformed-fence-is-a-mechanics-fault-not-a-verification-failure
+  ;; gen-20 B2 was culled at turn 6 having called `thesis` and `lean_search`
+  ;; and nothing else. Its other four turns produced no ```tool-call block at
+  ;; all, and each was recorded :failure — the same counter the cull gate
+  ;; reads. The reason it died with says "the critic scored the line a dead
+  ;; end", but the critic had no line to score: the branch never made a
+  ;; substantive claim. A fifth of the beam went to a formatting problem.
+  ;;
+  ;; loop.clj already draws this distinction one branch up, for a provider
+  ;; error: "not the branch's fault and must not count against it as a
+  ;; verification failure." A fence the model malformed is the same kind of
+  ;; thing — a mechanics fault, which the branch already tracks separately.
+  (let [b2 (reduce (fn [b c] (state/record-outcome b {:category c :progress? false}))
+                   (state/new-branch {:id "B2" :problem "p"})
+                   ;; B2's actual sequence, turns 1-6.
+                   [:neutral :mechanics :neutral :mechanics :mechanics :mechanics])]
+    (is (zero? (:consecutive-failures b2))
+        "four malformed fences must not read as verification failures")
+    (is (= 3 (:consecutive-mechanics-failures b2))
+        "but they are counted, on their own tally — consecutive, so the
+         lean_search between the first and the rest resets it")
+    (is (= 6 (:turns-since-progress b2))
+        "and the useless-turn guard still counts every one of them")
+    (is (< (:consecutive-mechanics-failures b2)
+           (* 2 (gates/threshold :cull-threshold)))
+        "and B2, the branch this is named for, now survives its turn 6")
+    (testing "a well-formed call clears the mechanics tally — it proved it can"
+      (doseq [c [:success :failure :neutral]]
+        (is (zero? (:consecutive-mechanics-failures
+                    (state/record-outcome b2 {:category c :progress? false})))
+            (str "a " c " turn is a well-formed call and should clear it"))))
+    (testing "a real verification failure still counts, after mechanics noise"
+      (let [b (state/record-outcome b2 {:category :failure :progress? false})]
+        (is (= 1 (:consecutive-failures b))
+            "and starts from 1, not compounded by the malformed turns")))))
+
+(deftest a-branch-that-cannot-emit-a-tool-call-is-still-bounded
+  ;; The counter has to be separated, not softened. `mechanics` feeds only the
+  ;; capability tier and gates nothing; `turns-since-progress` feeds only
+  ;; progress-stalled, a nudge gate that gen-19 settled 0-for-2. So if a
+  ;; malformed fence simply stopped counting, a branch emitting nothing but
+  ;; garbage would hold a beam slot until the turn budget ran out.
+  ;;
+  ;; Deliberately looser than the verification threshold: three bad fences is
+  ;; a model having a bad turn, and the branch has already shown it can call a
+  ;; tool. Twice that is a branch that cannot work the protocol.
+  (with-db [c]
+    (let [rid (runs/start-run! c {:problem "p"})
+          ctx {:conn c :run-id rid}
+          threshold (gates/threshold :cull-threshold)
+          babbling (fn [n]
+                     (-> (branch-with :id "BM" :consecutive-mechanics-failures n)
+                         (assoc :turns (vec (repeat 8 {})))))]
+      (is (state/active? (#'beam/cull-or-keep ctx (babbling threshold) 2 []))
+          "at the verification threshold a mechanics-only branch keeps going")
+      (let [dead (#'beam/cull-or-keep ctx (babbling (* 2 threshold)) 2 [])]
+        (is (= :culled (:status dead)))
+        (is (re-find #"(?i)tool call|fence|malformed" (:inactive-reason dead))
+            (str "the reason must name the real cause, not a dead-end line: "
+                 (:inactive-reason dead))))
+      (testing "and the last branch standing is never culled for it either"
+        (is (state/active? (#'beam/cull-or-keep ctx (babbling (* 4 threshold)) 0 [])))))))
+
 (deftest an-encoding-that-proves-more-than-the-claim-still-proves-the-claim
   ;; gen-18 B4 T33. The claim was a theorem about a finite set D; the encoding
   ;; declared D as an unconstrained sort, so Z3's unsat proved it for every D,
