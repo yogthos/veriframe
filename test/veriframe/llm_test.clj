@@ -308,6 +308,24 @@
         ;; and the model replies after it rather than inside it.
         (is (true? (:prefix (last msgs))))))
 
+    (testing "the models listing does not follow chat onto the beta path"
+      ;; /beta is a chat-completions variant: it serves prefix completion and
+      ;; returns 404 for /beta/models. Pointing the listing at it turned the
+      ;; startup model check into "provider listed no models", downgrading a
+      ;; real check to a warning on every start.
+      (let [a (registry/adapter-for :deepseek)]
+        (is (= "https://api.deepseek.com/v1/models"
+               (adapter/models-url a {:base-url "https://api.deepseek.com/beta"})))
+        (is (= "https://api.deepseek.com/v1/models"
+               (adapter/models-url a {:base-url "https://api.deepseek.com/beta/"}))
+            "a trailing slash is the same endpoint")
+        (is (= "https://api.deepseek.com/v1/models"
+               (adapter/models-url a {:base-url "https://api.deepseek.com/v1"}))
+            "and a non-beta base is untouched")
+        ;; Chat still goes where it was told.
+        (is (= "https://api.deepseek.com/beta/chat/completions"
+               (adapter/chat-url a {:base-url "https://api.deepseek.com/beta"})))))
+
     (testing "the client threads prefill through to the adapter"
       ;; The plumbing gap that would make all of the above dead code: chat
       ;; builds the request map from its opts, so a key it does not name never

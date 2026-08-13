@@ -45,7 +45,14 @@
   (display-name [_] label)
 
   (chat-url [_ config] (str (:base-url config) "/chat/completions"))
-  (models-url [_ config] (str (:base-url config) "/models"))
+
+  ;; NOT simply base-url + /models. DeepSeek's /beta is a chat-completions
+  ;; variant only — it serves prefix completion, and /beta/models is a 404 —
+  ;; so a run configured for prefilling reported "listed no models" at startup
+  ;; and downgraded a real check to a warning. The listing lives on the stable
+  ;; path either way.
+  (models-url [_ config]
+    (str (str/replace (str (:base-url config)) #"/beta/?$" "/v1") "/models"))
 
   (auth-headers [_ config]
     (if-let [k (:api-key config)]
