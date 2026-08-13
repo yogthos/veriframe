@@ -92,6 +92,7 @@
                    ;; load with `Could not locate glimmer/ffi`.
                    jolt-lang/glimmer-gl
                    {:git/url "https://github.com/jolt-lang/glimmer-gl.git"
+                    :git/tag "v0.1.0"
                     :git/sha "ae9a53291c553e89dde79a90389224f46e5e7fa8"}}
                   :main-opts ["-m" "veriframe.gui.core"]}}
 
