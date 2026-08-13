@@ -58,12 +58,38 @@
   done gate still requires in-run re-verification, so nothing inherited can
   ship on faith. Returns the number of artifacts seeded."
   [conn run-id source-run-id]
-  (let [rows (db/fetch conn
-                       ["SELECT branch_id, kind, tier, claim, code FROM artifacts
-                         WHERE run_id = ? AND claim_status = 'confirmed' ORDER BY id"
-                        source-run-id])]
+  (let [own (db/fetch conn
+                      ["SELECT branch_id, kind, tier, claim, code FROM artifacts
+                        WHERE run_id = ? AND claim_status = 'confirmed' ORDER BY id"
+                       source-run-id])
+        ;; TRANSITIVE. Reading only the source's own artifacts made each
+        ;; generation pass on what it proved and drop everything it had
+        ;; inherited: the phase-unwrapping campaign lost gen-19's 16 lemmas at
+        ;; the gen-20 boundary and would have lost gen-20's 11 at the next —
+        ;; a chain that forgets faster than it learns.
+        inherited (db/fetch conn
+                            ["SELECT branch_id, kind, tier, claim, code
+                              FROM shared_artifacts
+                              WHERE run_id = ? AND branch_id LIKE 'seed:%'
+                              ORDER BY id" source-run-id])
+        ;; Own first, so where a run re-proved something it inherited, its own
+        ;; provenance is the one that crosses.
+        rows (->> (concat own inherited)
+                  (reduce (fn [acc r]
+                            (if (contains? (:seen acc) (:claim r))
+                              acc
+                              (-> acc (update :seen conj (:claim r))
+                                  (update :rows conj r))))
+                          {:seen #{} :rows []})
+                  :rows)]
     (doseq [r rows]
-      (record! conn run-id {:branch-id (str "seed:" (:branch_id r))
+      (record! conn run-id {:branch-id (let [b (str (:branch_id r))]
+                                         ;; Already-seeded rows keep their
+                                         ;; original provenance rather than
+                                         ;; accumulating seed:seed:seed:.
+                                         (if (str/starts-with? b "seed:")
+                                           b
+                                           (str "seed:" b)))
                             :turn 0
                             :kind (keyword (:kind r))
                             :tier (keyword (:tier r))

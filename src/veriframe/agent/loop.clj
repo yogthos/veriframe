@@ -30,6 +30,7 @@
             [veriframe.engine.smt-templates :as templates]
             [veriframe.llm.client :as llm]
             [veriframe.llm.fence :as fence]
+            [veriframe.llm.message :as message]
             [veriframe.store.artifacts :as artifacts]
             [veriframe.store.failures :as failures]
             [veriframe.store.journal :as journal]
@@ -187,7 +188,14 @@
           r (try
               {:ok true
                :response (llm/chat (:llm-adapter ctx) (:llm-config ctx)
-                                   (:messages branch)
+                                   ;; Older turns go as a digest of what they
+                                   ;; tried once the history is long; the
+                                   ;; branch's own message list is untouched,
+                                   ;; so the journal and a resume still hold
+                                   ;; everything. Below the threshold this
+                                   ;; returns the messages unchanged.
+                                   (message/compact (:messages branch)
+                                                    (:turns branch))
                                    (cond-> {}
                                      budget (assoc :max-tokens budget)
                                      ;; Set by the previous turn's steer. The

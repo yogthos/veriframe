@@ -41,6 +41,78 @@
       (seq r) (str "<think>" r "</think>")
       :else c)))
 
+(def default-keep-pairs
+  "How many recent turns stay verbatim when a branch's history is compacted.
+
+  This is the branch's working memory: what it just tried, what the engine
+  said, and the goal state it is mid-way through. Ten is enough to hold a
+  proof attempt and the two or three failures that shaped it."
+  10)
+
+(def default-compaction-threshold
+  "Total content characters before compaction engages.
+
+  Deliberately high. A 19-turn branch carries about 26,000 characters and does
+  not need this; the longest branch on record is 86 turns and about 211,000.
+  Compaction is for the tail, and a branch that never reaches it is sent
+  byte-identical messages to what it would have been sent before."
+  50000)
+
+(defn- digest-line
+  "One line for a turn that has been unloaded: what was tried, how it came out.
+
+  The minimum a branch needs about its own distant past. Anything more —  the
+  encoding, the engine's full output, the reasoning — is in the journal, and
+  confirmed results are in the settled-state block with ids to fetch."
+  [{:keys [turn tool category error]}]
+  (str "  t" turn " " (or tool "?") " → " (name (or category :neutral))
+       (when (seq error)
+         (let [e (first (str/split-lines (str error)))]
+           (str ": " (if (> (count e) 90) (str (subs e 0 90) "…") e))))))
+
+(defn compact
+  "Replace a branch's older turns with a digest of what they tried.
+
+  A branch's context is its own narrative, and past a certain length most of
+  it is prose it will never consult again — while the part it genuinely needs,
+  which approaches are already spent, is buried in that prose. This inverts
+  that: recent turns stay whole, older ones become one line each.
+
+  The frame is preserved exactly. The system prompt survives, the problem
+  survives, and the digest is appended to the PROBLEM message rather than
+  inserted as its own turn, so the conversation stays strictly alternating
+  after it — a run of two user messages is tolerated by some providers and
+  rejected by others, and this needs no provider to be forgiving.
+
+  Nothing is lost, only unloaded: every turn is in the journal, every
+  confirmed and refuted artifact is in the settled-state block, and the
+  encodings are one `fetch_artifact` away. Applied on the way to the wire, so
+  the branch's own history is untouched and a resume replays what was really
+  sent at the time."
+  ([messages turns] (compact messages turns nil))
+  ([messages turns {:keys [keep-pairs threshold-chars]}]
+   (let [keep-pairs (or keep-pairs default-keep-pairs)
+         threshold (or threshold-chars default-compaction-threshold)
+         total (reduce + 0 (map (comp count str :content) messages))
+         [frame body] (split-at 2 (vec messages))
+         pairs (partition-all 2 body)
+         drop-n (- (count pairs) keep-pairs)]
+     (if (or (< total threshold) (<= drop-n 0) (< (count frame) 2))
+       (vec messages)
+       (let [kept (apply concat (drop drop-n pairs))
+             ;; The digest covers exactly the turns being unloaded, so a turn
+             ;; kept verbatim is never also summarised.
+             lines (keep digest-line (take drop-n turns))]
+         (vec (concat [(first frame)
+                       (update (second frame) :content
+                               #(str % "\n\n## Earlier turns on this branch"
+                                     " (unloaded — full detail is in the run journal)\n\n"
+                                     (str/join "\n" lines)
+                                     "\n\nWhat these established or ruled out is in"
+                                     " the settled-state block; fetch any encoding"
+                                     " by its id."))]
+                      kept)))))))
+
 (def ledger-open "<!--settled-state-->")
 (def ledger-close "<!--/settled-state-->")
 

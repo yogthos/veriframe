@@ -242,6 +242,43 @@
         (testing "every row carries an id, so the encoding can be fetched"
           (is (every? :id (concat (:established led) (:ruled-out led)))))))))
 
+(deftest seeding-is-transitive-so-a-campaign-does-not-forget
+  ;; seed-from-run! read only the source's OWN artifacts, so each generation
+  ;; passed on what it proved and dropped everything it had inherited. The
+  ;; phase-unwrapping campaign lost gen-19's 16 lemmas at the gen-20 boundary
+  ;; and would have lost gen-20's 11 at the next one — a chain that forgets
+  ;; faster than it learns, which is the opposite of what seeding is for.
+  ;;
+  ;; Provenance is preserved rather than restacked: an inherited row is
+  ;; already `seed:B4`, and copying it again must not produce `seed:seed:B4`.
+  (with-db [c]
+    (let [g1 (runs/start-run! c {:problem "one"})
+          g2 (runs/start-run! c {:problem "two"})
+          g3 (runs/start-run! c {:problem "three"})]
+      (journal/record-artifact! c g1 {:branch-id "B1" :turn 1 :kind :lean :tier :slow
+                                      :claim "first-generation lemma"
+                                      :code "theorem g1 : True := trivial"
+                                      :claim-status :confirmed})
+      (artifacts/seed-from-run! c g2 g1)
+      (journal/record-artifact! c g2 {:branch-id "B7" :turn 1 :kind :smt :tier :fast
+                                      :claim "second-generation lemma"
+                                      :code "(assert true)"
+                                      :claim-status :confirmed})
+      (let [n (artifacts/seed-from-run! c g3 g2)
+            claims (set (map :claim (artifacts/recent c g3 20)))]
+        (is (= 2 n) "both generations cross, not just the most recent")
+        (is (contains? claims "first-generation lemma")
+            "the inherited lemma survives a second hop")
+        (is (contains? claims "second-generation lemma")))
+      (testing "provenance is not restacked"
+        (is (not-any? #(re-find #"seed:seed:" (str (:branch_id %)))
+                      (artifacts/recent c g3 20))))
+      (testing "a claim already present is not duplicated"
+        ;; g2 holds g1's lemma as an inherited row and its own; re-seeding
+        ;; must not multiply it.
+        (let [claims (map :claim (artifacts/recent c g3 20))]
+          (is (= (count claims) (count (distinct claims)))))))))
+
 (deftest the-ledger-shows-what-the-run-inherited
   ;; Seeding copies a prior run's confirmed artifacts into shared_artifacts,
   ;; not into artifacts, so a seeded run's ledger read "established 0" while

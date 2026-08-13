@@ -102,10 +102,17 @@
         non-advisory mode, rebuilds an engine process."}
 
  :max-total-branches
- {:value 15 :kind :cost-ceiling :capability-tunable? false
+ {:value 8 :kind :cost-ceiling :capability-tunable? false
   :doc "Total branches per run including forked children. A cost ceiling:
         every branch is a concurrent provider call per turn plus its own
-        engine process."}
+        engine process.
+
+        Lowered from 15 after gen-21 measured what 15 actually costs. Asked
+        for width 5, it reached 11 active by round 18 — beam_width is the
+        floor the harness refills toward, not a cap — and spent 2.46M tokens
+        for 4 confirmed artifacts before being stopped. The forks were
+        genuinely distinct, so this is not a diversity problem; it is that
+        the ceiling was set without anyone having measured the bill."}
 
  :prediction-window
  {:value 3 :kind :threshold :capability-tunable? false

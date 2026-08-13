@@ -27,6 +27,55 @@
 
 (defn- fenced [body] (str "prose before\n```tool-call\n" body "\n```\nprose after"))
 
+(deftest a-long-branch-sends-a-digest-of-its-early-turns-not-the-turns
+  ;; What a branch needs from its own distant past is which approaches it
+  ;; already tried and how each came out — not the prose it wrote at the time.
+  ;; A 19-turn branch carries ~26KB on the wire against ~1.5KB of digest, and
+  ;; the longest branch on record is 86 turns.
+  ;;
+  ;; The system prompt and the problem always survive, the recent turns survive
+  ;; verbatim because that is the branch's working memory, and everything older
+  ;; collapses to one line per turn. Details stay in the journal and the
+  ;; artifacts are fetchable by id, so nothing is lost — only unloaded.
+  (let [pair (fn [i] [{:role "assistant" :content (str "long reasoning " i (apply str (repeat 400 "x")))}
+                      {:role "user" :content (str "result " i (apply str (repeat 400 "y")))}])
+        msgs (into [{:role "system" :content "SYS"}
+                    {:role "user" :content "## Problem\n\nsolve it"}]
+                   (mapcat pair (range 1 21)))
+        turns (mapv (fn [i] {:turn i :tool (str "tool" i)
+                             :category (if (even? i) :failure :success)
+                             :error (when (even? i) "boom")})
+                    (range 1 21))
+        out (message/compact msgs turns {:keep-pairs 4 :threshold-chars 1000})]
+    (testing "the frame survives"
+      (is (= "system" (:role (first out))))
+      (is (= "SYS" (:content (first out))))
+      (is (str/includes? (:content (second out)) "solve it")))
+    (testing "the digest rides on the problem message, so roles stay alternating"
+      (is (= "user" (:role (second out))))
+      (is (= ["assistant" "user" "assistant" "user" "assistant" "user" "assistant" "user"]
+             (mapv :role (drop 2 out)))))
+    (testing "recent turns survive verbatim"
+      (is (str/includes? (:content (nth out 2)) "long reasoning 17"))
+      (is (str/includes? (:content (last out)) "result 20")))
+    (testing "early turns are gone as prose but present as a digest"
+      (let [all (str/join "\n" (map :content out))]
+        (is (not (str/includes? all "long reasoning 3")) "the prose is unloaded")
+        (is (str/includes? all "tool3") "but what it tried is retained")
+        (is (str/includes? all "tool16"))
+        (is (not (str/includes? all "tool17"))
+            "turns kept verbatim are not also digested")))
+    (testing "it is smaller"
+      (is (< (count (str/join (map :content out)))
+             (quot (count (str/join (map :content msgs))) 2))))
+    (testing "a short history is left exactly alone"
+      (let [short-msgs (into [{:role "system" :content "SYS"}
+                              {:role "user" :content "P"}]
+                             (mapcat pair (range 1 3)))]
+        (is (= short-msgs (message/compact short-msgs
+                                           [{:turn 1 :tool "t" :category :success}]
+                                           {:keep-pairs 4 :threshold-chars 1000000})))))))
+
 (deftest only-the-newest-settled-state-block-goes-over-the-wire
   ;; The settled-state ledger is regenerated every turn and appended to that
   ;; turn's user message, so without this every copy accumulates: gen-18's
