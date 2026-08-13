@@ -1,7 +1,7 @@
-# The canonical unwrapping rule: three runs, and what they cost
+# The canonical unwrapping rule: four runs, and what they cost
 
 A follow-on to [phase-unwrapping.md](phase-unwrapping.md). That run answered a
-neighbouring question about when the L1 minimum-cost flow is unique. These three
+neighbouring question about when the L1 minimum-cost flow is unique. These four
 answered a different one: given that it is *not* unique, what should the
 unwrapper return instead, and can that thing be computed?
 
@@ -18,16 +18,17 @@ genuinely occurs, exactly where the data is worst.
 That last fact is the whole difficulty. Zero weights are what make the L1
 argmin infinite.
 
-| | gen-17 | gen-18 | gen-19 |
-| --- | --- | --- | --- |
-| run | `0d0c3560` | `65d50333` | `cd58e618` |
-| turns | 523 | 603 | 140 |
-| artifacts | 97 | 122 | 32 |
-| confirmed / empirical / refuted | 56 / 9 / 0 | 79 / 5 / 2 | 16 / 2 / 0 |
-| artifacts refused as unfaithful | — | — | 14 |
-| branches shipped / culled | 10 / 5 | 7 / 5 | 1 / 3 |
-| recorded failures | 125 | 164 | 58 |
-| ended | completed | server died ~20 h in, 3 branches still active | completed in 2 h 25 m |
+| | gen-17 | gen-18 | gen-19 | gen-20 |
+| --- | --- | --- | --- | --- |
+| run | `0d0c3560` | `65d50333` | `cd58e618` | `36bf3163` |
+| turns | 523 | 603 | 140 | 197 |
+| artifacts | 97 | 122 | 32 | 13 |
+| confirmed / empirical / refuted | 56 / 9 / 0 | 79 / 5 / 2 | 16 / 2 / 0 | 11 / 0 / 0 |
+| artifacts refused as unfaithful | — | — | 14 | 2 |
+| confirmed on the **slow** tier | — | — | 0 of 16 | **11 of 11** |
+| branches shipped / culled | 10 / 5 | 7 / 5 | 1 / 3 | 1 / 3 |
+| recorded failures | 125 | 164 | 58 | 57 |
+| ended | completed | server died ~20 h in, 3 branches still active | completed in 2 h 25 m | completed; crashed once at turn 164 and resumed |
 
 ---
 
@@ -305,6 +306,157 @@ superseded.
 
 ---
 
+## gen-20: the honest answer
+
+Pointed at Q-1 alone — the main question, the one gen-19 left where it found
+it: give a polynomial-time algorithm computing the three-stage rule on an
+arbitrary instance, with no assumption that the stage-2 minimiser is unique,
+or prove none exists under a standard complexity assumption.
+
+**The formulation named no attack, deliberately.** gen-19's prompt had handed
+over its proof strategy and got it back as the answer, which told us the
+harness executes a suggested attack well and nothing about whether it finds
+one. gen-19's prompt had also called greedy edge-by-edge fixing "the obvious
+attack". Both were removed from gen-20's statement and their absence checked
+before launch. What was kept was facts — the $2^m$ tie, the existing
+scalarisation algorithm and exactly what its hypothesis costs, the forced
+edge-order dependence — so no turns went on reproving them.
+
+It also carried an evidence standard: the load-bearing claim had to be
+confirmed by `verify_template` or a closed `proof_start`/`proof_step`, not by
+`verify_smt`/`verify_lean`/`verify_octave` alone.
+
+### The withheld attack was rediscovered
+
+At turn 18, `B1` shipped `seq_lower_bound_is_lexmin`: for a finite $T$ and
+predicate $P$, if $c$ satisfies $P$ and at each coordinate $i$ is a lower bound
+among all $P$-satisfying elements agreeing with $c$ on coordinates $< i$, then
+$c$ is the lexicographic minimum of the $P$-satisfying subset. That is exactly
+the greedy coordinate-by-coordinate attack the statement had withheld.
+
+So: gen-19 was handed its attack and executed it; gen-20 was handed nothing and
+found the same one. For an attack this natural, the harness does the finding.
+
+### What shipped
+
+`B3`, at turn 197, with `done` accepted **first try and no refusals** — the
+answer was already correctly scoped when it was offered, rather than being
+beaten into shape by the gates the way gen-18's were.
+
+> **STATUS: NOT SETTLED.** I did not settle whether the three-stage unwrapping
+> rule is computable in polynomial time on arbitrary instances, and I did not
+> prove hardness.
+
+What it did ship is three Lean-verified lemmas about finite sets of integer
+vectors, which are the lexicographic core of any future algorithm *or* hardness
+argument:
+
+1. **Layer scalarisation.** With $Q \le Q_{max}$, $\mathrm{range}(L) \le
+   L_{range}$, $K > L_{range}$ and $H > K\,Q_{max} + L_{range}$, every
+   minimiser of $H\,C + K\,Q + L$ is $C$-minimal, then $Q$-minimal among those,
+   then $L$-minimal.
+2. **One-coordinate scalarisation.** With coordinates in $[-D, D]$ and $B =
+   2D+1$, any minimiser of $k_j + B\,F$ is $F$-minimal and, among those, has
+   the least $j$-th coordinate.
+3. **Greedy lexicographic minimality**, as above.
+
+All three re-derived here before recording, analytically and by 80,000
+randomised trials, zero counterexamples. Lemma 1 follows from integrality: if
+$C(y) < C(x)$ then $\Delta \le -H + K\,Q_{max} + L_{range} < 0$. Lemma 2
+because $B$ exceeds the maximum coordinate swing $2D$. Lemma 3 because at the
+first differing coordinate prefix-minimality forces $a_i < y_i$.
+
+### Why the refusal is the interesting part
+
+The answer names three gaps between the toolkit and an algorithm, and the
+second is the one that matters:
+
+> (a) prove that the feasible integer flows … with $|k_e| \le D$ for an
+> explicitly computed $D$ contain all stage-2-optimal flows, (b) prove that
+> minimising the scalarised objective over that box plus prefix constraints is
+> a separable convex integer flow problem solvable in polynomial time … the
+> coordinate bound is a nontrivial flow-specific fact that I did not verify.
+
+That is exactly the obstruction, and it was predicted before the run finished.
+The natural encoding of stage 3 as an integer objective, $L(k) = \sum_e k_e
+B^e$, has values exponential in $|E|$ but bit-length only $m \log(2D+1)$ — so
+the coefficients are *not* the problem, and a branch chasing them (`B4.3` did)
+is chasing the wrong thing. The problem is $D$. The standard reduction from
+separable-convex to linear min-cost flow splits each edge into one arc per unit
+of capacity, giving $O(mD)$ arcs, which is polynomial only if $D$ is polynomial
+in the **encoding size** rather than in the input values. gen-18's bound $D =
+A\,C(k_0) + Q(k_0)$ with $A = Q(k_0)+1$ is pseudo-polynomial: large weights
+make it exponential in the encoding.
+
+A branch could have passed its own scalarisation lemma and inherited
+"polynomial-time flow solving is standard background" from gen-18's answer,
+where the costs were small. That is precisely how gen-18 shipped a restriction
+it never priced. This run declined to.
+
+### What the harness did badly
+
+**Three branches proved the same lemma.** `B4` at turn 8 as $H_f/H_g$, `B3` at
+turn 19 as $H/K$, `B4.2` at turn 20 as $\alpha/\beta$ — the same scalarisation
+result with renamed variables, three separate slow-tier Lean proofs. They were
+not failing to discover each other's work: each claim was served through the
+shared-artifact block five times. The block renders claim text only, no code,
+so a branch cannot cite a theorem statement it has never seen and re-deriving
+is the only move available to it. The branches behaved rationally; the channel
+is underpowered.
+
+**The sharing channel spent three quarters of itself on the prompt.** Of 91
+shared-artifact hits, 67 served *seeded* gen-19 artifacts — the dipole-square
+material gen-20's own statement already prints in full under a heading saying
+not to reprove it — against 24 for artifacts the run itself produced.
+
+**The hardness direction collapsed.** `B4.2` forked at turn 12 with the goal
+"prove no polynomial-time exact algorithm exists … or identify a concrete
+NP-hard subproblem", and within eight rounds both of its own children were
+pursuing algorithms. Nothing in the beam was attempting hardness when the run
+ended. Forks inherit the parent's recent context, and the parent had just been
+proving scalarisation lemmas.
+
+**The best branch died on tool mechanics.** `B1`, which had rediscovered the
+greedy characterisation, was culled at turn 32 after calling `proof_step`,
+being told to call `proof_start`, calling `proof_start` without its required
+arguments, being told, and repeating — five failures, three with the
+byte-identical error. The cull was correct on the evidence (13 real failures to
+1 success). The harness answering the fifth identical mistake exactly as it
+answered the first was not. Run-wide, 29 of 57 failures are four identical
+(tool, message) pairs.
+
+### The gates, measured again
+
+Predictions settled 9 met to 27 unmet — better than gen-19's 4 to 22, still
+poor. One line changed completely:
+
+| gate | gen-19 | gen-20 |
+| --- | --- | --- |
+| `tier-escalation` | 0 met / 4 unmet | **2 met / 0 unmet** |
+| `milestone` | 0 / 4 | 2 / 3 |
+
+And the artifacts followed: **11 of 11 confirmed artifacts on the slow tier,
+against 0 of 16 in gen-19**, with the unfaithful rate down from 44% to 15%.
+The difference between the runs is that gen-20's problem statement named
+`verify_template`, `proof_start` and `proof_step` as a requirement, where the
+gate had only ever described "a slow-tier check" — which is not a callable
+name. Suggestive, not measured: one run, different problem, obvious confound.
+
+### Cost, for the first time
+
+Token usage had been parsed by the provider adapter and discarded by the loop
+for the project's whole life. It is recorded from this run's turn 164 onward:
+441,516 prompt and 185,752 completion tokens over 33 turns, at an 80.5% cache
+hit rate.
+
+Measured mid-run at nine active branches the hit rate was **42.6%** — every
+branch shares one ~4,900-token system prefix and every branch's own transcript
+misses on every turn, growing monotonically. By the end the beam had collapsed
+to fewer branches and the rate rose. Running wide costs more than the branch
+count alone suggests.
+
+---
+
 ## Corrections and caveats
 
 **A shipped answer misdescribes its own graph (vf-6ai).** gen-17's `B4` says
@@ -318,17 +470,23 @@ part worth remembering: the gates check that claims match evidence, and a wrong
 noun that no engine ever consumed goes straight through.
 
 **Nothing here answers the original question.** No run touched $\sigma$, the
-Gaussian field, or the torus. What is still open after three runs: Q-A/Q-1 in
-general — the tied case, which is the whole difficulty and which gen-19 left
-where it found it (vf-izq) — Q-B as a theorem for arbitrary graphs, Q-3 beyond
-3×3 and as a function of $n$, and Q-D with nonzero residues or noise.
+Gaussian field, or the torus. What is still open after four runs: Q-A/Q-1 in
+general — the tied case, which is the whole difficulty and which both gen-19
+and gen-20 left open (vf-izq) — Q-B as a theorem for arbitrary graphs, Q-3
+beyond 3×3 and as a function of $n$, and Q-D with nonzero residues or noise.
 
-**One of the three runs was steered to its answer.** gen-19's Q-2 prompt named
-the proof strategy — exhibit an instance whose symmetry group acts transitively
-on its stage-2 optimal set — and that is what shipped. Worth holding against
-any reading of these runs as evidence about what the harness discovers on its
-own: it executed and verified a suggested attack well, which is a different
-claim.
+What gen-20 changes about Q-1 is that it is now open *with a foundation*: three
+machine-checked lemmas that any algorithm or hardness proof would need, and a
+named obstruction — whether the coordinate bound $D$ is polynomial in encoding
+size — rather than a vague sense that the tied case is hard.
+
+**One of the four runs was steered to its answer, and one was not.** gen-19's
+Q-2 prompt named the proof strategy — exhibit an instance whose symmetry group
+acts transitively on its stage-2 optimal set — and that is what shipped. gen-20
+withheld both the strategy and the obvious attack, and `B1` rediscovered the
+greedy characterisation anyway at turn 18. So the honest summary is that the
+harness can find an attack of that kind, and that gen-19 is not evidence either
+way because it was told.
 
 **The gates did work, unevenly.** gen-18's `B2` had `done` refused five times
 and `B2.3.3` three, in every case for asserting the thesis when the evidence
@@ -339,9 +497,37 @@ Against that: gen-19's gate *predictions* settled 4 met to 22 unmet, and its
 `tier-escalation` gate never once got a branch onto the slow tier. Refusal
 works; nudging does not.
 
+gen-20 sharpens that into something actionable. Its predictions settled 9 to
+27 — still poor — but `tier-escalation` went 2 for 2 and every confirmed
+artifact was slow-tier, the difference being that the *problem statement*
+named the tools where the gate had only described a tier. The pattern across
+four runs is that a gate changes behaviour when it withholds something or
+names something callable, and not when it merely suggests. The counter-example
+worth remembering is that gen-20's best branch was still lost to the opposite
+failure: the harness repeating an identical unhelpful error five times while a
+branch looped on it.
+
 **gen-18 did not finish.** The server died around 2026-08-10 20:15, roughly 20
 hours in, with `B2.2`, `B4.3.2` and `B4.3.3` still active. Its row read
 `running` for days afterwards (vf-g2l), which is what prompted
 `reconcile-orphans!` — crashed runs are now marked `interrupted` at startup
 rather than asserting forever. 603 of 300 max turns is turns across all
 branches, not scheduler rounds.
+
+**gen-20 crashed too, and that went differently.** The server died at turn 164
+when its host ran out of disk. `reconcile-orphans!` marked the row
+`interrupted` at the next startup instead of leaving it claiming to run, and
+the run was resumed from its journal and went on to finish 33 turns later. The
+machinery gen-18's failure prompted is what made gen-20's a non-event. Two
+things are still not replayed across a resume and both showed: branch Lean
+sessions are process memory and do not survive, and pre-crash turns keep the
+categories they were recorded with — so `__no_call__` turns written before the
+mechanics fix replayed as failures, which is visible in the tallies above as 21
+`mechanics` turns beside 9 older no-call turns still counted as failures.
+
+**The run counts here are not comparable across generations.** gen-20 produced
+13 artifacts to gen-17's 97, which reflects what the questions asked for rather
+than productivity: gen-17 was mapping a space and gen-20 was trying to close a
+single hard question, where most turns are a Lean proof failing to elaborate.
+The comparable numbers are the rates — unfaithful share, slow-tier share,
+prediction settlement.
