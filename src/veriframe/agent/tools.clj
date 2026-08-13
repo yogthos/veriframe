@@ -1675,6 +1675,34 @@
                  (str/join "\n\n" (:goals r)))
             :progress? true)))))
 
+(defmethod run-tool "fetch_artifact" [{:keys [branch conn run-id] :as ctx}]
+  ;; The ledger lists claims with ids and leaves the encodings out, so the code
+  ;; costs a turn only when a branch actually wants it rather than riding in
+  ;; every context block. This is what makes an id actionable.
+  ;;
+  ;; Deliberately :neutral, via `ok`: a lookup establishes nothing. Reporting
+  ;; :success would clear the branch's consecutive-failure count and read as
+  ;; progress, which is the "well-formed but useless call" failure the
+  ;; progress guards exist to catch.
+  (if-let [m (missing ctx :id)]
+    (fail branch m)
+    (let [id (arg ctx :id)
+          id (if (string? id) (parse-long (str/trim id)) id)
+          a (when (and conn run-id id) (journal/artifact-by-id conn run-id id))]
+      (if-not a
+        (fail branch (str "No artifact a#" (arg ctx :id) " in this run."
+                          " Ids come from the settled-state block; a run cannot"
+                          " reach another run's artifacts."))
+        (ok branch
+            (str "a#" (:id a) " [" (:branch_id a) " " (:kind a) "/" (:tier a) "]"
+                 " status " (str/upper-case (str (:claim_status a)))
+                 ;; The status travels with the encoding or a refutation reads
+                 ;; as an established result — the failure mode that makes
+                 ;; sharing refutations worse than withholding them.
+                 (when (:verdict a) (str ", verdict " (:verdict a)))
+                 "\n\nCLAIM\n" (:claim a)
+                 "\n\nENCODING\n" (:code a)))))))
+
 (defmethod run-tool "proof_state" [{:keys [branch]}]
   (if-let [p (:proof branch)]
     (ok branch (str "Proving: " (:theorem p)

@@ -130,7 +130,19 @@
       (journal/note! conn run-id :shared-artifact-hit
                      {:branch-id (:id branch)
                       :data {:claim (:claim a) :source-branch (:branch_id a)}}))
-    (let [blocks (keep identity [(failures/render fhits)
+    (let [blocks (keep identity [;; The run's settled state, first and complete:
+                                 ;; what is established and — the half nothing
+                                 ;; carried before — what is RULED OUT. Read
+                                 ;; from the artifacts table every turn, so it
+                                 ;; cannot drift from the record, and cheap:
+                                 ;; gen-20's whole confirmed set is under 400
+                                 ;; tokens of claim text. Unlike the blocks
+                                 ;; below it is not FTS-sampled, because the
+                                 ;; value of a ledger is that a branch can
+                                 ;; trust the absence of a line.
+                                 (artifacts/render-ledger
+                                  (journal/ledger conn run-id))
+                                 (failures/render fhits)
                                  (artifacts/render ahits)])]
       {:block (when (seq blocks) (str/join "\n\n" blocks))
        :branch (update branch :shared-served (fnil into #{}) (map :id fresh))})))

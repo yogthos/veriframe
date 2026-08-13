@@ -1053,7 +1053,7 @@
            "thesis" "branch_theses" "review" "audit" "done" "give_up"
            "verify_lean" "lean_search" "proof_start" "proof_step"
            "proof_state" "proof_abandon"
-           "octave_eval" "verify_octave" "measure"}
+           "octave_eval" "verify_octave" "measure" "fetch_artifact"}
          (set (tools/tool-names))))
   (is (some? (get-method tools/run-tool :default))
       "an unknown tool name must land somewhere that names the alternatives"))
@@ -3133,6 +3133,51 @@
       (let [b (state/record-outcome b2 {:category :failure :progress? false})]
         (is (= 1 (:consecutive-failures b))
             "and starts from 1, not compounded by the malformed turns")))))
+
+(deftest fetch-artifact-turns-a-ledger-id-into-an-encoding
+  ;; The ledger lists claims with ids and leaves encodings out, so the code
+  ;; costs a turn only when a branch wants it. That only works if an id is
+  ;; actionable — nothing could turn one into an encoding before.
+  (with-db [c]
+    (let [rid (runs/start-run! c {:problem "p"})
+          _ (journal/record-artifact! c rid
+                                      {:branch-id "B2" :turn 3 :kind :lean
+                                       :tier :slow :claim "the lex minimum exists"
+                                       :code "theorem lex_min : True := trivial"
+                                       :claim-status :confirmed})
+          aid (:id (first (journal/artifacts c rid)))
+          b (state/new-branch {:id "B1" :problem "p"})
+          call (fn [args] (tools/run-tool {:branch b :turn 4 :conn c :run-id rid
+                                           :tool-name "fetch_artifact" :args args}))]
+      (let [r (call {:id aid})]
+        (is (re-find #"lex_min" (:result r)) "the encoding comes back")
+        (is (re-find #"the lex minimum exists" (:result r)) "with its claim")
+        (is (= :neutral (:category r))
+            "a lookup is not progress — :success would clear the failure count")
+        (is (not (:progress? r)))
+        (is (nil? (:artifact r)) "and it must not mint an artifact of its own"))
+
+      (testing "a refuted artifact is fetchable too — that is the point"
+        ;; The encoding is what shows WHY a line is closed, and is what stops a
+        ;; sibling re-attempting it.
+        (journal/record-artifact! c rid
+                                  {:branch-id "B3" :turn 4 :kind :smt :tier :fast
+                                   :claim "the strengthening holds"
+                                   :code "(assert false)"
+                                   :claim-status :refuted})
+        (let [rid2 (:id (last (journal/artifacts c rid)))
+              r (call {:id rid2})]
+          (is (re-find #"assert false" (:result r)))
+          (is (re-find #"(?i)refuted" (:result r))
+              "and its status travels with it, or it reads as established")))
+
+      (testing "an unknown id fails rather than inventing something"
+        (let [r (call {:id 999999})]
+          (is (= :failure (:category r)))
+          (is (re-find #"(?i)no artifact" (:result r)))))
+
+      (testing "a missing id is the standard missing-argument complaint"
+        (is (re-find #"(?i)missing required argument" (:result (call {}))))))))
 
 (deftest a-gate-that-names-one-tool-forces-its-fence
   ;; gen-19 settled gate predictions 4 met to 22 unmet, gen-20 9 to 27. The

@@ -27,6 +27,38 @@
 
 (defn- fenced [body] (str "prose before\n```tool-call\n" body "\n```\nprose after"))
 
+(deftest only-the-newest-settled-state-block-goes-over-the-wire
+  ;; The settled-state ledger is regenerated every turn and appended to that
+  ;; turn's user message, so without this every copy accumulates: gen-18's
+  ;; ledger is ~6,800 tokens and an 80-turn branch would carry 80 copies of it,
+  ;; which is far more context than the whole transcript.
+  ;;
+  ;; A ledger is STATE, not narrative — only the current one is true, and an
+  ;; older copy is a strictly worse version of the newest. Same reasoning as
+  ;; strip-think-blocks, which drops accumulated reasoning for the same reason.
+  ;; The branch keeps every copy in its own history so the journal and resume
+  ;; stay faithful; only the wire sees one.
+  (let [led (fn [n] (str message/ledger-open "\nsettled: " n "\n" message/ledger-close))
+        msgs [{:role "system" :content "sys"}
+              {:role "user" :content (str "result 1\n" (led 1))}
+              {:role "assistant" :content "call 1"}
+              {:role "user" :content (str "result 2\n" (led 2))}
+              {:role "assistant" :content "call 2"}
+              {:role "user" :content (str "result 3\n" (led 3))}]
+        out (mapv :content (message/prepare msgs))]
+    (is (not (str/includes? (nth out 1) "settled: 1")) "the first ledger is dropped")
+    (is (not (str/includes? (nth out 3) "settled: 2")) "and the second")
+    (is (str/includes? (nth out 5) "settled: 3") "the newest survives")
+    (testing "the surrounding turn result is untouched"
+      (is (str/includes? (nth out 1) "result 1"))
+      (is (str/includes? (nth out 3) "result 2")))
+    (testing "the markers never reach the model"
+      (is (not-any? #(str/includes? % message/ledger-open) out)))
+    (testing "a conversation with one ledger keeps it"
+      (let [one (mapv :content (message/prepare
+                                [{:role "user" :content (str "r\n" (led 9))}]))]
+        (is (str/includes? (first one) "settled: 9"))))))
+
 (deftest reattach-rebuilds-the-whole-assistant-turn
   ;; Not only the parser needs this. The completion is just the TAIL of what
   ;; the assistant said, and both the message history and the journal's

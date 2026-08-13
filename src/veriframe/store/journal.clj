@@ -139,6 +139,53 @@
                      WHERE run_id = ? AND branch_id = ? AND claim_status = 'confirmed'
                      ORDER BY id" run-id branch-id]))
 
+(defn ledger
+  "What the run has settled, as state rather than narrative.
+
+  Two lists: what is established and what is ruled out. Read from `artifacts`
+  rather than `shared_artifacts` for two reasons — the authoritative table
+  already carries `claim_status` where the shared pool does not, and the
+  ledger has to be COMPLETE. The shared block samples the top five by FTS
+  relevance, which is right when the payload is a large encoding and wrong
+  here: the whole value of a ledger is that a branch can trust the absence of
+  a line.
+
+  `refuted` is the half nothing carried before. 127 of them exist across the
+  project's history and loop/shareable? admits only `:confirmed`, so a branch
+  was told what siblings had proved and never what they had disproved — and a
+  refutation prunes a direction where a confirmation only adds a fact.
+
+  `unfaithful` is deliberately excluded despite being numerous: the encoding
+  did not establish the claim, so carrying it would spread an assertion
+  nothing verified. `empirical` and `existential` are excluded for now as an
+  explicit choice rather than an oversight — a measurement is not a settled
+  fact and would need its own section to avoid being read as one.
+
+  Own-branch rows are INCLUDED, unlike `corroborating-artifacts`. Re-reading
+  your own established facts as a list is the point; the alternative is
+  scanning an eighty-turn transcript for them.
+
+  Cheap: gen-20's entire confirmed set is 1,495 characters of claim text."
+  [conn run-id]
+  (let [rows (db/fetch conn
+                       ["SELECT id, branch_id, turn, kind, tier, claim, claim_status
+                         FROM artifacts
+                         WHERE run_id = ? AND claim_status IN ('confirmed', 'refuted')
+                         ORDER BY id" run-id])
+        by-status (group-by :claim_status rows)]
+    {:established (vec (get by-status "confirmed" []))
+     :ruled-out (vec (get by-status "refuted" []))}))
+
+(defn artifact-by-id
+  "One artifact of this run, whole, including its encoding.
+
+  Scoped to the run on purpose: cross-run reach would let a branch cite
+  something the run never established, which the done gate's evidence rungs
+  exist to prevent."
+  [conn run-id id]
+  (db/fetch-one conn ["SELECT * FROM artifacts WHERE run_id = ? AND id = ?"
+                      run-id id]))
+
 (defn corroborating-artifacts
   "Everything the rest of the run confirmed or measured.
 

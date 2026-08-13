@@ -203,6 +203,81 @@
                (.indexOf block "variant"))
             "in-run entries come before seeded ones")))))
 
+(deftest the-ledger-carries-what-was-ruled-out-not-only-what-was-proved
+  ;; 127 refuted artifacts exist across the project and not one had ever been
+  ;; shared: loop/shareable? admits only :confirmed, so a branch was told what
+  ;; siblings had PROVEN and never what they had DISPROVEN. A refutation is
+  ;; worth more per token than a confirmation for choosing what to try — a
+  ;; confirmation adds a fact, a refutation prunes a direction.
+  ;;
+  ;; Read from `artifacts` rather than `shared_artifacts`, which has no
+  ;; claim_status column: the authoritative table already carries everything,
+  ;; so this needs no migration and cannot drift from the record.
+  (with-db [c]
+    (let [rid (runs/start-run! c {:problem "p"})
+          art (fn [bid status claim]
+                (journal/record-artifact!
+                 c rid {:branch-id bid :turn 1 :kind :lean :tier :slow
+                        :claim claim :code (str "theorem t_" claim)
+                        :claim-status status}))]
+      (art "B1" :confirmed "scalarization yields the lex minimum")
+      (art "B2" :refuted "zero total signed weight preserves optimality")
+      (art "B3" :unfaithful "sat is offered for a universal claim")
+      (art "B4" :empirical "tie sizes on 60 random 3x3 grids")
+      (let [led (journal/ledger c rid)
+            established (mapv :claim (:established led))
+            ruled-out (mapv :claim (:ruled-out led))]
+        (is (= ["scalarization yields the lex minimum"] established))
+        (is (= ["zero total signed weight preserves optimality"] ruled-out)
+            "the disproven half, which nothing carried before")
+        (testing "unfaithful stays out — the encoding never established the claim"
+          ;; 110 of these exist. Sharing one spreads an assertion that nothing
+          ;; verified, which is the opposite of what a ledger is for.
+          (is (not-any? #(re-find #"sat is offered" %)
+                        (concat established ruled-out))))
+        (testing "every row carries an id, so the encoding can be fetched"
+          (is (every? :id (concat (:established led) (:ruled-out led)))))))))
+
+(deftest the-ledger-includes-the-branch-s-own-work-and-stays-small
+  ;; Unlike the shared block, which excludes own-branch rows because a branch
+  ;; re-reading its own lemmas mid-narrative is noise. As a LIST it is the
+  ;; point: the alternative is scanning an 80-turn transcript for what you
+  ;; established. gen-20's entire confirmed knowledge is 1,495 chars — under
+  ;; 400 tokens — against B3's ~50k-char transcript.
+  (with-db [c]
+    (let [rid (runs/start-run! c {:problem "p"})]
+      (doseq [i (range 3)]
+        (journal/record-artifact! c rid {:branch-id "B1" :turn i :kind :smt
+                                         :tier :fast :claim (str "own fact " i)
+                                         :code "(assert true)"
+                                         :claim-status :confirmed}))
+      (let [led (journal/ledger c rid)]
+        (is (= 3 (count (:established led))) "own artifacts are in the ledger")
+        (let [block (artifacts/render-ledger led)]
+          (is (re-find #"own fact 0" block))
+          (is (re-find #"(?i)established" block))
+          (testing "an empty ledger renders nothing rather than an empty heading"
+            (is (nil? (artifacts/render-ledger {:established [] :ruled-out []})))))))))
+
+(deftest the-ledger-renders-refuted-so-it-cannot-be-read-as-proved
+  ;; A refutation formatted like a confirmation is worse than not sharing it.
+  ;; Separate sections rather than a status tag on a line, so a model skimming
+  ;; the block cannot merge the two.
+  (let [block (artifacts/render-ledger
+               {:established [{:id 1 :branch_id "B1" :kind "lean" :tier "slow"
+                               :claim "the rule is well defined"}]
+                :ruled-out [{:id 2 :branch_id "B2" :kind "smt" :tier "fast"
+                             :claim "the natural strengthening holds"}]})
+        est-at (.indexOf block "the rule is well defined")
+        ref-at (.indexOf block "the natural strengthening holds")]
+    (is (pos? est-at))
+    (is (pos? ref-at))
+    (is (re-find #"(?i)ruled out|disproven|refuted" block)
+        "the disproven section must be labelled as such")
+    (is (< est-at ref-at) "established first, then what is closed")
+    (testing "the id is present and usable as a handle"
+      (is (re-find #"a#2" block)))))
+
 (deftest fts5-is-available-through-the-ffi-binding
   ;; Distinct from the sqlite3 CLI having FTS5. The failure mode is a
   ;; migration that throws at startup.

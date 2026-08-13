@@ -41,16 +41,56 @@
       (seq r) (str "<think>" r "</think>")
       :else c)))
 
+(def ledger-open "<!--settled-state-->")
+(def ledger-close "<!--/settled-state-->")
+
+(def ^:private ledger-re
+  (re-pattern (str "(?s)" (java.util.regex.Pattern/quote ledger-open)
+                   ".*?" (java.util.regex.Pattern/quote ledger-close))))
+
+(defn strip-stale-ledgers
+  "Drop every settled-state block except the most recent.
+
+  The ledger is regenerated from the artifacts table each turn and appended to
+  that turn's result, so without this a branch accumulates one copy per turn.
+  gen-18's ledger is roughly 6,800 tokens; eighty turns of it would dwarf the
+  transcript it exists to summarise.
+
+  A ledger is STATE. Only the newest is true, and an older copy is a strictly
+  worse version of it — the same argument strip-think-blocks makes about
+  reasoning, and the reason both live here rather than at the call site.
+
+  Applied on the way to the wire only. The branch keeps every copy in its own
+  message list, so the journal and a resume see exactly what was sent at the
+  time."
+  [messages]
+  (let [last-idx (last (keep-indexed (fn [i m]
+                                       (when (re-find ledger-re (str (:content m))) i))
+                                     messages))]
+    (if (nil? last-idx)
+      messages
+      (map-indexed (fn [i m]
+                     (if (= i last-idx)
+                       m
+                       (update m :content #(str/replace (str %) ledger-re ""))))
+                   messages))))
+
 (defn prepare
-  "Normalize a conversation for the wire: keyword roles become strings and
-  prior assistant turns lose their think blocks. System and user messages are
-  left alone."
+  "Normalize a conversation for the wire: keyword roles become strings, prior
+  assistant turns lose their think blocks, and every settled-state block but
+  the newest is dropped. System and user messages are otherwise left alone."
   [messages]
   (mapv (fn [{:keys [role content] :as m}]
           (let [role (if (keyword? role) (clojure.core/name role) (str role))]
             (assoc (select-keys m [])
                    :role role
-                   :content (if (and (= "assistant" role) content)
-                              (strip-think-blocks content)
-                              (or content "")))))
-        messages))
+                   :content (-> (if (and (= "assistant" role) content)
+                                  (strip-think-blocks content)
+                                  (or content ""))
+                                ;; The markers are harness framing and must not
+                                ;; reach the model, which would otherwise learn
+                                ;; to emit them.
+                                (str/replace ledger-open "")
+                                (str/replace ledger-close "")
+                                str/trim))))
+        (strip-stale-ledgers messages)))

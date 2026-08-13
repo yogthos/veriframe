@@ -25,6 +25,7 @@
   every context. The FTS table is standalone, and sync is app-managed here."
   (:require [clojure.string :as str]
             [jdbc.core :as jdbc]
+            [veriframe.llm.message :as message]
             [veriframe.store.db :as db]
             [veriframe.store.journal :as journal]))
 
@@ -121,6 +122,47 @@
   hypotheses, small enough that five entries cannot crowd out the branch's own
   context — the block re-renders every turn, so its size is a per-turn cost."
   700)
+
+(def ^:private max-ledger-claim-chars
+  "How much of a claim the ledger shows.
+
+  A claim is often a full mathematical statement — gen-18's average is around
+  340 characters, and its 79 confirmed artifacts render to ~6,800 tokens
+  unabridged. The ledger's job is to let a branch see WHAT is settled and
+  decide what to try; the exact statement is one `fetch_artifact` away, so the
+  headline is what belongs here."
+  180)
+
+(defn- ledger-line [{:keys [id branch_id kind tier claim]}]
+  (let [c (str/trim (str claim))
+        c (if (> (count c) max-ledger-claim-chars)
+            (str (subs c 0 max-ledger-claim-chars) " …")
+            c)]
+    (str "- [a#" id " " branch_id " " (name (or kind "?")) "/" (name (or tier "?")) "] " c)))
+
+(defn render-ledger
+  "The run's settled state, as a block for a branch's next-turn context.
+
+  Two sections, never one list with a status column: a refutation formatted
+  like a confirmation is worse than not sharing it at all, and a model
+  skimming a single list will merge them. Established first, because it is
+  what a branch builds on; ruled out second, because it is what stops a branch
+  repeating a closed line.
+
+  Ids are handles, not decoration — `a#12` is what `fetch_artifact` takes, so
+  the encodings stay out of the block and cost a turn only when wanted."
+  [{:keys [established ruled-out]}]
+  (when (or (seq established) (seq ruled-out))
+    (str message/ledger-open "\n"
+         "## What this run has settled\n\n"
+         (when (seq established)
+           (str "### Established — engine-verified\n"
+                (str/join "\n" (map ledger-line established)) "\n\n"))
+         (when (seq ruled-out)
+           (str "### Ruled out — engine-REFUTED, do not re-attempt these\n"
+                (str/join "\n" (map ledger-line ruled-out)) "\n\n"))
+         "Fetch any encoding with `fetch_artifact` and its id.\n"
+         message/ledger-close)))
 
 (defn prefer-in-run
   "In-run artifacts first, seeded ones after, order preserved within each.

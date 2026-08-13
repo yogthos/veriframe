@@ -124,6 +124,12 @@ proof_step({tactic})          Apply one tactic. A tactic that fails leaves the
                               whole tactic script as slow-tier evidence.
 proof_state({})               The theorem and the tactics applied so far.
 proof_abandon({})             Drop the open proof and start over.
+
+fetch_artifact({id})          The full encoding behind a settled-state entry.
+                              Ids look like `a#12` — pass the number. Works for
+                              RULED OUT entries too, and that is often the more
+                              useful direction: the encoding shows why the line
+                              is closed. Establishes nothing on its own.
 ```
 
 Reach for `proof_start` over `verify_lean` when you do not already know the whole proof. Developing it a tactic at a time shows you the goal as it changes, and it is the only way to get slow-tier evidence out of Lean.
