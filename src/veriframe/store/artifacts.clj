@@ -113,12 +113,54 @@
    (db/fetch conn ["SELECT id, branch_id, turn, kind, tier, claim, code FROM shared_artifacts
                       WHERE run_id = ? ORDER BY id DESC LIMIT ?" run-id limit])))
 
+(def ^:private max-shared-code-chars
+  "How much of a shared artifact's code the block carries.
+
+  A theorem STATEMENT is what a sibling needs in order to build on a lemma;
+  the proof body is not. Generous enough for a Lean signature with a dozen
+  hypotheses, small enough that five entries cannot crowd out the branch's own
+  context — the block re-renders every turn, so its size is a per-turn cost."
+  700)
+
+(defn prefer-in-run
+  "In-run artifacts first, seeded ones after, order preserved within each.
+
+  A completed run contributes its whole pool at turn 0 while the live run's
+  starts empty, so without this seeds win on volume from the start and keep
+  winning: gen-20 served 67 seeded artifacts against 24 of its own, spending
+  three quarters of the channel re-telling a prior run's results.
+
+  Ranked rather than filtered. A campaign that seeds without restating the
+  prior results in its problem statement would lose them entirely, and
+  `seed-from-run!` exists for exactly that case."
+  [entries]
+  (let [seed? #(str/starts-with? (str (:branch_id %)) "seed:")]
+    (into (vec (remove seed? entries)) (filter seed? entries))))
+
 (defn render
   "Shared artifacts as the block that goes into a branch's next-turn context:
-  engine-confirmed by other branches, provenance inline."
+  engine-confirmed by other branches, provenance inline.
+
+  Carries the CODE as well as the claim. Three gen-20 branches proved the same
+  scalarization lemma while being shown each other's claims five times each —
+  a branch cannot cite a theorem statement it has never seen, so re-deriving
+  was the only move open to it. The code was already being selected by
+  `similar` and `recent`, and `seed-from-run!` copies it precisely so an
+  inherited lemma can be re-confirmed in one cheap turn; only this function
+  dropped it."
   [entries]
   (when (seq entries)
     (str "## Confirmed by other branches — engine-verified\n\n"
+         "Cite these by name and re-verify in one call; do not re-derive them.\n\n"
          (str/join "\n"
-                   (for [{:keys [branch_id kind tier claim]} entries]
-                     (str "- [" branch_id " " (name kind) "/" (name tier) "] " claim))))))
+                   (for [{:keys [branch_id kind tier claim code]} (prefer-in-run entries)]
+                     (str "- [" branch_id " " (name kind) "/" (name tier) "] " claim
+                          (when-not (str/blank? (str code))
+                            (str "\n  ```\n  "
+                                 (let [c (str/trim (str code))]
+                                   (str/replace (if (> (count c) max-shared-code-chars)
+                                                  (str (subs c 0 max-shared-code-chars)
+                                                       "\n… [truncated]")
+                                                  c)
+                                                "\n" "\n  "))
+                                 "\n  ```"))))))))

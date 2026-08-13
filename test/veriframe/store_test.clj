@@ -18,7 +18,10 @@
   (:require [clojure.test :refer [deftest testing is]]
             [jdbc.core :as jdbc]
             [veriframe.agent.gates :as gates]
+            [veriframe.agent.loop :as branch-loop]
+            [veriframe.agent.state :as state]
             [veriframe.api.runs :as api-runs]
+            [veriframe.store.artifacts :as artifacts]
             [veriframe.store.db :as db]
             [veriframe.store.journal :as journal]
             [veriframe.store.migrations :as migrations]
@@ -131,6 +134,74 @@
           "a seeded run shares regardless of config")
       (is (false? (get-in (api-runs/get-run c plain) [:run :share_artifacts]))
           "an unseeded one does not claim to"))))
+
+(deftest the-shared-block-carries-the-code-not-just-the-claim
+  ;; Three gen-20 branches proved the same scalarization lemma — B4 as Hf/Hg,
+  ;; B3 as H/K, B4.2 as alpha/beta — while being shown each other's claims five
+  ;; times each. They were not failing to discover it. `render` printed the
+  ;; claim text alone, and a branch cannot cite a theorem statement it has
+  ;; never seen, so re-deriving was the only move available to it.
+  ;;
+  ;; The code was there the whole time: seed-from-run! copies it precisely so
+  ;; an inherited lemma can be re-confirmed in one cheap turn, and both
+  ;; `similar` and `recent` select it. Only the renderer dropped it.
+  (let [block (artifacts/render
+               [{:branch_id "B3" :kind "lean" :tier "slow"
+                 :claim "Scalarization yields lexicographic minimizer"
+                 :code "theorem scalarization_yields_lex_min : True := trivial"}])]
+    (is (re-find #"Scalarization yields" block))
+    (is (re-find #"scalarization_yields_lex_min" block)
+        "the statement a sibling would need to build on must be in the block")
+    (testing "an artifact with no code still renders"
+      (is (re-find #"bare claim"
+                   (artifacts/render [{:branch_id "B1" :kind "prolog"
+                                       :tier "fast" :claim "bare claim"}]))))))
+
+(deftest in-run-artifacts-outrank-seeded-ones-in-the-block
+  ;; gen-20 served 91 shared artifacts, 67 of them seeded from gen-19 and only
+  ;; 24 produced by the run itself. A completed run contributes a full pool at
+  ;; turn 0 while the live run's starts empty, so seeds win on volume from the
+  ;; start and keep winning.
+  ;;
+  ;; Ranked rather than dropped: a campaign that seeds without restating the
+  ;; prior results in its problem statement would lose them entirely, and
+  ;; seed-from-run! exists for exactly that case.
+  (let [entries [{:branch_id "seed:B1" :claim "old a"} {:branch_id "seed:B2" :claim "old b"}
+                 {:branch_id "seed:B3" :claim "old c"} {:branch_id "B4" :claim "new a"}
+                 {:branch_id "B5" :claim "new b"}]
+        ranked (artifacts/prefer-in-run entries)]
+    (is (= ["B4" "B5" "seed:B1" "seed:B2" "seed:B3"] (mapv :branch_id ranked))
+        "everything the run produced itself comes first")
+    (is (= (set entries) (set ranked)) "and nothing is dropped")
+    (testing "order within each group is preserved — relevance ranking survives"
+      (is (= ["new a" "new b"] (mapv :claim (take 2 ranked)))))))
+
+(deftest an-in-run-lemma-reaches-the-block-even-when-seeds-dominate
+  ;; The half of the fix that ranking alone does not give. context-block used
+  ;; to fetch exactly the number it displays, so when the top 5 by relevance
+  ;; were all seeds — which is the normal case early, since a completed run
+  ;; contributes its whole pool at turn 0 — reordering them just reordered
+  ;; seeds. The pool has to be fetched wider than it is shown.
+  (with-db [c]
+    (let [rid (runs/start-run! c {:problem "p"})]
+      (doseq [i (range 10)]
+        (artifacts/record! c rid {:branch-id (str "seed:B" i) :turn 1 :kind :lean
+                                  :tier :slow
+                                  :claim (str "scalarization lemma variant " i)
+                                  :code (str "theorem seeded_" i " : True := trivial")}))
+      (artifacts/record! c rid {:branch-id "B3" :turn 9 :kind :lean :tier :slow
+                                :claim "scalarization lemma proved in this run"
+                                :code "theorem in_run_scalarization : True := trivial"})
+      (let [{:keys [block]} (#'branch-loop/context-block
+                             c rid (state/new-branch {:id "B7" :problem "p"})
+                             "scalarization lemma" true)]
+        (is (re-find #"in_run_scalarization" block)
+            "the run's own lemma must reach the block, not be buried under seeds")
+        (is (re-find #"proved in this run" block))
+        ;; And it leads, so it is read first.
+        (is (< (.indexOf block "proved in this run")
+               (.indexOf block "variant"))
+            "in-run entries come before seeded ones")))))
 
 (deftest fts5-is-available-through-the-ffi-binding
   ;; Distinct from the sqlite3 CLI having FTS5. The failure mode is a

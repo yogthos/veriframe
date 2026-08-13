@@ -110,10 +110,21 @@
         fhits (others (if (str/blank? last-claim)
                         (failures/recent conn run-id 5)
                         (failures/similar conn run-id last-claim 5)))
+        ;; Fetched WIDE and then ranked down, not fetched at the display size.
+        ;; Ranking a top-5 that is already all seeds just reorders seeds: a
+        ;; completed run contributes its whole pool at turn 0 while the live
+        ;; run's starts empty, and gen-20 served 67 seeded artifacts to 24 of
+        ;; its own. Taking a wider slice is what lets an in-run lemma reach
+        ;; the block at all; prefer-in-run then decides the order.
+        shared-shown 5
         ahits (when share?
-                (others (if (str/blank? last-claim)
-                          (artifacts/recent conn run-id 5)
-                          (artifacts/similar conn run-id last-claim 5))))
+                (->> (if (str/blank? last-claim)
+                       (artifacts/recent conn run-id (* 3 shared-shown))
+                       (artifacts/similar conn run-id last-claim (* 3 shared-shown)))
+                     others
+                     artifacts/prefer-in-run
+                     (take shared-shown)
+                     vec))
         fresh (remove (comp (or (:shared-served branch) #{}) :id) ahits)]
     (doseq [a fresh]
       (journal/note! conn run-id :shared-artifact-hit
