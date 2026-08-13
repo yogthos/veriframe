@@ -3134,6 +3134,35 @@
         (is (= 1 (:consecutive-failures b))
             "and starts from 1, not compounded by the malformed turns")))))
 
+(deftest proof-start-names-the-mistake-instead-of-forwarding-lean-s-confusion
+  ;; proof_start appends " := by sorry" to open the goal, so a theorem that
+  ;; already carries a proof body becomes `… := by tac := by sorry` and Lean
+  ;; answers "unexpected token ':='". That error describes a parse, not the
+  ;; mistake, and the model made it three times in the first 29 turns of one
+  ;; run despite the prompt saying statement-only in as many words.
+  ;;
+  ;; Caught before Lean runs: no session, no round trip, and a message that
+  ;; names the fix.
+  (let [b (state/new-branch {:id "B1" :problem "p"})
+        call (fn [thm] (tools/run-tool {:branch b :turn 1 :tool-name "proof_start"
+                                        :args {:claim "c" :theorem thm}}))]
+    (let [r (call "theorem foo : True := by trivial")]
+      (is (= :failure (:category r)))
+      (is (re-find #"(?i)statement only|without the proof" (:result r))
+          (str "must name what is wrong: " (:result r)))
+      (is (not (re-find #"unexpected token" (:result r)))
+          "and must not forward Lean's parse error for a mistake we can see")
+      (is (re-find #"theorem foo : True" (:result r))
+          "showing the statement it should have been given"))
+    (testing "the shorthand body form is caught too"
+      (is (= :failure (:category (call "theorem foo : True := trivial")))))
+    (testing "a genuine statement is not blocked"
+      ;; No :=, so nothing to complain about. It will fail later for want of a
+      ;; Lean session in this test, which is not this guard's business — what
+      ;; matters is that it is not refused HERE.
+      (let [r (call "theorem foo (n : Nat) : n + 0 = n")]
+        (is (not (re-find #"(?i)statement only" (str (:result r)))))))))
+
 (deftest fetch-artifact-turns-a-ledger-id-into-an-encoding
   ;; The ledger lists claims with ids and leaves encodings out, so the code
   ;; costs a turn only when a branch wants it. That only works if an id is
@@ -3170,6 +3199,30 @@
           (is (re-find #"assert false" (:result r)))
           (is (re-find #"(?i)refuted" (:result r))
               "and its status travels with it, or it reads as established")))
+
+      (testing "a bare number finds a seeded row too, prefix or not"
+        ;; Observed live: the ledger renders `s#649`, the model passes `649`,
+        ;; and a bare number that only looked in this run's own artifacts
+        ;; failed — six of the first eleven fetches in one run. Dropping a
+        ;; prefix is the obvious thing for a model to do and costs a turn
+        ;; every time, so a bare id falls back to the shared pool rather than
+        ;; insisting on punctuation.
+        (let [src (runs/start-run! c {:problem "prior"})
+              rid2 (runs/start-run! c {:problem "q"})]
+          (journal/record-artifact! c src {:branch-id "B1" :turn 1 :kind :lean
+                                           :tier :slow :claim "inherited lemma"
+                                           :code "theorem inh : True := trivial"
+                                           :claim-status :confirmed})
+          (artifacts/seed-from-run! c rid2 src)
+          (let [sid (:id (first (artifacts/recent c rid2 5)))
+                call2 (fn [args] (tools/run-tool {:branch b :turn 1 :conn c
+                                                  :run-id rid2
+                                                  :tool-name "fetch_artifact"
+                                                  :args args}))]
+            (is (re-find #"theorem inh" (:result (call2 {:id sid})))
+                "a bare seeded id resolves")
+            (is (re-find #"theorem inh" (:result (call2 {:id (str "s#" sid)})))
+                "and so does the explicit form"))))
 
       (testing "an unknown id fails rather than inventing something"
         (let [r (call {:id 999999})]

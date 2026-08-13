@@ -1620,7 +1620,22 @@
 (defmethod run-tool "proof_start" [{:keys [branch] :as ctx}]
   (if-let [m (missing ctx :claim :theorem)]
     (fail branch m)
-    (try
+    ;; This tool appends " := by sorry" to open the goal, so a theorem that
+    ;; already carries a body becomes `… := by tac := by sorry` and Lean
+    ;; answers "unexpected token ':='" — an error about a parse, not about the
+    ;; mistake. One run made this exact error three times in 29 turns with the
+    ;; prompt saying statement-only in as many words. Caught here, before a
+    ;; session is opened, with a message that names the fix.
+    (if-let [cut (let [t (str (arg ctx :theorem))
+                       i (str/index-of t ":=")]
+                   (when i (str/trimr (subs t 0 i))))]
+      (fail branch
+            (str "`theorem` takes the STATEMENT ONLY, without the proof — this"
+                 " tool supplies the body itself so it can open the goal for"
+                 " you. Drop everything from `:=` onwards and call it again as:"
+                 "\n\n  " cut
+                 "\n\nThen apply tactics one at a time with proof_step."))
+      (try
       (let [[s branch] (lean-session! ctx)
             stmt (str (arg ctx :theorem) " := by sorry")
             r (lean-repl/run-command s stmt)]
@@ -1634,8 +1649,8 @@
           (fail branch
                 (str "The theorem statement did not elaborate:\n"
                      (lean-error-text (:errors r))))))
-      (catch Throwable e
-        (unavailable branch "Lean" e)))))
+        (catch Throwable e
+          (unavailable branch "Lean" e))))))
 
 (defmethod run-tool "proof_step" [{:keys [branch] :as ctx}]
   (cond
@@ -1691,11 +1706,20 @@
           ;; copied into — two tables, two id spaces. A bare number means the
           ;; branch's own, which is the common case.
           shared? (str/starts-with? raw "s#")
+          own? (str/starts-with? raw "a#")
           id (parse-long (str/replace raw #"^[as]#" ""))
+          ;; An explicit prefix is honoured exactly. A BARE number tries this
+          ;; run's own artifacts and then falls back to the shared pool:
+          ;; observed live, the ledger renders `s#649`, the model passes
+          ;; `649`, and insisting on the prefix cost six of the first eleven
+          ;; fetches in a run. Dropping punctuation is the obvious thing for a
+          ;; model to do and is not worth a turn.
           a (when (and conn run-id id)
-              (if shared?
-                (journal/shared-artifact-by-id conn run-id id)
-                (journal/artifact-by-id conn run-id id)))]
+              (cond
+                shared? (journal/shared-artifact-by-id conn run-id id)
+                own? (journal/artifact-by-id conn run-id id)
+                :else (or (journal/artifact-by-id conn run-id id)
+                          (journal/shared-artifact-by-id conn run-id id))))]
       (if-not a
         (fail branch (str "No artifact " raw " in this run."
                           " Ids come from the settled-state block: `a#12` for"
