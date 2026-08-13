@@ -190,6 +190,20 @@
                                  WHERE run_id = ? AND branch_id LIKE 'seed:%'
                                  ORDER BY id" run-id]))}))
 
+(defn branch-turn
+  "One turn of one branch, whole.
+
+  What `fetch_turn` serves: compaction unloads a branch's early turns to one
+  line each, and this is how a line gets opened again. Scoped to the branch
+  because the digest is of the branch's OWN history — a sibling's turn is not
+  what `t8` referred to, and cross-branch reading is what the shared-artifact
+  block and the settled-state ledger are for."
+  [conn run-id branch-id turn]
+  (db/fetch-one conn ["SELECT * FROM turns
+                       WHERE run_id = ? AND branch_id = ? AND turn = ?
+                       ORDER BY id LIMIT 1"
+                      run-id branch-id turn]))
+
 (defn shared-artifact-by-id
   "One shared-pool row of this run, whole, including its encoding.
 

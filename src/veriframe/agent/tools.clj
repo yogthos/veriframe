@@ -43,6 +43,7 @@
             [veriframe.engine.smt :as smt]
             [veriframe.engine.smt-templates :as templates]
             [veriframe.llm.client :as llm]
+            [veriframe.llm.message :as message]
             [veriframe.store.journal :as journal]))
 
 (defmulti run-tool
@@ -1757,6 +1758,37 @@
                  (when (:verdict a) (str ", verdict " (:verdict a)))
                  "\n\nCLAIM\n" (:claim a)
                  "\n\nENCODING\n" (:code a)))))))
+
+(defmethod run-tool "fetch_turn" [{:keys [branch conn run-id] :as ctx}]
+  ;; The other half of compaction. Unloading a branch's early turns to one
+  ;; line each is only honest if a line can be opened again; before this,
+  ;; the digest pointed at a journal the branch had no tool to read.
+  ;;
+  ;; :neutral for the same reason as fetch_artifact — a lookup establishes
+  ;; nothing, and reporting success would clear the failure count.
+  (if-let [m (missing ctx :turn)]
+    (fail branch m)
+    (let [raw (str/trim (str (arg ctx :turn)))
+          n (parse-long (str/replace raw #"^t" ""))
+          t (when (and conn run-id n)
+              (journal/branch-turn conn run-id (:id branch) n))]
+      (if-not t
+        (fail branch (str "No turn " raw " on this branch. The digest lists"
+                          " your own turns as t1, t2, …; a sibling's turns are"
+                          " not readable here — what crossed from them is in"
+                          " the settled-state block."))
+        (ok branch
+            (str "t" (:turn t) " " (:tool_name t)
+                 " → " (or (:category t) "neutral")
+                 (when (seq (str (:args t))) (str "\n\nARGUMENTS\n" (:args t)))
+                 ;; Reasoning is stripped: it is 96% of stored assistant text
+                 ;; and is dropped from every prior turn on the way to the
+                 ;; wire anyway. Reloading it here would undo that in one call.
+                 (when-let [said (some-> (:assistant_text t)
+                                         message/strip-think-blocks
+                                         not-empty)]
+                   (str "\n\nWHAT YOU SAID\n" said))
+                 "\n\nRESULT\n" (:result t)))))))
 
 (defmethod run-tool "proof_state" [{:keys [branch]}]
   (if-let [p (:proof branch)]

@@ -125,6 +125,13 @@ proof_step({tactic})          Apply one tactic. A tactic that fails leaves the
 proof_state({})               The theorem and the tactics applied so far.
 proof_abandon({})             Drop the open proof and start over.
 
+fetch_turn({turn})            Reopen one of your own earlier turns in full —
+                              what you called, with which arguments, and what
+                              came back. Turn numbers come from the unloaded
+                              digest at the end of the problem statement, which
+                              lists your early turns one line each once the
+                              branch gets long. Establishes nothing on its own.
+
 fetch_artifact({id})          The full encoding behind a settled-state entry.
                               Ids look like `a#12` — pass the number. Works for
                               RULED OUT entries too, and that is often the more

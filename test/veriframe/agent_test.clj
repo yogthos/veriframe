@@ -1053,7 +1053,7 @@
            "thesis" "branch_theses" "review" "audit" "done" "give_up"
            "verify_lean" "lean_search" "proof_start" "proof_step"
            "proof_state" "proof_abandon"
-           "octave_eval" "verify_octave" "measure" "fetch_artifact"}
+           "octave_eval" "verify_octave" "measure" "fetch_artifact" "fetch_turn"}
          (set (tools/tool-names))))
   (is (some? (get-method tools/run-tool :default))
       "an unknown tool name must land somewhere that names the alternatives"))
@@ -3197,6 +3197,45 @@
       ;; matters is that it is not refused HERE.
       (let [r (call "theorem foo (n : Nat) : n + 0 = n")]
         (is (not (re-find #"(?i)statement only" (str (:result r)))))))))
+
+(deftest fetch-turn-opens-a-line-of-the-compacted-digest
+  ;; Compaction unloads a branch's early turns to one line each and tells it
+  ;; the detail is in the journal — but no tool took a turn number, so `t8
+  ;; verify_smt → failure` named something the branch could not open.
+  ;; Advertising a lookup that does not exist is worse than not offering one.
+  (with-db [c]
+    (let [rid (runs/start-run! c {:problem "p"})
+          b (state/new-branch {:id "B1" :problem "p"})]
+      (journal/record-turn! c rid {:branch-id "B1" :turn 8 :tool-name "verify_smt"
+                                   :args {:claim "the box contains every optimum"
+                                          :smtlib "(assert (> x 2))"}
+                                   :result "Z3 says unsat. That contradicts your expectedVerdict."
+                                   :category :failure
+                                   :assistant-text "<think>lots of reasoning</think>\nI will try the box bound."})
+      (journal/record-turn! c rid {:branch-id "B2" :turn 8 :tool-name "verify_lean"
+                                   :args {} :result "someone else's turn"
+                                   :category :failure})
+      (let [call (fn [args] (tools/run-tool {:branch b :turn 20 :conn c :run-id rid
+                                             :tool-name "fetch_turn" :args args}))
+            r (call {:turn 8})]
+        (is (re-find #"verify_smt" (:result r)) "the tool that was called")
+        (is (re-find #"the box contains every optimum" (:result r)) "its arguments")
+        (is (re-find #"Z3 says unsat" (:result r)) "and what came back")
+        (is (= :neutral (:category r))
+            "a lookup is not progress and must not clear the failure count")
+        (is (not (:progress? r)))
+        (is (nil? (:artifact r)))
+        (testing "reasoning is not reloaded — it is 96% of stored text and was stripped for a reason"
+          (is (not (re-find #"lots of reasoning" (:result r))))
+          (is (re-find #"I will try the box bound" (:result r))))
+        (testing "a branch reads its OWN history, not a sibling's"
+          (is (not (re-find #"someone else's turn" (:result r)))))
+        (testing "a turn that does not exist says so"
+          (let [r (call {:turn 999})]
+            (is (= :failure (:category r)))
+            (is (re-find #"(?i)no turn 999" (:result r)))))
+        (testing "a missing argument is the standard complaint"
+          (is (re-find #"(?i)missing required argument" (:result (call {})))))))))
 
 (deftest fetch-artifact-turns-a-ledger-id-into-an-encoding
   ;; The ledger lists claims with ids and leaves encodings out, so the code

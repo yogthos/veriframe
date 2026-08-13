@@ -108,9 +108,11 @@
                                #(str % "\n\n## Earlier turns on this branch"
                                      " (unloaded — full detail is in the run journal)\n\n"
                                      (str/join "\n" lines)
-                                     "\n\nWhat these established or ruled out is in"
-                                     " the settled-state block; fetch any encoding"
-                                     " by its id."))]
+                                     "\n\nReopen any of these in full with"
+                                     " `fetch_turn` and its number. What they"
+                                     " established or ruled out is in the"
+                                     " settled-state block, and any encoding is"
+                                     " one `fetch_artifact` away."))]
                       kept)))))))
 
 (def ledger-open "<!--settled-state-->")
