@@ -24,6 +24,7 @@
   picker call it), coalesced by GTK to one render per frame-clock tick."
   (:require [glimmer-gl.gl :as gl]
             [glimmer-gl.gtk :as glx]
+            [glimmer.ffi :as gffi]
             [jolt.ffi :as ffi]
             [veriframe.gui.graph :as graph]
             [veriframe.gui.input :as input]
@@ -89,23 +90,58 @@
 
 ;; --- GL lifecycle ------------------------------------------------------------
 
+(declare unmount!)
+
+;; A foreign-callable that gets collected leaves GTK holding a dangling function
+;; pointer, so every one we connect is retained for the life of the process —
+;; the same reason glimmer.widget keeps its own. Also the set of widgets already
+;; wired, so a second realize of the same widget does not stack handlers.
+(defonce ^:private unrealize-callables (atom []))
+(defonce ^:private unrealize-wired (atom #{}))
+
+(defn- watch-unrealize!
+  "Clear the cached pointer when GTK tears this widget down.
+
+  This is the fix for the whole class. `:area` is a raw GTK pointer captured in
+  on-realize, and nothing in glimmer reports that a widget went away — it has no
+  unrealize/destroy hook, and its reconciler destroys a child whenever the slot's
+  tag changes, positionally. So the pane could hold a pointer to freed memory
+  and go on calling queue_render on it, which GTK answers with
+
+    gtk_gl_area_queue_render: assertion 'GTK_IS_GL_AREA (area)' failed
+
+  and then ignores — no crash, just a pane that drops frames until some later
+  realize happens to repopulate the cache.
+
+  Rather than enumerate the ways a widget can die (opening the new-run form is
+  one; re-render churn produced the bursts actually observed, at startup and
+  when runs first appeared), subscribe to GTK's own answer. `unrealize` fires
+  before the widget is destroyed and also on reparenting, and after it the
+  cached GL objects belong to a context that is gone, so clearing is right in
+  both cases. realize! puts everything back on the way in."
+  [area]
+  (when-not (contains? @unrealize-wired area)
+    (let [cb (ffi/foreign-callable (fn [_src _data] (unmount!))
+                                   [:pointer :pointer] :void :collect-safe)]
+      (swap! unrealize-callables conj cb)
+      (swap! unrealize-wired conj area)
+      ;; Returns the handler id; 0 would mean the signal name is not valid for
+      ;; this instance, which is the one way this can fail silently. Measured
+      ;; nonzero on a live gl-area.
+      (gffi/g-signal-connect-data area "unrealize" cb ffi/null ffi/null
+                                  gffi/CONNECT-DEFAULT))))
+
 (defn- realize! [area]
   ;; A realize with a DIFFERENT area than the one cached means the previous
-  ;; widget was destroyed and replaced, and every request-render! between the
-  ;; two poked freed memory — which GTK reports as
-  ;;   gtk_gl_area_queue_render: assertion 'GTK_IS_GL_AREA (area)' failed
-  ;; and then ignores, so the pane silently drops frames until this line runs.
-  ;;
-  ;; Logged rather than fixed because the trigger is not yet known. Opening the
-  ;; new-run form destroys the pane and toggle-compose! handles that, but the
-  ;; bursts actually observed did not come from it: one at startup, one when
-  ;; runs first appeared in the list. Both look like re-render churn replacing
-  ;; a child that graph-pane is deref-free specifically to keep. This turns the
-  ;; next occurrence into a record of WHICH transition did it (vf-38b).
+  ;; widget was replaced without its unrealize reaching us. That should not
+  ;; happen now that watch-unrealize! is connected; it is left in because the
+  ;; only evidence this bug ever gave was a GTK critical with nothing naming
+  ;; the transition that caused it (vf-38b).
   (when-let [old (:area @st)]
     (when (not= old area)
-      (println "[glpane] the gl-area was replaced without unmounting —"
+      (println "[glpane] the gl-area was replaced without an unrealize —"
                "frames were dropped between the two (vf-38b)")))
+  (watch-unrealize! area)
   (glx/make-current area)
   (when-let [prog (gl/make-program vs-src fs-src)]
     (let [vao (gl/gen-one gl/gl-gen-vertex-arrays)

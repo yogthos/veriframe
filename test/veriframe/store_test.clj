@@ -197,3 +197,23 @@
           "a finished run is left alone")
       (is (zero? (runs/reconcile-orphans! c))
           "idempotent: a second startup has nothing to reconcile"))))
+
+(deftest resuming-a-run-puts-it-back-into-running
+  ;; A resumed run is running, and the row has to say so. Before crashed runs
+  ;; were reconciled the row still read 'running' from the original start, so
+  ;; nothing had to set it and nothing did; reconciling to 'interrupted' made
+  ;; that omission visible — gen-19 resumed, took turns, and its row still
+  ;; said interrupted.
+  ;;
+  ;; It is not cosmetic. stalled? only reports on a run whose status is
+  ;; 'running', so a resumed run that wedges is invisible to the one check
+  ;; built to notice exactly that. ended_at has to go too, or the run has an
+  ;; end time that precedes half its turns.
+  (with-db [c]
+    (let [rid (runs/start-run! c {:problem "p" :beam-width 1})]
+      (runs/reconcile-orphans! c)
+      (is (= "interrupted" (:status (runs/get-run c rid))))
+      (runs/mark-running! c rid)
+      (let [r (runs/get-run c rid)]
+        (is (= "running" (:status r)))
+        (is (nil? (:ended_at r)) "a running run has not ended")))))

@@ -193,6 +193,9 @@
       (throw (ex-info (str "run " run-id " is not resumable (status "
                            (:status run) ")")
                       {:run-id run-id :status (:status run)})))
+    ;; The row said 'interrupted' (or 'failed'); it is about to be running
+    ;; again, and stalled? only watches runs whose status says so.
+    (runs/mark-running! conn run-id)
     (when (and max-turns (> max-turns (:max_turns run)))
       (runs/extend-budget! conn run-id max-turns)
       (doseq [b (runs/branches conn run-id)

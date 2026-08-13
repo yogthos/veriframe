@@ -91,10 +91,12 @@
 (defn start-run!
   "Start a fresh run and return its id in the body.
 
-  The server answers 200 with an `{:error ...}` body when the beam fails to
-  come up inside its 30s window, so a plain 2xx is not proof a run exists;
-  that case is folded to {:ok false} here rather than left for each caller
-  to remember."
+  The server answers 503 when the beam does not come up inside its 30s window,
+  which `result` already turns into {:ok false}. It used to answer 200 with an
+  `{:error ...}` body instead, so a plain 2xx was not proof a run existed; the
+  unwrap below is kept as a belt-and-braces check on that older shape, since a
+  caller that mistakes a refusal for a started run goes on to poll a run id
+  that is nil."
   [base body]
   (let [r (POST base "/v1/runs" body start-timeout-ms)]
     (if (and (:ok r) (get-in r [:body :error]))

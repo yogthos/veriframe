@@ -79,6 +79,24 @@
                              :reason "no process was running it when the server started"}}))
     (count orphans)))
 
+(defn mark-running!
+  "Put a run back into 'running' and clear its end time.
+
+  For resume. Before crashed runs were reconciled, a resumable row still read
+  'running' from its original start, so nothing had to set this and nothing
+  did. Reconciling to 'interrupted' made the omission visible: gen-19 resumed,
+  took turns, and its row still said interrupted.
+
+  Not cosmetic. `stalled?` only reports on a run whose status is 'running', so
+  a resumed run that wedges would be invisible to the one check built to notice
+  precisely that — and ended_at has to go with it, or the run carries an end
+  time earlier than half its turns."
+  [conn run-id]
+  (db/with-writer
+    (db/execute! conn
+                 ["UPDATE runs SET status = 'running', ended_at = NULL WHERE id = ?"
+                  run-id])))
+
 (defn get-run [conn run-id]
   (db/fetch-one conn ["SELECT * FROM runs WHERE id = ?" run-id]))
 

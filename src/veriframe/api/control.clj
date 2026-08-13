@@ -70,10 +70,17 @@
         run-id (deref promised 30000 nil)]
     (if run-id
       (do (swap! active assoc run-id {:future fut :abort abort})
-          {:run_id run-id :status "running"
-           :beam_width (or beam-width (get-in config [:run :beam-width]))
-           :max_turns (or max-turns (get-in config [:run :max-turns]))})
-      {:error "the run did not start within 30s"}))))
+          ;; Wrapped in :body like resume, so one route shape serves both the
+          ;; success and the refusal and neither has to be special-cased.
+          {:body {:run_id run-id :status "running"
+                  :beam_width (or beam-width (get-in config [:run :beam-width]))
+                  :max_turns (or max-turns (get-in config [:run :max-turns]))}})
+      ;; 503, not 200: the request was well formed and the server could not
+      ;; service it. Answering 200 with an error body made a caller that checks
+      ;; the status code read this as a started run, which is why gui.api's
+      ;; start-run! had to unwrap the body to find out otherwise.
+      {:status 503
+       :body {:error {:message "the run did not start within 30s"}}}))))
 
 (defn abort!
   "Stop a run without asking it to cooperate. The flag is checked at the top of
@@ -83,8 +90,17 @@
   (if-let [{:keys [abort]} (get @active run-id)]
     (do (reset! abort true)
         (runs/finish-run! conn run-id :aborted nil)
-        {:run_id run-id :status "aborting"})
-    {:error (str "no active run " run-id)}))
+        ;; :body, not a bare map: the run's own :status is the string
+        ;; "aborting", and a route reading (:status r) as an HTTP code would
+        ;; have sent that.
+        {:body {:run_id run-id :status "aborting"}})
+    ;; 409, matching resume's "not resumable": the run may well exist, it is
+    ;; just not in a state that can be aborted. This answered 200 with an error
+    ;; body, so a caller reading the status code alone saw a refusal as a
+    ;; successful abort.
+    {:status 409
+     :body {:error {:message (str "no active run " run-id)}
+            :run_id run-id}}))
 
 (defn resume!
   "Resume a crashed run from its journal, in the background like start-run!.

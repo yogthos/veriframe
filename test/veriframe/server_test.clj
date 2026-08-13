@@ -12,7 +12,8 @@
   close-on-exec."
   (:require [clojure.test :refer [deftest testing is]]
             [jolt.process :as p]
-            [ring-chez.adapter :as adapter]))
+            [ring-chez.adapter :as adapter]
+            [veriframe.api.control :as control]))
 
 (defn- request [body]
   (str "POST /v1/runs HTTP/1.1\r\n"
@@ -78,3 +79,36 @@
         (when-let [s (:server again)] (adapter/stop-server s)))
       (finally
         (try (p/destroy-tree child) (catch Throwable _ nil))))))
+
+(deftest an-error-carries-a-status-code-not-just-an-error-body
+  ;; The API's own convention is a real status plus {:error {:message ...}} —
+  ;; that is what "no such run", "no such branch", the 404 fallback, the 500
+  ;; handler and resume's 409 all do. Two endpoints deviated and answered 200
+  ;; with an error body, so a caller checking the status code alone read a
+  ;; refusal as a success:
+  ;;
+  ;;   $ curl -X POST .../v1/runs/<finished>/abort -w '%{http_code}'
+  ;;   {"error":"no active run ..."}
+  ;;   200
+  ;;
+  ;; 409 rather than 404 for abort, matching resume: the run exists, it is just
+  ;; not in a state that can be aborted. 503 for a start that did not come up,
+  ;; because the request was fine and the server could not service it.
+  (testing "aborting a run that is not active is a 409 with the house error shape"
+    (let [r (control/abort! nil "no-such-run")]
+      (is (= 409 (:status r)))
+      (is (string? (get-in r [:body :error :message])))
+      (is (= "no-such-run" (get-in r [:body :run_id])))))
+  (testing "success and refusal share one envelope, so the route needs no special case"
+    ;; Both wrap in :body and only a refusal sets :status, which is what lets
+    ;; every route read (json-response (or (:status r) 200) (:body r)).
+    ;;
+    ;; The envelope is not decoration. A success body carries :status "aborting"
+    ;; — the RUN's state — so a route reading (:status r) off a bare map would
+    ;; have handed the HTTP layer the string "aborting" as its status code.
+    ;; Wrapping keeps the two :status meanings from ever meeting.
+    (let [ok (control/abort! nil "no-such-run")]
+      (is (map? (:body ok)) "a refusal has a :body")
+      (is (= 409 (:status ok)) "and an HTTP status beside it"))
+    (is (= "aborting" (:status {:run_id "r" :status "aborting"}))
+        "whereas the run's own :status lives inside the body and stays a string")))

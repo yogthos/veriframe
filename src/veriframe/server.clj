@@ -109,7 +109,11 @@
    [:get "/v1/harness/gates" #'gate-table]
    [:get "/v1/runs" (fn [req] (json-response (api-runs/list-runs (system/conn)
                                                                  (long-param req "limit"))))]
-   [:post "/v1/runs" (fn [req] (json-response (control/start-run! (ctx) (body-json req))))]
+   ;; `(or (:status r) 200)`, the same shape resume uses: a handler that refuses
+   ;; says so with a status, and success carries none. Answering 200 with an
+   ;; error body let a caller checking only the code read a refusal as success.
+   [:post "/v1/runs" (fn [req] (let [r (control/start-run! (ctx) (body-json req))]
+                                 (json-response (or (:status r) 200) (:body r))))]
    [:get "/v1/runs/:id" (fn [req]
                           (if-let [r (api-runs/get-run (system/conn)
                                                        (get-in req [:path-params :id]))]
@@ -130,8 +134,9 @@
                                                  (get-in req [:path-params :id])
                                                  (body-json req))))]
    [:post "/v1/runs/:id/abort"
-    (fn [req] (json-response (control/abort! (system/conn)
-                                             (get-in req [:path-params :id]))))]
+    (fn [req] (let [r (control/abort! (system/conn)
+                                      (get-in req [:path-params :id]))]
+                (json-response (or (:status r) 200) (:body r))))]
    [:post "/v1/runs/:id/resume"
     (fn [req] (let [r (control/resume! {:conn (system/conn)
                                         :config (system/config)}
