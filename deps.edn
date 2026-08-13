@@ -66,17 +66,33 @@
            ;; load a native toolkit.
            :gui  {:extra-paths ["gui"]
                   :extra-deps
-                  {;; Pinned past v0.0.5 for two fixes the GUI needs: the
-                   ;; swap! nil-argument fix, and :scroll-top on :scrolled (a
-                   ;; scrolled window keeps its offset across content changes,
-                   ;; so the inspector opened part-way down the previous
-                   ;; selection).
+                  {;; glimmer is now the portable reactive core only — ratom,
+                   ;; the component model and the reconciler — and knows about
+                   ;; no toolkit. v0.1.0 is the release that split GTK out.
+                   ;; It still carries the two fixes this GUI needs: the swap!
+                   ;; nil-argument fix, and :scroll-top on :scrolled, without
+                   ;; which the inspector opens part-way down the previous
+                   ;; selection.
                    jolt-lang/glimmer
                    {:git/url "https://github.com/jolt-lang/glimmer.git"
-                    :git/sha "18d64356a0438465521df2eac7bfdde4d2876ad8"}
+                    :git/tag "v0.1.0"
+                    :git/sha "5581c331c51aff989259b9e8e92ec920fe5e6741"}
+                   ;; The GTK4 backend: the widgets, the prop/signal wiring and
+                   ;; the app loop, registered through glimmer.backend. It also
+                   ;; owns the GTK/GLib :jolt/native declarations, which is why
+                   ;; none appear here. `glimmer.ffi` and `glimmer.widget` live
+                   ;; here now as `glimmer-gtk.ffi` and `glimmer-gtk.widget`.
+                   jolt-lang/glimmer-gtk
+                   {:git/url "https://github.com/jolt-lang/glimmer-gtk.git"
+                    :git/tag "v0.1.0"
+                    :git/sha "ce79d45698d36ccf496397bb85974e3cce6abfd8"}
+                   ;; Pinned past the split too: glimmer-gl.gtk registers
+                   ;; :gl-area and :scale into the widget registry, which now
+                   ;; lives in glimmer-gtk, so an older glimmer-gl fails to
+                   ;; load with `Could not locate glimmer/ffi`.
                    jolt-lang/glimmer-gl
                    {:git/url "https://github.com/jolt-lang/glimmer-gl.git"
-                    :git/sha "05a27d378a542cc0f32ff2b2682e0e47ffb83599"}}
+                    :git/sha "ae9a53291c553e89dde79a90389224f46e5e7fa8"}}
                   :main-opts ["-m" "veriframe.gui.core"]}}
 
  :tasks {serve {:doc "start the harness (HTTP + nREPL) and park"

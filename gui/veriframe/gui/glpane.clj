@@ -24,7 +24,7 @@
   picker call it), coalesced by GTK to one render per frame-clock tick."
   (:require [glimmer-gl.gl :as gl]
             [glimmer-gl.gtk :as glx]
-            [glimmer.ffi :as gffi]
+            [glimmer-gtk.ffi :as gffi]
             [jolt.ffi :as ffi]
             [veriframe.gui.graph :as graph]
             [veriframe.gui.input :as input]
@@ -94,7 +94,7 @@
 
 ;; A foreign-callable that gets collected leaves GTK holding a dangling function
 ;; pointer, so every one we connect is retained for the life of the process —
-;; the same reason glimmer.widget keeps its own. Also the set of widgets already
+;; the same reason glimmer-gtk.widget keeps its own. Also the set of widgets already
 ;; wired, so a second realize of the same widget does not stack handlers.
 (defonce ^:private unrealize-callables (atom []))
 (defonce ^:private unrealize-wired (atom #{}))

@@ -14,7 +14,7 @@
   the opposite of one line — the covering campaign's prompts run to several
   paragraphs — so starting a run from the GUI needs a real text area.
 
-  Registered through `glimmer.widget/register-widget!` rather than added to
+  Registered through `glimmer-gtk.widget/register-widget!` rather than added to
   glimmer itself, which is what that hook exists for (glimmer-gl adds
   `:gl-area` the same way). Nothing here is veriframe-specific; it lives
   here because this is the only app that needs it so far.
@@ -32,8 +32,8 @@
   first and setting only on a real difference makes a re-render a no-op,
   which also breaks the changed -> ratom -> re-render -> changed loop
   without needing glimmer's private suppression set."
-  (:require [glimmer.ffi :as g]
-            [glimmer.widget :as w]
+  (:require [glimmer-gtk.ffi :as g]
+            [glimmer-gtk.widget :as w]
             [jolt.ffi :as ffi]))
 
 ;; --- GtkTextView / GtkTextBuffer ---------------------------------------------

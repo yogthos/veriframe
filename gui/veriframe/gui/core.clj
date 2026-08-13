@@ -20,6 +20,12 @@
   (:require [clojure.data.json :as json]
             [clojure.string :as str]
             [glimmer.core :as ui]
+            ;; Installs the GTK4 backend into glimmer.backend as a side effect
+            ;; of loading. glimmer itself is toolkit-agnostic since v0.1.0 —
+            ;; it owns the ratom, the component model and the reconciler, and
+            ;; renders through whichever backend is registered — so without
+            ;; this require `ui/run` throws "no backend registered".
+            [glimmer-gtk.core]
             [glimmer.ratom :as r]
             [veriframe.gui.api :as api]
             [veriframe.gui.glpane :as glpane]
