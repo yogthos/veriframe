@@ -49,9 +49,24 @@
          :reasoning (get msg reasoning-key)
          :finish-reason (or (:finish_reason choice) "stop")
          :usage (when-let [u (:usage body)]
-                  {:prompt-tokens (or (:prompt_tokens u) 0)
-                   :completion-tokens (or (:completion_tokens u) 0)
-                   :total-tokens (or (:total_tokens u) 0)})})))
+                  ;; The cache split is conditional on the provider reporting
+                  ;; it, and ABSENT rather than zero when it does not: zero
+                  ;; would assert every token missed the cache, which is a
+                  ;; different and false claim. The point of keeping these is
+                  ;; to reason about cache behaviour across a wide beam, where
+                  ;; each branch carries its own diverging prefix, and a
+                  ;; fabricated zero would poison exactly that question.
+                  (cond-> {:prompt-tokens (or (:prompt_tokens u) 0)
+                           :completion-tokens (or (:completion_tokens u) 0)
+                           :total-tokens (or (:total_tokens u) 0)}
+                    (:prompt_cache_hit_tokens u)
+                    (assoc :cache-hit-tokens (:prompt_cache_hit_tokens u))
+                    (:prompt_cache_miss_tokens u)
+                    (assoc :cache-miss-tokens (:prompt_cache_miss_tokens u))
+                    ;; OpenAI reports the hit count nested instead.
+                    (get-in u [:prompt_tokens_details :cached_tokens])
+                    (assoc :cache-hit-tokens
+                           (get-in u [:prompt_tokens_details :cached_tokens]))))})))
 
   (parse-models [_ body] (mapv :id (:data body)))
 

@@ -250,7 +250,12 @@
                                    :parse-error (:parse-error parsed)
                                    :auto-repaired (:auto-repaired? parsed)
                                    :assistant-text content
-                                   :reasoning-text (:reasoning response)})
+                                   :reasoning-text (:reasoning response)
+                                   ;; A turn that produced no usable call still
+                                   ;; cost tokens, and those are the ones worth
+                                   ;; counting — a branch looping on malformed
+                                   ;; fences is spend with nothing to show.
+                                   :usage (:usage response)})
             (-> branch
                 (state/record-outcome {:category :mechanics :progress? false})
                 (state/add-message "user" msg)))
@@ -280,7 +285,8 @@
                                    :category (name (:category result))
                                    :auto-repaired (:auto-repaired? parsed)
                                    :assistant-text content
-                                   :reasoning-text (:reasoning response)})
+                                   :reasoning-text (:reasoning response)
+                                   :usage (:usage response)})
             (when-let [a (:artifact result)]
               (journal/record-artifact! conn run-id
                                         (assoc a :branch-id (:id branch) :turn turn))

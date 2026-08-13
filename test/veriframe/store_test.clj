@@ -17,6 +17,8 @@
   failure mode stays loud."
   (:require [clojure.test :refer [deftest testing is]]
             [jdbc.core :as jdbc]
+            [veriframe.agent.gates :as gates]
+            [veriframe.api.runs :as api-runs]
             [veriframe.store.db :as db]
             [veriframe.store.journal :as journal]
             [veriframe.store.migrations :as migrations]
@@ -54,6 +56,81 @@
         (is (not (re-find #";\s*\S" (clojure.string/replace sql #"--[^\n]*" "")))
             (str "migration v" (inc i) " has a statement containing a `;` followed by"
                  " more SQL, which sqlite3_prepare_v2 would silently drop:\n" sql))))))
+
+(deftest a-turn-records-what-it-cost
+  ;; The adapter parsed usage and client/chat threaded it through, and the
+  ;; agent loop dropped it on the floor: nothing outside the bench harness and
+  ;; the raw passthrough API ever read :usage, and `turns` had no token
+  ;; columns. So the harness could not answer what a run cost — for a system
+  ;; whose whole operating rule is that a generation is hours of provider
+  ;; spend, that is the one number it should never have been missing.
+  (with-db [c]
+    (let [rid (runs/start-run! c {:problem "p"})]
+      (journal/record-turn! c rid
+                            {:branch-id "B1" :turn 1 :tool-name "verify"
+                             :result "ok" :category :success
+                             :usage {:prompt-tokens 100 :completion-tokens 20
+                                     :total-tokens 120
+                                     :cache-hit-tokens 80 :cache-miss-tokens 20}})
+      (let [t (first (journal/turns c rid))]
+        (is (= 100 (:prompt_tokens t)))
+        (is (= 20 (:completion_tokens t)))
+        (is (= 80 (:cache_hit_tokens t)))
+        (is (= 20 (:cache_miss_tokens t)))))
+    (testing "a turn with no usage stores nulls, not zeros"
+      ;; The provider-error path has no response and therefore no usage. A
+      ;; zero there would be a claim that the call was free, and summing it
+      ;; would under-report the run's cost rather than admit ignorance.
+      (let [rid (runs/start-run! c {:problem "p2"})]
+        (journal/record-turn! c rid
+                              {:branch-id "B1" :turn 1
+                               :tool-name "__provider_error__"
+                               :result "boom" :category :neutral})
+        (let [t (first (journal/turns c rid))]
+          (is (nil? (:prompt_tokens t)))
+          (is (nil? (:cache_hit_tokens t))))))))
+
+(deftest a-run-reports-the-width-it-is-actually-running-at
+  ;; beam_width is the repopulation FLOOR, not a cap: repopulate only fires
+  ;; below it, and branch-out grows past it up to :max-total-branches, which is
+  ;; 15. A run started at width 5 was observed carrying 9 active branches — 9
+  ;; concurrent provider calls per round and 9 engine processes, from a
+  ;; parameter that reads like a ceiling.
+  ;;
+  ;; The number is knowable from the branches table, so report it rather than
+  ;; leaving whoever set beam_width to discover the multiplier from `ps`.
+  (with-db [c]
+    (let [rid (runs/start-run! c {:problem "p" :beam-width 2})]
+      (doseq [b ["B1" "B2" "B3"]]
+        (runs/open-branch! c rid {:branch-id b}))
+      (runs/close-branch! c rid "B3" :culled "dominated")
+      (let [d (api-runs/get-run c rid)]
+        (is (= 2 (get-in d [:run :beam_width]))
+            "the requested width is still reported, unchanged")
+        (is (= 2 (get-in d [:run :active_branches]))
+            "alongside how many branches are actually running")
+        (is (= (gates/threshold :max-total-branches)
+               (get-in d [:run :max_branches]))
+            "and the ceiling that actually bounds it")))))
+
+(deftest a-seeded-run-reports-that-sharing-is-on
+  ;; beam/run! forces :share-artifacts? true for any run started with a
+  ;; seed-run, in memory, overriding config. Nothing recorded it, so /health
+  ;; reported the CONFIG value — during one run it said sharing was off while
+  ;; that run had fired 91 shared-artifact-hit events. A run-level fact
+  ;; reported as a global one is how a later investigation starts from a false
+  ;; premise; this one cost a detour before the contradiction resolved.
+  ;;
+  ;; Derived from the run-seeded event rather than a new column: the journal
+  ;; already records the fact, so the row does not need to.
+  (with-db [c]
+    (let [plain (runs/start-run! c {:problem "p"})
+          seeded (runs/start-run! c {:problem "q"})]
+      (journal/note! c seeded :run-seeded {:data {:source "prior" :artifacts 3}})
+      (is (true? (get-in (api-runs/get-run c seeded) [:run :share_artifacts]))
+          "a seeded run shares regardless of config")
+      (is (false? (get-in (api-runs/get-run c plain) [:run :share_artifacts]))
+          "an unseeded one does not claim to"))))
 
 (deftest fts5-is-available-through-the-ffi-binding
   ;; Distinct from the sqlite3 CLI having FTS5. The failure mode is a

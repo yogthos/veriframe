@@ -195,6 +195,32 @@
         (is (= "t" (:reasoning p)))
         (is (= {:prompt-tokens 3 :completion-tokens 7 :total-tokens 10} (:usage p)))))
 
+    (testing "cache token counts are kept when the provider reports them"
+      ;; Providers that do prefix caching return the split alongside the
+      ;; totals. veriframe threw it away, so nothing could answer whether a
+      ;; wide beam thrashes the cache — every branch carries its own growing
+      ;; message list, so the beam holds N diverging prefixes at once and
+      ;; whether that is cheap was unknowable.
+      (let [reply {:choices [{:message {:content "c"} :finish_reason "stop"}]
+                   :usage {:prompt_tokens 100 :completion_tokens 20 :total_tokens 120
+                           :prompt_cache_hit_tokens 80 :prompt_cache_miss_tokens 20}}
+            u (:usage (adapter/parse-chat (registry/adapter-for :deepseek) reply))]
+        (is (= 100 (:prompt-tokens u)))
+        (is (= 80 (:cache-hit-tokens u)))
+        (is (= 20 (:cache-miss-tokens u)))))
+
+    (testing "a provider that reports no cache split omits the keys rather than zeroing them"
+      ;; Zero and absent are different claims. A zero would say the cache was
+      ;; missed on every token; absent says the provider did not tell us. The
+      ;; whole point of capturing this is to reason about cache behaviour, and
+      ;; a fabricated zero would poison exactly that.
+      (let [reply {:choices [{:message {:content "c"} :finish_reason "stop"}]
+                   :usage {:prompt_tokens 100 :completion_tokens 20 :total_tokens 120}}
+            u (:usage (adapter/parse-chat (registry/adapter-for :deepseek) reply))]
+        (is (= 100 (:prompt-tokens u)))
+        (is (not (contains? u :cache-hit-tokens)))
+        (is (not (contains? u :cache-miss-tokens)))))
+
     (testing "an unknown provider names what is available"
       (is (thrown? Throwable (registry/adapter-for :nope))))))
 

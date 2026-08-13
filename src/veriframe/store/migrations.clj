@@ -205,6 +205,27 @@
    ;; through it. Empty for models that do not emit one.
    "ALTER TABLE turns ADD COLUMN reasoning_text TEXT"])
 
+(def ^:private v4
+  ;; What each turn cost.
+  ;;
+  ;; The adapter parsed usage and client/chat returned it, and the agent loop
+  ;; dropped it: nothing outside the bench harness and the raw passthrough API
+  ;; ever read it, and turns had no columns to put it in. So the one number a
+  ;; harness whose operating rule is "a generation is hours of provider spend"
+  ;; most needs was the number it never kept.
+  ;;
+  ;; Nullable throughout, deliberately. The provider-error path has no response
+  ;; and therefore no usage, and a zero there would claim the call was free —
+  ;; summing it would under-report the run rather than admit the gap.
+  ["ALTER TABLE turns ADD COLUMN prompt_tokens INTEGER"
+   "ALTER TABLE turns ADD COLUMN completion_tokens INTEGER"
+   "ALTER TABLE turns ADD COLUMN total_tokens INTEGER"
+   ;; The prefix-cache split, when the provider reports one. Each branch
+   ;; carries its own growing message list, so a beam of five holds five
+   ;; diverging prefixes; whether that is cheap is the question these answer.
+   "ALTER TABLE turns ADD COLUMN cache_hit_tokens INTEGER"
+   "ALTER TABLE turns ADD COLUMN cache_miss_tokens INTEGER"])
+
 (def migrations
   "Ordered. Index 0 is migration 1; PRAGMA user_version holds the count applied."
-  [v1 v2 v3])
+  [v1 v2 v3 v4])

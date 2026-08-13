@@ -53,17 +53,26 @@
   progress guards read. It is recorded rather than derived later because the
   tool that produced it knows, and a reconstruction would be guessing."
   [conn run-id {:keys [branch-id turn tool-name args result category
-                       parse-error auto-repaired assistant-text reasoning-text]}]
+                       parse-error auto-repaired assistant-text reasoning-text
+                       usage]}]
   (db/with-writer
     (db/execute! conn
                    ["INSERT INTO turns (run_id, branch_id, turn, tool_name, args, result,
                                         category, parse_error, auto_repaired,
-                                        assistant_text, reasoning_text, created_at)
-                     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
+                                        assistant_text, reasoning_text, created_at,
+                                        prompt_tokens, completion_tokens, total_tokens,
+                                        cache_hit_tokens, cache_miss_tokens)
+                     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
                     run-id branch-id turn (str tool-name) (js (or args {}))
                     (str result) (some-> category name) parse-error
                     (if auto-repaired 1 0)
-                    assistant-text reasoning-text (db/now)]))
+                    assistant-text reasoning-text (db/now)
+                    ;; nil, not 0, when the turn had no response to cost —
+                    ;; see migration v4. `usage` is absent on the
+                    ;; provider-error path by construction.
+                    (:prompt-tokens usage) (:completion-tokens usage)
+                    (:total-tokens usage)
+                    (:cache-hit-tokens usage) (:cache-miss-tokens usage)]))
   (emit! conn run-id :turn {:branch-id branch-id :turn turn
                             :data {:tool tool-name :category category}}))
 

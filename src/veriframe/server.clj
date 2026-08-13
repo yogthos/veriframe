@@ -73,6 +73,14 @@
              :warm_sessions (lean-pool/warmed-count)
              :warming (lean-pool/pending-count)}
       :active_runs (count @control/active)
+      ;; DEFAULTS, said plainly. :run/share-artifacts? in particular is not
+      ;; what a given run is doing — beam/run! forces it on for any seeded run
+      ;; — and reporting it flat once said sharing was off during a run that
+      ;; had already served 91 shared artifacts. The per-run truth is on the
+      ;; run detail endpoint as share_artifacts.
+      :config_defaults (config/redacted (select-keys cfg [:llm :run :db]))
+      ;; Kept under the old key as well: this is a published endpoint and the
+      ;; GUI reads it. Removing it is a separate change from correcting it.
       :config (config/redacted (select-keys cfg [:llm :run :db]))})))
 
 (defn- models [_req]
