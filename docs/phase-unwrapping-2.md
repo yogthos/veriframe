@@ -1,7 +1,7 @@
-# The canonical unwrapping rule: two runs, and what they cost
+# The canonical unwrapping rule: three runs, and what they cost
 
 A follow-on to [phase-unwrapping.md](phase-unwrapping.md). That run answered a
-neighbouring question about when the L1 minimum-cost flow is unique. These two
+neighbouring question about when the L1 minimum-cost flow is unique. These three
 answered a different one: given that it is *not* unique, what should the
 unwrapper return instead, and can that thing be computed?
 
@@ -18,15 +18,16 @@ genuinely occurs, exactly where the data is worst.
 That last fact is the whole difficulty. Zero weights are what make the L1
 argmin infinite.
 
-| | gen-17 | gen-18 |
-| --- | --- | --- |
-| run | `0d0c3560` | `65d50333` |
-| turns | 523 | 603 |
-| artifacts | 97 | 122 |
-| confirmed / empirical / refuted | 56 / 9 / 0 | 79 / 5 / 2 |
-| branches shipped / culled | 10 / 5 | 7 / 5 |
-| recorded failures | 125 | 164 |
-| ended | completed | server died ~20 h in, 3 branches still active |
+| | gen-17 | gen-18 | gen-19 |
+| --- | --- | --- | --- |
+| run | `0d0c3560` | `65d50333` | `cd58e618` |
+| turns | 523 | 603 | 140 |
+| artifacts | 97 | 122 | 32 |
+| confirmed / empirical / refuted | 56 / 9 / 0 | 79 / 5 / 2 | 16 / 2 / 0 |
+| artifacts refused as unfaithful | — | — | 14 |
+| branches shipped / culled | 10 / 5 | 7 / 5 | 1 / 3 |
+| recorded failures | 125 | 164 | 58 |
+| ended | completed | server died ~20 h in, 3 branches still active | completed in 2 h 25 m |
 
 ---
 
@@ -189,6 +190,121 @@ $(0,0,0,0)$.
 
 ---
 
+## gen-19: the tie-break cannot be made canonical
+
+Seeded from gen-18 and pointed at three questions: **Q-1** (main) the
+polynomial-time computability of the rule *without* assuming a unique stage-2
+minimiser — the gap vf-izq names — **Q-2** whether stage 3 is even the right
+tie-break, and **Q-3** how large the stage-2 set gets on grid instances that
+look like interferograms rather than adversarial gadgets.
+
+It answered Q-2, measured Q-3, and did not settle Q-1.
+
+### Q-2 — no symmetry-invariant selector exists
+
+**The result, shipped by `B4`.** Take the two-path dipole square: vertices
+1..4, edges $(1,2), (2,4), (1,3), (3,4)$, divergence $+1$ at vertex 1 and $-1$
+at vertex 4, unit weights. Feasibility forces $k_1 = k_0$, $k_3 = k_2$ and
+$k_0 + k_2 = 1$. Minimum L1 cost is 2, and the stage-2 optimal set is exactly
+
+$$S_2 = \{(0,0,1,1),\ (1,1,0,0)\}.$$
+
+The reflection swapping the two paths is an automorphism of the instance — it
+preserves feasibility and L1 cost — it exchanges the two optima, and it fixes
+neither. An invariant selector would have to return an element of $S_2$ fixed
+by every automorphism, and there is none. So **no tie-break that depends only
+on the instance up to symmetry can single out one flow.**
+
+Confirmed by Z3 (quantified integer arithmetic, unsat on the negation) and
+independently by Octave enumeration over integer flows in $[-10,10]$, with a
+passing cross-review. Re-derived here in Python before recording: minimum cost
+2, $|S_1| = 2$, $S_2 = S_1$, the reflection is an automorphism of the full
+feasible set, maps $S_2$ onto itself, and has no fixed point in it.
+
+**This matters for the engineering, not just the mathematics.** gen-18's Q-C
+noted in passing that stage 3 "is a choice of presentation, not a property of
+the instance". That is now a theorem rather than an observation: the
+dependence on edge order is *forced*. Any canonical unwrapper must break ties
+by something extrinsic to the instance — serialisation order, orientation
+convention, a tie-break seed — and that is not a defect to be engineered away.
+The honest shipping advice is to fix the convention and document it, not to
+search for a better rule.
+
+**The strategy was handed over in the problem statement.** The Q-2 prompt said,
+in as many words, "prove that no invariant selector exists — for instance by
+exhibiting an instance whose symmetry group acts transitively on its stage-2
+optimal set, which would make any invariant rule have to choose among genuinely
+indistinguishable flows." That is the attack `B4` used. What the run
+contributed was finding the smallest witness, characterising its optimal set
+exactly, verifying the automorphism and fixed-point-freeness two independent
+ways, and scoping the claim correctly. The result is real; it is less
+independent than the shipped text reads.
+
+### Q-3 — measured, on 3×3 only
+
+`B4` ran 60 random 3×3 grids with unit weights and random $\pm$ residue pairs.
+Stage-2 tie sizes came out $[22, 15, 12, 4, 3, 3, 1, 0, \dots]$ for sizes
+$1..20$ — so 22 of the 60 had no tie at all, 38 did, and the largest observed
+tie was 7. Ties are the common case even on benign instances, but small ones.
+Recorded as `empirical`, and the shipped answer says plainly that this is a
+measurement on 3×3 that does not extend to 4×4 or to the adversarial gadgets
+where $2^m$ ties are already proven.
+
+Suggestive rather than decisive: it says nothing about how the tie grows with
+$n$, which is the question that decides whether Q-1 is theory or practice.
+
+### Q-1 — still open
+
+Unanswered, and the shipped answer leads with that rather than burying it. The
+greedy attack the prompt named — fix $k(e_1)$ to its least value consistent
+with staying stage-2-optimal, then $k(e_2)$, and so on — was not settled either
+way; whether each such step is itself a polynomial feasibility question is the
+crux and remains the crux. vf-izq stays open.
+
+### What the harness did, and did not do
+
+Worth recording because it is the point of running these at all.
+
+**The audit gate refused 14 of 32 artifacts as unfaithful** — a 44% refusal
+rate, far above gen-17 and gen-18. The refusals are not noise: they are mostly
+earlier attempts at the *same* claims that later shipped, rejected because the
+encoding did not establish what the claim said. `B2`'s turn-38 SMT artifact
+returned **`sat`** and was offered as evidence for a universal statement, which
+is precisely the failure mode the gen-14 note names — a correct number is not a
+verified one. `B4` needed three tries (turns 22, 24, then 26) before an
+encoding of the automorphism argument was accepted. The gate cost turns and
+earned them.
+
+**The slow tier was never used.** All 32 artifacts are `fast`. Every SMT
+artifact went through plain `z3_check` rather than the dual-encoding
+cross-checked path, and all 9 Lean artifacts came from one-shot `lean_check`
+rather than interactive tactic mode closing a goal. The `tier-escalation` gate
+fired four times to push for exactly that and was ignored four times. So the
+"confirmed by Z3 and independently by Octave" in the shipped answer is the
+*model* choosing to run two tools, not the harness's own dual-encoding check —
+a weaker guarantee than the vocabulary suggests.
+
+**Gate predictions mostly did not come true.** Of 35 firings, 26 settled: 4
+met, 22 unmet. Every `milestone` prediction (4/4) and every `tier-escalation`
+prediction (4/4) went unmet. The gates are settling their predictions honestly,
+which is the mechanism working; what the record shows is that firing a gate
+does not reliably change what a branch does next.
+
+**Repopulation, first run in the wild.** The new `:repopulate` gate fired 5
+times and settled 1 met, 4 unmet. The one that took (`B2`, turn 19) produced
+`B2.2` at turn 22 — the branch that shipped three of the confirmed Lean and SMT
+artifacts underpinning the stage-2 classification. So it earned its place, but
+on a 1-in-5 hit rate, and the beam's growth to 7 branches is mostly
+`branch-out`'s doing, not its own.
+
+**The run was short.** 140 turns against a 300 budget, 39 rounds, done in 2 h
+25 m — a fifth of gen-18's length — because `B4` reached `done` and
+`stop-on-first-done?` closed the rest. Two branches were culled on consecutive
+failures after the Pareto reprieve was spent; three were abandoned as
+superseded.
+
+---
+
 ## Corrections and caveats
 
 **A shipped answer misdescribes its own graph (vf-6ai).** gen-17's `B4` says
@@ -201,19 +317,31 @@ Both the audit and the review gate passed the wrong description, which is the
 part worth remembering: the gates check that claims match evidence, and a wrong
 noun that no engine ever consumed goes straight through.
 
-**Nothing here answers the original question.** Neither run touched $\sigma$,
-the Gaussian field, or the torus. The open items are Q-A in general — which, per
-vf-izq, means the tied case specifically — Q-B as a theorem for arbitrary
-graphs, Q-C beyond a single 3×3 grid, and Q-D with nonzero residues or noise.
+**Nothing here answers the original question.** No run touched $\sigma$, the
+Gaussian field, or the torus. What is still open after three runs: Q-A/Q-1 in
+general — the tied case, which is the whole difficulty and which gen-19 left
+where it found it (vf-izq) — Q-B as a theorem for arbitrary graphs, Q-3 beyond
+3×3 and as a function of $n$, and Q-D with nonzero residues or noise.
 
-**The gates did work.** gen-18's `B2` had `done` refused five times and
-`B2.3.3` three, in every case for asserting the thesis when the evidence
-supported something weaker; the accepted answers are the ones that state their
-own restrictions. That friction is most of why the shipped text above can be
-read at face value. It is also why both runs shipped so many answers that begin
-by saying what they do not settle.
+**One of the three runs was steered to its answer.** gen-19's Q-2 prompt named
+the proof strategy — exhibit an instance whose symmetry group acts transitively
+on its stage-2 optimal set — and that is what shipped. Worth holding against
+any reading of these runs as evidence about what the harness discovers on its
+own: it executed and verified a suggested attack well, which is a different
+claim.
+
+**The gates did work, unevenly.** gen-18's `B2` had `done` refused five times
+and `B2.3.3` three, in every case for asserting the thesis when the evidence
+supported something weaker; gen-19's audit refused 14 of 32 artifacts outright.
+The accepted answers are the ones that state their own restrictions, and that
+friction is most of why the shipped text above can be read at face value.
+Against that: gen-19's gate *predictions* settled 4 met to 22 unmet, and its
+`tier-escalation` gate never once got a branch onto the slow tier. Refusal
+works; nudging does not.
 
 **gen-18 did not finish.** The server died around 2026-08-10 20:15, roughly 20
-hours in, with `B2.2`, `B4.3.2` and `B4.3.3` still active; its row still reads
-`running` (vf-g2l). 603 of 300 max turns is turns across all branches, not
-scheduler rounds.
+hours in, with `B2.2`, `B4.3.2` and `B4.3.3` still active. Its row read
+`running` for days afterwards (vf-g2l), which is what prompted
+`reconcile-orphans!` — crashed runs are now marked `interrupted` at startup
+rather than asserting forever. 603 of 300 max turns is turns across all
+branches, not scheduler rounds.
