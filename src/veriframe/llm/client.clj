@@ -151,10 +151,14 @@
   loop is bounded in attempts and each attempt is bounded in wall clock, so a
   stuck provider costs a known amount rather than the run."
   ([adapter config messages] (chat adapter config messages nil))
-  ([adapter config messages {:keys [max-tokens temperature max-retries]}]
+  ([adapter config messages {:keys [max-tokens temperature max-retries prefill]}]
    (let [request {:messages (message/prepare messages)
                   :max-tokens (or max-tokens (:max-tokens config))
-                  :temperature (or temperature (:temperature config))}
+                  :temperature (or temperature (:temperature config))
+                  ;; Passed through as given; the adapter decides whether it
+                  ;; can honour it, and one that cannot must ignore it rather
+                  ;; than approximate it.
+                  :prefill prefill}
          retries (or max-retries (:max-retries config) default-max-retries)]
      (loop [attempt 0, errors []]
        (let [result (try

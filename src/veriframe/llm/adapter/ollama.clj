@@ -61,6 +61,9 @@
     (when-let [e (:error body)] (str e)))
 
   ;; A local runtime has no billing wall to hit.
+  ;; Ollama treats a trailing assistant message as a completed turn.
+  (prefill-support? [_] false)
+
   (usage-cap? [_ _ _] false))
 
 (def ollama (->OllamaAdapter))

@@ -104,6 +104,8 @@
       (when (and ok (map? value) (string? (:name value)) (not (str/blank? (:name value))))
         candidate))))
 
+(declare parse-tool-call*)
+
 (defn parse-tool-call
   "Parse a model response into a tool call.
 
@@ -116,8 +118,25 @@
   a model that issues a call and then rambles rarely emits a second fence. The
   count is recorded either way rather than silently resolved, because
   `:fences > 1` is exactly the sort of tool-call mechanics the capability tier
-  is built from."
-  [response]
+  is built from.
+
+  `opts` may carry `:prefill`, the partial assistant text the request ended
+  with. The model continues from it and does not repeat it, so the response
+  begins INSIDE the fence and the opener this function matches on is missing
+  from the text — every prefilled turn would read as a no-call, which is the
+  opposite of what prefilling is for. The prefix is reattached first, unless
+  the response already repeats it: providers differ on that, and reattaching
+  blindly would produce two openers whose first fence body is empty."
+  ([response] (parse-tool-call response nil))
+  ([response {:keys [prefill]}]
+   (let [response (if (and (seq prefill)
+                           (not (str/starts-with? (str/triml (str response))
+                                                  (str/triml prefill))))
+                    (str prefill response)
+                    response)]
+     (parse-tool-call* response))))
+
+(defn- parse-tool-call* [response]
   (let [fenced (extract-fences response)
         ;; A response that ends in a well-formed call but omits the fence is
         ;; accepted, and recorded as :unfenced? so it stays visible rather than

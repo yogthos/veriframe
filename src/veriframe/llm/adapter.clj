@@ -40,8 +40,23 @@
 
   (chat-body [this config request]
     "Build the request body map from a normalized request:
-     {:messages [{:role :content}] :max-tokens n :temperature d}.
-     Returned as data; the client encodes it.")
+     {:messages [{:role :content}] :max-tokens n :temperature d :prefill s}.
+     Returned as data; the client encodes it.
+
+     `:prefill` is honoured only when `prefill-support?` is true, and MUST be
+     ignored otherwise — a provider without support has to produce exactly the
+     body it produces today.")
+
+  (prefill-support? [this]
+    "Whether this provider will continue a trailing assistant message rather
+     than treating it as a completed turn.
+
+     Tool calls here are a fenced JSON block in free text, so the model can
+     always answer in prose instead — the harness's dominant mechanical
+     failure. Sending the opening fence as a partial assistant turn removes
+     that option, but only where the provider continues it. Declared per
+     provider rather than attempted and hoped for, because the failure is
+     silent: an ignored prefill just looks like an ordinary turn.")
 
   (parse-chat [this body]
     "Pull {:content :reasoning :finish-reason :usage} out of a decoded

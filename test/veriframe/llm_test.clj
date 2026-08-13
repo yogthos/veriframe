@@ -27,6 +27,45 @@
 
 (defn- fenced [body] (str "prose before\n```tool-call\n" body "\n```\nprose after"))
 
+(deftest a-prefilled-response-parses-as-if-it-carried-its-own-fence
+  ;; The trap in prefilling the opening fence: the model does not repeat it,
+  ;; so the response body starts INSIDE the fence and fence-re — which matches
+  ;; on the ```tool-call opener — finds nothing. Every prefilled turn would
+  ;; parse as a no-call, turning a fix for __no_call__ into a generator of
+  ;; them. The prefix has to be reattached before matching.
+  (let [prefix "```tool-call\n"]
+    (testing "the model continues inside the fence and closes it"
+      (let [p (fence/parse-tool-call "{\"name\": \"verify\", \"args\": {\"claim\": \"x\"}}\n```"
+                                     {:prefill prefix})]
+        (is (= "verify" (:name p)))
+        (is (= {:claim "x"} (:args p)))))
+
+    (testing "a model that repeats the opener anyway does not get a doubled fence"
+      ;; Providers differ on whether the prefix comes back in the completion.
+      ;; Reattaching blindly would produce ```tool-call\n```tool-call\n{...},
+      ;; whose first fence body is empty — a parse error on a turn that was
+      ;; actually fine.
+      (let [p (fence/parse-tool-call (str prefix "{\"name\": \"verify\"}\n```")
+                                     {:prefill prefix})]
+        (is (= "verify" (:name p)))
+        (is (= 1 (:fences p)) "one fence, not two")))
+
+    (testing "a prefilled response that never closes the fence still parses"
+      ;; Hitting the token cap mid-call is common; the closing fence is the
+      ;; first casualty. The unfenced-tail path already handles this shape
+      ;; without a prefill and must keep doing so with one.
+      (let [p (fence/parse-tool-call "{\"name\": \"proof_state\"}" {:prefill prefix})]
+        (is (= "proof_state" (:name p)))))
+
+    (testing "without a prefill nothing changes"
+      ;; The whole non-prefilled surface must be untouched, including the
+      ;; mechanics signals the capability tier is built from.
+      (is (nil? (fence/parse-tool-call "just prose")))
+      (is (nil? (fence/parse-tool-call "just prose" {})))
+      (let [a (fence/parse-tool-call (fenced "{\"name\": \"verify\"}"))
+            b (fence/parse-tool-call (fenced "{\"name\": \"verify\"}") {})]
+        (is (= a b))))))
+
 (deftest fence-basics
   (testing "no fence at all is nil, not an error"
     (is (nil? (fence/parse-tool-call "I think the answer is 42.")))
@@ -220,6 +259,62 @@
         (is (= 100 (:prompt-tokens u)))
         (is (not (contains? u :cache-hit-tokens)))
         (is (not (contains? u :cache-miss-tokens)))))
+
+    (testing "prefill is offered only by providers that actually support it"
+      ;; A fenced tool-call protocol lets the model answer in prose instead,
+      ;; which is veriframe's dominant mechanical failure. Sending the opening
+      ;; fence as a partial assistant message removes that option — but only
+      ;; some providers continue a trailing assistant turn. OpenAI does not,
+      ;; and asking it to would either be ignored or rejected, so the
+      ;; capability is declared rather than assumed.
+      (is (adapter/prefill-support? (registry/adapter-for :deepseek)))
+      (is (not (adapter/prefill-support? (registry/adapter-for :openai))))
+      (is (not (adapter/prefill-support? (registry/adapter-for :ollama)))))
+
+    (testing "a supporting adapter appends the prefix as a trailing assistant turn"
+      (let [a (registry/adapter-for :deepseek)
+            body (adapter/chat-body a {:model "m"}
+                                    {:messages [{:role "user" :content "go"}]
+                                     :prefill "```tool-call\n"})
+            msgs (:messages body)]
+        (is (= 2 (count msgs)))
+        (is (= "assistant" (:role (last msgs))))
+        (is (= "```tool-call\n" (:content (last msgs))))
+        ;; DeepSeek continues a trailing assistant message only when it is
+        ;; flagged; without this the message is treated as a completed turn
+        ;; and the model replies after it rather than inside it.
+        (is (true? (:prefix (last msgs))))))
+
+    (testing "the client threads prefill through to the adapter"
+      ;; The plumbing gap that would make all of the above dead code: chat
+      ;; builds the request map from its opts, so a key it does not name never
+      ;; reaches chat-body at all, and the prefill would silently never happen.
+      (let [seen (atom nil)
+            a (reify adapter/Adapter
+                (id [_] :probe)
+                (display-name [_] "probe")
+                (chat-url [_ _] "http://localhost/x")
+                (models-url [_ _] nil)
+                (auth-headers [_ _] {})
+                (chat-body [_ _ req] (reset! seen req) {})
+                (parse-chat [_ _] nil)
+                (parse-models [_ _] [])
+                (error-message [_ _] nil)
+                (prefill-support? [_] true)
+                (usage-cap? [_ _ _] false))]
+        (try (client/chat a {:max-retries 0} [{:role "user" :content "hi"}]
+                          {:prefill "```tool-call\n"})
+             (catch Throwable _ nil))
+        (is (= "```tool-call\n" (:prefill @seen))
+            "chat must name :prefill in its opts destructuring or it is dropped")))
+
+    (testing "a non-supporting adapter ignores prefill entirely"
+      ;; Must be byte-identical to the no-prefill body: a provider that does
+      ;; not support this has to be left on exactly the path it is on today.
+      (let [a (registry/adapter-for :openai)
+            req {:messages [{:role "user" :content "go"}] :max-tokens 5}]
+        (is (= (adapter/chat-body a {:model "m"} req)
+               (adapter/chat-body a {:model "m"} (assoc req :prefill "```tool-call\n"))))))
 
     (testing "an unknown provider names what is available"
       (is (thrown? Throwable (registry/adapter-for :nope))))))

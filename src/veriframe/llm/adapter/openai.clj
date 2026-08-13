@@ -23,6 +23,16 @@
   (:require [clojure.string :as str]
             [veriframe.llm.adapter :as adapter]))
 
+(defn- supports-prefill?
+  "Which members of the family continue a flagged trailing assistant message.
+
+  DeepSeek does; plain OpenAI does not, and neither does a stock local
+  endpoint. Opted into by id rather than assumed for the family, because the
+  failure is silent — an ignored prefill is indistinguishable from an ordinary
+  turn, so guessing wrong would quietly disable the mechanism."
+  [provider-id]
+  (= :deepseek provider-id))
+
 (defrecord OpenAIAdapter [provider-id label reasoning-key max-tokens-key]
   adapter/Adapter
   (id [_] provider-id)
@@ -36,11 +46,21 @@
       {"Authorization" (str "Bearer " k)}
       {}))
 
-  (chat-body [_ config {:keys [messages max-tokens temperature]}]
+  (chat-body [_ config {:keys [messages max-tokens temperature prefill]}]
     (cond-> {:model (:model config)
-             :messages messages}
+             :messages (if (and prefill (supports-prefill? provider-id))
+                         ;; `:prefix true` is what makes the provider CONTINUE
+                         ;; this message rather than reply after it. Without
+                         ;; the flag a trailing assistant turn is just history,
+                         ;; and the model answers below it in prose — the exact
+                         ;; failure the prefill exists to prevent.
+                         (conj (vec messages)
+                               {:role "assistant" :content prefill :prefix true})
+                         messages)}
       max-tokens (assoc max-tokens-key max-tokens)
       temperature (assoc :temperature temperature)))
+
+  (prefill-support? [_] (supports-prefill? provider-id))
 
   (parse-chat [_ body]
     (when-let [choice (first (:choices body))]
