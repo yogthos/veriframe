@@ -3134,6 +3134,65 @@
         (is (= 1 (:consecutive-failures b))
             "and starts from 1, not compounded by the malformed turns")))))
 
+(deftest a-missing-argument-error-shows-the-call-it-wanted
+  ;; gen-20 B1 called proof_start without its required arguments five times,
+  ;; three of them producing the byte-identical error, and was culled. The
+  ;; message was a bare list of names — "Missing required argument(s): claim,
+  ;; theorem." — which tells a model that did not understand the call the
+  ;; first time nothing it did not already have.
+  ;;
+  ;; The skeleton needs no schema registry: `missing` is handed the tool name
+  ;; and the keys it requires, which is exactly the call it is complaining
+  ;; about.
+  (let [msg (#'tools/missing {:tool-name "proof_start" :args {}} :claim :theorem)]
+    (is (re-find #"claim" msg))
+    (is (re-find #"theorem" msg))
+    (is (re-find #"proof_start" msg)
+        "the message must name the tool, not just the absent keys")
+    (is (re-find #"\{" msg)
+        "and show the shape of a valid call")
+    (testing "an argument that was supplied is not demanded again"
+      (let [m (#'tools/missing {:tool-name "proof_start" :args {:claim "c"}}
+                               :claim :theorem)]
+        (is (not (re-find #"claim," m)))
+        (is (re-find #"theorem" m))))
+    (testing "nothing missing is still nil, not an empty complaint"
+      (is (nil? (#'tools/missing {:tool-name "proof_start"
+                                  :args {:claim "c" :theorem "t"}}
+                                 :claim :theorem))))))
+
+(deftest repeating-a-failed-call-gets-a-different-answer
+  ;; 29 of gen-20's 57 failures were four identical (tool, message) pairs. The
+  ;; harness's reply to the fifth identical mistake was its reply to the first,
+  ;; so a branch in a loop had nothing to work with. B1 — the branch that had
+  ;; independently rediscovered the greedy characterisation — died in one.
+  ;;
+  ;; Exact comparison over (tool, message), not text similarity: both are
+  ;; already recorded, it needs no threshold, and it cannot fire on an honest
+  ;; retry that changed the call.
+  (let [b (state/new-branch {:id "B1" :problem "p"})
+        once (state/add-turn b {:turn 1 :tool "proof_start" :category :failure
+                                :error "Missing required argument(s): claim."})]
+    (is (not (state/repeating-failure? once "proof_start"
+                                       "Missing required argument(s): claim."))
+        "one failure is not a repeat")
+    (let [twice (state/add-turn once {:turn 2 :tool "proof_start"
+                                      :category :failure
+                                      :error "Missing required argument(s): claim."})]
+      (is (state/repeating-failure? twice "proof_start"
+                                    "Missing required argument(s): claim.")
+          "the same call failing the same way twice is")
+      (testing "a different error on the same tool is not a repeat"
+        (is (not (state/repeating-failure? twice "proof_start" "Lean rejected it"))))
+      (testing "the same error from a different tool is not a repeat"
+        (is (not (state/repeating-failure? twice "verify_lean"
+                                           "Missing required argument(s): claim."))))
+      (testing "a success in between clears it — the branch changed something"
+        (let [recovered (state/add-turn twice {:turn 3 :tool "proof_start"
+                                               :category :success})]
+          (is (not (state/repeating-failure? recovered "proof_start"
+                                             "Missing required argument(s): claim."))))))))
+
 (deftest a-branch-that-cannot-emit-a-tool-call-is-still-bounded
   ;; The counter has to be separated, not softened. `mechanics` feeds only the
   ;; capability tier and gates nothing; `turns-since-progress` feeds only

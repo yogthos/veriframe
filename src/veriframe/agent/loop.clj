@@ -267,7 +267,27 @@
                 branch (-> (:branch result)
                            (state/record-outcome (assoc result :claim (get-in parsed [:args :claim])))
                            (state/add-turn {:turn turn :tool tool
-                                            :category (:category result)}))
+                                            :category (:category result)
+                                            ;; Kept only for failures, and only
+                                            ;; so repeating-failure? can see a
+                                            ;; loop. Not a second copy of the
+                                            ;; journal: the turns table holds
+                                            ;; the authoritative result.
+                                            :error (when (= :failure (:category result))
+                                                     (str (:result result)))}))
+                ;; 29 of gen-20's 57 failures were four identical (tool,
+                ;; message) pairs, and the harness answered the fifth exactly
+                ;; as it answered the first. Say something different instead —
+                ;; the branch is going to spend the next turn regardless.
+                result (if (state/repeating-failure? branch tool (str (:result result)))
+                         (update result :result
+                                 #(str % "\n\n[harness] This exact call has now"
+                                       " failed this exact way more than once."
+                                       " Repeating it will fail again. Change"
+                                       " the call, or change technique — a"
+                                       " different tool, a smaller claim, or a"
+                                       " different encoding of the same one."))
+                         result)
                 branch (if-let [a (:artifact result)]
                          (state/add-artifact branch (assoc a :turn turn))
                          branch)

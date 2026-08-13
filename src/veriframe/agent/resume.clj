@@ -60,7 +60,13 @@
     can journal one duplicate shared-artifact-hit after a resume.
   - :critic scores and :fork-invited markers are branch memory; a resumed
     branch is re-scored at its next boundary, and may be re-invited to fork
-    sooner than the cooldown would otherwise allow."
+    sooner than the cooldown would otherwise allow.
+  - the per-turn :error that repeating-failure? compares is not replayed, so a
+    branch that was looping on one identical failure gets one un-escalated
+    answer after a resume before the harness can see the loop again. The turns
+    table does hold the result text, but it holds the ESCALATED copy, which
+    would not compare equal to the next clean one — replaying it would break
+    the detection it was meant to restore."
   (:require [clojure.data.json :as json]
             [veriframe.agent.beam :as beam]
             [veriframe.agent.claims :as claims]

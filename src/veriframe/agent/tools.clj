@@ -86,12 +86,27 @@
     (let [n (count minors)]
       (str " — " n " patchable defect" (when (> n 1) "s") " listed"))))
 
-(defn- missing [ctx & ks]
+(defn- missing
+  "The complaint for absent required arguments, WITH the call it wanted.
+
+  This used to be a bare list of names. gen-20 B1 called `proof_start` without
+  its arguments five times — three producing the byte-identical message — and
+  was culled for it; a model that did not understand the call the first time
+  learns nothing from being told the same names again. The skeleton costs
+  nothing and needs no schema registry, because the tool name and the keys it
+  requires are exactly what this function is already handed."
+  [ctx & ks]
   (let [absent (remove #(let [v (arg ctx %)]
                           (and (some? v) (not (and (string? v) (str/blank? v)))))
                        ks)]
     (when (seq absent)
-      (str "Missing required argument(s): " (str/join ", " (map name absent)) "."))))
+      (str "Missing required argument(s): " (str/join ", " (map name absent)) "."
+           "\n\nA call to `" (:tool-name ctx) "` looks like:\n"
+           "```tool-call\n"
+           "{\"name\": \"" (:tool-name ctx) "\", \"args\": {"
+           (str/join ", " (for [k ks]
+                            (str "\"" (name k) "\": \"<" (name k) ">\"")))
+           "}}\n```"))))
 
 (defn- claim-dedup
   "Serve another branch's verification of the same claim instead of spending

@@ -296,8 +296,38 @@
 (defn add-artifact [branch artifact]
   (update branch :artifacts conj artifact))
 
-(defn add-turn [branch entry]
+(defn add-turn
+  "Record one turn on the branch. `entry` carries :turn, :tool, :category, and
+  for a failure the :error it produced — the last so `repeating-failure?` can
+  tell a branch stuck in a loop from one making fresh mistakes."
+  [branch entry]
   (update branch :turns conj entry))
+
+(defn repeating-failure?
+  "Whether this branch's LAST turn was already this exact (tool, error) failure.
+
+  29 of gen-20's 57 failures were four identical (tool, message) pairs, and the
+  harness answered the fifth the way it answered the first. B1 — which had
+  independently rediscovered the greedy characterisation, the best idea in the
+  run — died calling `proof_start` wrong, being told, and calling it wrong
+  again.
+
+  Exact comparison rather than text similarity, deliberately. Both halves are
+  already recorded, it needs no threshold to tune, and it cannot fire on an
+  honest retry: a branch that changed anything about the call produces a
+  different error, and a branch that succeeded in between is not looping.
+
+  Called AFTER the turn is recorded, so it asks whether the last two turns are
+  the same failure — one failure is a mistake, two identical ones are a loop."
+  [branch tool error]
+  (let [turns (:turns branch)
+        same? (fn [t] (and t
+                           (= :failure (:category t))
+                           (= tool (:tool t))
+                           (= error (:error t))))]
+    (boolean (and (>= (count turns) 2)
+                  (same? (peek turns))
+                  (same? (peek (pop turns)))))))
 
 (defn add-message [branch role content]
   (update branch :messages conj {:role role :content content}))
