@@ -198,10 +198,14 @@
         (is (re-find #"in_run_scalarization" block)
             "the run's own lemma must reach the block, not be buried under seeds")
         (is (re-find #"proved in this run" block))
-        ;; And it leads, so it is read first.
-        (is (< (.indexOf block "proved in this run")
-               (.indexOf block "variant"))
-            "in-run entries come before seeded ones")))))
+        ;; Scoped to the shared-artifact section, which is what prefer-in-run
+        ;; governs. The settled-state ledger above it legitimately lists the
+        ;; inherited entries in its own section, so comparing positions across
+        ;; the whole context block measures the wrong thing.
+        (let [shared (subs block (.indexOf block "Confirmed by other branches"))]
+          (is (< (.indexOf shared "proved in this run")
+                 (.indexOf shared "variant"))
+              "within the shared block, in-run entries come before seeded ones"))))))
 
 (deftest the-ledger-carries-what-was-ruled-out-not-only-what-was-proved
   ;; 127 refuted artifacts exist across the project and not one had ever been
@@ -237,6 +241,60 @@
                         (concat established ruled-out))))
         (testing "every row carries an id, so the encoding can be fetched"
           (is (every? :id (concat (:established led) (:ruled-out led)))))))))
+
+(deftest the-ledger-shows-what-the-run-inherited
+  ;; Seeding copies a prior run's confirmed artifacts into shared_artifacts,
+  ;; not into artifacts, so a seeded run's ledger read "established 0" while
+  ;; the run held eleven inherited lemmas. The whole point of seeding is to
+  ;; carry verified results forward; a settled-state view that omits them is
+  ;; telling the branch the opposite of the truth, and leaves the statement's
+  ;; hand-written summary as the only route — which is the fragility seeding
+  ;; exists to remove.
+  ;;
+  ;; Its own section, and its own handle prefix: seeded rows are in a
+  ;; different table and therefore a different id space, so `s#7` and `a#7`
+  ;; must not be confusable.
+  (with-db [c]
+    (let [src (runs/start-run! c {:problem "prior"})
+          rid (runs/start-run! c {:problem "p"})]
+      (journal/record-artifact! c src {:branch-id "B4" :turn 2 :kind :lean
+                                       :tier :slow :claim "weighted sum yields lex min"
+                                       :code "theorem wsl : True := trivial"
+                                       :claim-status :confirmed})
+      (artifacts/seed-from-run! c rid src)
+      (journal/record-artifact! c rid {:branch-id "B1" :turn 1 :kind :smt
+                                       :tier :fast :claim "found here"
+                                       :code "(assert true)"
+                                       :claim-status :confirmed})
+      (let [led (journal/ledger c rid)]
+        (is (= ["found here"] (mapv :claim (:established led)))
+            "this run's own work stays in Established")
+        (is (= ["weighted sum yields lex min"] (mapv :claim (:inherited led)))
+            "and the inherited lemma is no longer invisible")
+        (let [block (artifacts/render-ledger led)]
+          (is (re-find #"(?i)inherited" block))
+          (is (re-find #"s#" block) "seeded rows use the shared-table handle")
+          (is (< (.indexOf block "found here") (.indexOf block "weighted sum"))
+              "this run's own results lead"))))))
+
+(deftest fetch-artifact-resolves-both-id-spaces
+  ;; a#N indexes artifacts, s#N indexes shared_artifacts. One tool, two
+  ;; tables, so the prefix has to disambiguate — otherwise a branch fetching
+  ;; a ledger id could silently get an unrelated row.
+  (with-db [c]
+    (let [src (runs/start-run! c {:problem "prior"})
+          rid (runs/start-run! c {:problem "p"})]
+      (journal/record-artifact! c src {:branch-id "B9" :turn 1 :kind :lean
+                                       :tier :slow :claim "inherited claim"
+                                       :code "theorem inherited : True := trivial"
+                                       :claim-status :confirmed})
+      (artifacts/seed-from-run! c rid src)
+      (let [sid (:id (first (artifacts/recent c rid 5)))]
+        (is (re-find #"theorem inherited"
+                     (str (:code (journal/shared-artifact-by-id c rid sid))))
+            "a seeded row is reachable by its shared id")
+        (is (nil? (journal/shared-artifact-by-id c src sid))
+            "and only from the run that inherited it")))))
 
 (deftest the-ledger-includes-the-branch-s-own-work-and-stays-small
   ;; Unlike the shared block, which excludes own-branch rows because a branch

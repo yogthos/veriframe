@@ -1686,13 +1686,22 @@
   ;; progress guards exist to catch.
   (if-let [m (missing ctx :id)]
     (fail branch m)
-    (let [id (arg ctx :id)
-          id (if (string? id) (parse-long (str/trim id)) id)
-          a (when (and conn run-id id) (journal/artifact-by-id conn run-id id))]
+    (let [raw (str/trim (str (arg ctx :id)))
+          ;; `a#` is this run's own artifacts, `s#` the shared pool a seed was
+          ;; copied into — two tables, two id spaces. A bare number means the
+          ;; branch's own, which is the common case.
+          shared? (str/starts-with? raw "s#")
+          id (parse-long (str/replace raw #"^[as]#" ""))
+          a (when (and conn run-id id)
+              (if shared?
+                (journal/shared-artifact-by-id conn run-id id)
+                (journal/artifact-by-id conn run-id id)))]
       (if-not a
-        (fail branch (str "No artifact a#" (arg ctx :id) " in this run."
-                          " Ids come from the settled-state block; a run cannot"
-                          " reach another run's artifacts."))
+        (fail branch (str "No artifact " raw " in this run."
+                          " Ids come from the settled-state block: `a#12` for"
+                          " something this run established, `s#7` for something"
+                          " it inherited. A run cannot reach another run's"
+                          " artifacts."))
         (ok branch
             (str "a#" (:id a) " [" (:branch_id a) " " (:kind a) "/" (:tier a) "]"
                  " status " (str/upper-case (str (:claim_status a)))

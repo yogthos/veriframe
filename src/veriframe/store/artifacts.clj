@@ -133,12 +133,17 @@
   headline is what belongs here."
   180)
 
-(defn- ledger-line [{:keys [id branch_id kind tier claim]}]
+(defn- ledger-line
+  "One entry. `prefix` selects the id space: `a#` indexes this run's own
+  artifacts, `s#` the shared pool a seed was copied into. Two tables, one
+  fetch tool, so the handles must not be confusable."
+  [prefix {:keys [id branch_id kind tier claim]}]
   (let [c (str/trim (str claim))
         c (if (> (count c) max-ledger-claim-chars)
             (str (subs c 0 max-ledger-claim-chars) " …")
             c)]
-    (str "- [a#" id " " branch_id " " (name (or kind "?")) "/" (name (or tier "?")) "] " c)))
+    (str "- [" prefix id " " branch_id " " (name (or kind "?")) "/"
+         (name (or tier "?")) "] " c)))
 
 (defn render-ledger
   "The run's settled state, as a block for a branch's next-turn context.
@@ -151,17 +156,23 @@
 
   Ids are handles, not decoration — `a#12` is what `fetch_artifact` takes, so
   the encodings stay out of the block and cost a turn only when wanted."
-  [{:keys [established ruled-out]}]
-  (when (or (seq established) (seq ruled-out))
+  [{:keys [established ruled-out inherited]}]
+  (when (or (seq established) (seq ruled-out) (seq inherited))
     (str message/ledger-open "\n"
          "## What this run has settled\n\n"
          (when (seq established)
-           (str "### Established — engine-verified\n"
-                (str/join "\n" (map ledger-line established)) "\n\n"))
+           (str "### Established — engine-verified in this run\n"
+                (str/join "\n" (map (partial ledger-line "a#") established)) "\n\n"))
          (when (seq ruled-out)
            (str "### Ruled out — engine-REFUTED, do not re-attempt these\n"
-                (str/join "\n" (map ledger-line ruled-out)) "\n\n"))
-         "Fetch any encoding with `fetch_artifact` and its id.\n"
+                (str/join "\n" (map (partial ledger-line "a#") ruled-out)) "\n\n"))
+         ;; Last: inherited results are true but were established elsewhere,
+         ;; and the done gate still requires in-run verification, so they are
+         ;; a starting point rather than something to ship on.
+         (when (seq inherited)
+           (str "### Inherited — confirmed by the run this one was seeded from\n"
+                (str/join "\n" (map (partial ledger-line "s#") inherited)) "\n\n"))
+         "Fetch any encoding with `fetch_artifact` and its id, e.g. `a#12` or `s#7`.\n"
          message/ledger-close)))
 
 (defn prefer-in-run

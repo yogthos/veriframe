@@ -165,6 +165,13 @@
   your own established facts as a list is the point; the alternative is
   scanning an eighty-turn transcript for them.
 
+  `:inherited` is what a seed carried in. `seed-from-run!` copies a prior
+  run's confirmed artifacts into `shared_artifacts`, NOT into `artifacts`, so
+  a seeded run's ledger read `established 0` while the run held eleven
+  verified lemmas — telling the branch the opposite of the truth and leaving
+  the problem statement's hand-written summary as the only route to them,
+  which is the fragility seeding exists to remove.
+
   Cheap: gen-20's entire confirmed set is 1,495 characters of claim text."
   [conn run-id]
   (let [rows (db/fetch conn
@@ -174,7 +181,24 @@
                          ORDER BY id" run-id])
         by-status (group-by :claim_status rows)]
     {:established (vec (get by-status "confirmed" []))
-     :ruled-out (vec (get by-status "refuted" []))}))
+     :ruled-out (vec (get by-status "refuted" []))
+     ;; Seeded rows only. A live branch's shared artifacts are already in
+     ;; `artifacts` above, so including them here would double-count.
+     :inherited (vec (db/fetch conn
+                               ["SELECT id, branch_id, turn, kind, tier, claim
+                                 FROM shared_artifacts
+                                 WHERE run_id = ? AND branch_id LIKE 'seed:%'
+                                 ORDER BY id" run-id]))}))
+
+(defn shared-artifact-by-id
+  "One shared-pool row of this run, whole, including its encoding.
+
+  A separate table from `artifacts` and therefore a separate id space, which
+  is why the ledger renders seeded entries as `s#N` and this run's own as
+  `a#N`. Run-scoped for the same reason as `artifact-by-id`."
+  [conn run-id id]
+  (db/fetch-one conn ["SELECT * FROM shared_artifacts WHERE run_id = ? AND id = ?"
+                      run-id id]))
 
 (defn artifact-by-id
   "One artifact of this run, whole, including its encoding.
