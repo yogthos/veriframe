@@ -573,7 +573,19 @@
               objection (when (= :unfaithful status) (:reason verdict-review))]
           (merge
            {:branch branch
-            :category (if (= :confirmed status) :success :failure)
+            ;; An UNDECLARED expectedVerdict is an annotation fault, not a
+            ;; failed verification: the engine ran and answered, and nothing
+            ;; about the branch's reasoning failed — it just never said which
+            ;; verdict would support the claim. Charging it to the cull
+            ;; counter is the vf-jki mistake in a different tool, and it cost
+            ;; gen-21 the branch that had assembled the whole selector.
+            ;;
+            ;; Z3 answering UNKNOWN stays a failure: there the engine could
+            ;; not decide, which is a fact about the encoding the branch chose.
+            :category (cond
+                        (= :confirmed status) :success
+                        (and (= :ambiguous status) (nil? expected)) :mechanics
+                        :else :failure)
             :progress? (= :confirmed status)
             :result (str "Z3 says " (name (:verdict r)) ". "
                          (case status

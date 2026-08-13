@@ -3134,6 +3134,41 @@
         (is (= 1 (:consecutive-failures b))
             "and starts from 1, not compounded by the malformed turns")))))
 
+(deftest a-missing-expectedVerdict-is-an-annotation-fault-not-a-failed-proof
+  ;; gen-21 B3 composed the previous run's two lemmas into a full three-stage
+  ;; selector, ran Z3, got a real unsat — and was charged a verification
+  ;; failure because it had not declared which verdict supported the claim.
+  ;; It was culled a turn later with SIX failures, every one of them interface
+  ;; friction and not one a failed proof.
+  ;;
+  ;; The engine ran and answered. Nothing about the branch's reasoning failed;
+  ;; it omitted an annotation. That is the same distinction vf-jki drew for
+  ;; malformed fences, in a different tool.
+  ;;
+  ;; UNKNOWN is left as a failure: there the engine genuinely could not decide,
+  ;; which is a fact about the encoding the branch chose.
+  (with-db [c]
+    (let [rid (runs/start-run! c {:problem "p"})
+          b (state/new-branch {:id "B1" :problem "p"})
+          run (fn [args] (tools/run-tool (merge {:branch b :turn 1 :conn c :run-id rid
+                                                 :tool-name "verify_smt"
+                                                 :config {:engines {}}}
+                                                {:args args})))
+          smt "(declare-const x Int)(assert (and (> x 2) (< x 1)))(check-sat)"]
+      (let [r (run {:claim "no such x" :smtlib smt})]
+        (is (= :mechanics (:category r))
+            (str "a missing expectedVerdict must not spend cull budget: " (:category r)))
+        (is (re-find #"expectedVerdict" (:result r)) "and must still say what is missing")
+        (is (not (:progress? r)) "but it is not progress either"))
+      (testing "a declared expectation leaves the annotation path entirely"
+        ;; Offline this then goes to the faithfulness review, which needs a
+        ;; sub-LLM, so the eventual category is not checkable here. What IS
+        ;; checkable, and what this guards, is that declaring the expectation
+        ;; stops the result being treated as a missing annotation.
+        (let [r (run {:claim "no such x" :smtlib smt :expectedVerdict "unsat"})]
+          (is (not= :mechanics (:category r)))
+          (is (not (re-find #"did not declare expectedVerdict" (str (:result r))))))))))
+
 (deftest proof-start-names-the-mistake-instead-of-forwarding-lean-s-confusion
   ;; proof_start appends " := by sorry" to open the goal, so a theorem that
   ;; already carries a proof body becomes `… := by tac := by sorry` and Lean
