@@ -46,6 +46,39 @@
                     (name status) final-answer (db/now) run-id]))
   (journal/note! conn run-id :run-finished {:data {:status status}}))
 
+(defn reconcile-orphans!
+  "Mark every run still claiming to be running as interrupted. Returns how many.
+
+  `status = 'running'` is written once when the beam opens and revisited only
+  when it finishes, so a process that dies mid-run leaves the row asserting
+  forever: it shows up in the run list and in any 'is anything active' check,
+  and nothing in the row itself says otherwise. gen-18 and gen-11 both sat that
+  way for days, and the second was filed as its own bug before anyone noticed
+  it was the same defect — which is the argument for reconciling rather than
+  correcting rows by hand each time.
+
+  Sound only AT STARTUP, and that is the whole trick. In general a row cannot
+  tell a live run from a dead one. But the beam only ever runs in this process,
+  so at the moment this process comes up, nothing is running by construction
+  and every such row is a leftover.
+
+  `interrupted` rather than `failed` or `completed`: the run neither errored nor
+  finished, and recording either would be a lie about what happened. `ended_at`
+  is set because a run with no end time makes every duration computed from it
+  wrong."
+  [conn]
+  (let [orphans (db/fetch conn ["SELECT id FROM runs WHERE status = 'running'"])]
+    (doseq [{:keys [id]} orphans]
+      (db/with-writer
+        (db/execute! conn
+                     ["UPDATE runs SET status = 'interrupted', ended_at = ?
+                        WHERE id = ? AND status = 'running'"
+                      (db/now) id]))
+      (journal/note! conn id :run-finished
+                     {:data {:status "interrupted"
+                             :reason "no process was running it when the server started"}}))
+    (count orphans)))
+
 (defn get-run [conn run-id]
   (db/fetch-one conn ["SELECT * FROM runs WHERE id = ?" run-id]))
 

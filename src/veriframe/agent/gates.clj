@@ -157,7 +157,7 @@
     :window 2}
 
    {:gate :branch-out
-    :priority 6
+    :priority 7
     :budget :max-branch-outs
     :doc "A branch that just confirmed something, with room left in the beam.
 
@@ -190,8 +190,40 @@
     :prediction (fn [_] "the branch calls branch_theses")
     :window 3}
 
+   {:gate :repopulate
+    :priority 6
+    :budget :max-repopulates
+    :doc "The beam has fallen below its target width and this branch is the
+          strongest survivor. The scheduler marks the branch (it is the only
+          thing that knows the alive count, the target, and who is strongest);
+          this rung is what actually asks.
+
+          It was an invitation appended straight from the scheduler until it
+          became this. That carried no prediction, settled nothing, and showed
+          up in no gate tally: gen-17 sent 12 in its first 120 turns and 9 were
+          declined, which nobody could see without counting branch-opened
+          events by hand. It was also a second harness voice on a boundary that
+          had already had its one steer.
+
+          Ranked just above branch-out. Both ask for offspring, but this one
+          fires because the beam is dying rather than because a branch is
+          thriving, and refilling an empty slot is the more urgent of the two."
+    :when (fn [{:keys [branch]}]
+            (when-let [due (:repopulate-due branch)]
+              (let [last-fired (->> (:gate-history branch)
+                                    (filter #(= :repopulate (:gate %)))
+                                    (map :turn)
+                                    (reduce max -1000))]
+                ;; Only for a mark the branch has not already been asked about,
+                ;; so a mark that survives on the branch does not re-fire every
+                ;; boundary while it is busy complying.
+                (> due last-fired))))
+    :message (fn [_] (prompt "repopulate"))
+    :prediction (fn [_] "the branch calls branch_theses")
+    :window 3}
+
    {:gate :stuck
-    :priority 7
+    :priority 8
     :budget :max-stuck-hints
     :doc "Consecutive failed or repetitive verifications. Keyed on failure,
           which is why the progress gate below exists as well."
@@ -202,7 +234,7 @@
     :window 3}
 
    {:gate :prologue-cap
-    :priority 8
+    :priority 9
     :budget nil
     :doc "The branch has produced nothing at all. Every other guard is
           principled-blind here: the stall counter arms on a progress event, the
@@ -219,7 +251,7 @@
     :window 3}
 
    {:gate :progress-stalled
-    :priority 9
+    :priority 10
     :budget :max-stall-nudges
     :doc "Turns passing with no progress event, after the branch has shown it
           can make progress. Arms only after the first, so exploration is never
@@ -236,7 +268,7 @@
     :window 3}
 
    {:gate :tier-escalation
-    :priority 10
+    :priority 11
     :budget :max-tier-escalations
     :doc "Artifacts exist but only from the fast tier. A one-shot check and a
           cross-checked template are not the same evidence, and at finalization
@@ -249,7 +281,7 @@
     :window 3}
 
    {:gate :turn-budget
-    :priority 11
+    :priority 12
     :budget nil
     :doc "The turn cap was enforced but invisible to the model, so it could not
           budget against it (dirge PR 738)."

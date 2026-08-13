@@ -1823,13 +1823,17 @@
           weak (scored "B2" {:progress 1 :momentum 2 :distinctness 2 :viability 2} 12)
           dead (assoc (scored "B3" {:progress 1 :momentum 1 :distinctness 1 :viability 1} 12)
                       :status :culled)]
-      (testing "below target width, the strongest survivor is asked to reseed"
+      (testing "below target width, the strongest survivor is marked to reseed"
         (let [bs (#'beam/repopulate ctx [strong weak dead] 3 20)
               b1 (first (filter #(= "B1" (:id %)) bs))
               b2 (first (filter #(= "B2" (:id %)) bs))]
           (is (= 20 (:fork-invited b1)))
-          (is (str/includes? (str (last (map :content (:messages b1))))
-                             "branch_theses"))
+          ;; The mark, not a message: the ask itself is the :repopulate gate,
+          ;; so it carries a prediction and settles. See
+          ;; repopulation-is-a-gate-with-a-prediction-not-an-invitation.
+          (is (= 20 (:repopulate-due b1)))
+          (is (= (count (:messages strong)) (count (:messages b1)))
+              "the scheduler does not speak on a boundary the arbiter owns")
           (is (nil? (:fork-invited b2)) "one ask, to the strongest")
           (is (= 1 (count (filter #(= "repopulate" (:kind %))
                                   (journal/events-since c rid 0)))))))
@@ -3128,3 +3132,72 @@
             "a counterexample outside the claim's hypotheses refutes nothing")))
     (testing "measuring: unchanged"
       (is (not (re-find #"(?i)more general" (prompt :measures)))))))
+
+(deftest on-start-fires-before-the-beam-opens-its-branches
+  ;; api.control/start-run! blocks on (deref promised 30000) and hands the id
+  ;; back only when on-start fires, so wherever on-start sits is how long
+  ;; POST /v1/runs takes. It used to sit AFTER (mapv open-branch! (range
+  ;; width)), and open-branch! spawns a Prolog session per branch, so the
+  ;; endpoint took as long as the whole beam took to come up: measured 47ms
+  ;; idle and 21095ms under load at width 1, and proportionally worse wider.
+  ;;
+  ;; That is what let the GUI report a failed start for a run that was already
+  ;; committed and running (vf-36o). Raising the client timeout treats the
+  ;; symptom; this is the cause. The docstring has always said the id comes
+  ;; back "immediately", so this pins the docstring to the behaviour.
+  (with-db [c]
+    (let [order (atom [])
+          real-open runs/open-branch!]
+      (with-redefs [beam/run-rounds (fn [ctx _ _] {:status :captured :run-id (:run-id ctx)})
+                    veriframe.engine.prolog/create-session (fn [_] nil)
+                    runs/open-branch! (fn [conn rid m]
+                                        (swap! order conj :branch)
+                                        (real-open conn rid m))]
+        (beam/run! {:conn c :config {:run {:share-artifacts? false}}
+                    :llm-config {:provider :local :model "m"}
+                    :problem "p" :max-turns 5 :beam-width 3
+                    :on-start (fn [_] (swap! order conj :on-start))}))
+      (is (= :on-start (first @order))
+          "the caller gets the id before the first branch is opened")
+      (is (= 3 (count (filter #{:branch} @order)))
+          "and the branches still all open"))))
+
+(deftest repopulation-is-a-gate-with-a-prediction-not-an-invitation
+  ;; It used to append a message to the branch directly from the scheduler:
+  ;; no prediction, nothing to settle, and no row in the gate tally. gen-17
+  ;; sent 12 invitations in its first 120 turns and 9 were declined, which
+  ;; nobody could see without counting branch-opened events by hand. That is
+  ;; the same reasoning that turned branch-out from an invitation into a gate.
+  ;;
+  ;; The precondition needs facts only the scheduler has — how many branches
+  ;; are alive, the target width, which survivor is strongest — so the
+  ;; scheduler marks the chosen branch and the gate reads the mark.
+  (testing "the scheduler marks rather than speaks"
+    (let [b (assoc (state/new-branch {:id "B1" :problem "p"}) :status :active)
+          out (#'beam/repopulate {:beam-width 3} [b] 1 7)
+          marked (first out)]
+      (is (= 7 (:repopulate-due marked))
+          "the strongest survivor is marked for this turn")
+      (is (= (count (:messages b)) (count (:messages marked)))
+          "and nothing was appended to the conversation")))
+  (testing "the gate fires on the mark, and settles on branch_theses"
+    (let [g (get gates/by-name :repopulate)
+          marked (assoc (state/new-branch {:id "B1" :problem "p"}) :repopulate-due 7)]
+      (is (some? g) "there is a :repopulate gate")
+      (is (true? (boolean ((:when g) {:branch marked :branch-count 1 :max-turns 40})))
+          "an unacted mark fires it")
+      (is (false? (boolean ((:when g) {:branch (state/new-branch {:id "B1" :problem "p"})
+                                       :branch-count 1 :max-turns 40})))
+          "no mark, no fire")
+      (is (= :met (arbiter/settle {:gate :repopulate :turn 7 :window (:window g)}
+                                  {:current-turn 8 :tools-called ["branch_theses"]}))
+          "complying is met")
+      (is (= :unmet (arbiter/settle {:gate :repopulate :turn 7 :window (:window g)}
+                                    {:current-turn (+ 7 (:window g)) :tools-called ["verify"]}))
+          "declining past the window is unmet — which is the number that was invisible")))
+  (testing "it does not re-fire while the branch is still acting on it"
+    (let [g (get gates/by-name :repopulate)
+          acted (-> (state/new-branch {:id "B1" :problem "p"})
+                    (assoc :repopulate-due 7)
+                    (assoc :gate-history [{:gate :repopulate :turn 7}]))]
+      (is (false? (boolean ((:when g) {:branch acted :branch-count 1 :max-turns 40})))))))

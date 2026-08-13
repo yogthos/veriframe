@@ -29,7 +29,8 @@
             [veriframe.config :as config]
             [veriframe.engine.lean-pool :as lean-pool]
             [veriframe.llm.registry :as registry]
-            [veriframe.store.db :as db]))
+            [veriframe.store.db :as db]
+            [veriframe.store.runs :as runs]))
 
 (defonce system (atom nil))
 
@@ -77,6 +78,12 @@
                "provider" (get-in cfg [:llm :provider])
                "model" (get-in cfg [:llm :model])
                "db" (get-in cfg [:db :path]))
+     ;; Nothing can be running yet, so any row that says it is, is a leftover
+     ;; from a process that died. This is the only moment that inference is
+     ;; sound. See store.runs/reconcile-orphans!.
+     (let [n (runs/reconcile-orphans! c)]
+       (when (pos? n)
+         (log/info "marked" n "run(s) interrupted: still flagged running with no process")))
      ;; After the server is listening and the system is registered, because
      ;; warming is slow and must not hold up /health. It returns immediately;
      ;; the imports run on background threads.

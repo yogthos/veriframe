@@ -79,6 +79,7 @@
       (case gate
         :milestone (called? "review" "done" "verify_template")
         :branch-out (called? "branch_theses")
+        :repopulate (called? "branch_theses")
         :emergency-review (called? "review" "done" "thesis")
         :stuck (called? "retract_rule" "thesis" "add_rule")
         :prologue-cap (progressed? branch-before branch-after)

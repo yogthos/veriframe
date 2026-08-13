@@ -90,6 +90,22 @@
 ;; --- GL lifecycle ------------------------------------------------------------
 
 (defn- realize! [area]
+  ;; A realize with a DIFFERENT area than the one cached means the previous
+  ;; widget was destroyed and replaced, and every request-render! between the
+  ;; two poked freed memory — which GTK reports as
+  ;;   gtk_gl_area_queue_render: assertion 'GTK_IS_GL_AREA (area)' failed
+  ;; and then ignores, so the pane silently drops frames until this line runs.
+  ;;
+  ;; Logged rather than fixed because the trigger is not yet known. Opening the
+  ;; new-run form destroys the pane and toggle-compose! handles that, but the
+  ;; bursts actually observed did not come from it: one at startup, one when
+  ;; runs first appeared in the list. Both look like re-render churn replacing
+  ;; a child that graph-pane is deref-free specifically to keep. This turns the
+  ;; next occurrence into a record of WHICH transition did it (vf-38b).
+  (when-let [old (:area @st)]
+    (when (not= old area)
+      (println "[glpane] the gl-area was replaced without unmounting —"
+               "frames were dropped between the two (vf-38b)")))
   (glx/make-current area)
   (when-let [prog (gl/make-program vs-src fs-src)]
     (let [vao (gl/gen-one gl/gl-gen-vertex-arrays)

@@ -169,3 +169,31 @@
       (runs/finish-run! c rid :completed "answer")
       (is (false? (runs/stalled? c rid -1))
           "a finished run is quiet because it is over, not because it is stuck"))))
+
+(deftest a-run-left-running-by-a-crash-is-reconciled-at-startup
+  ;; status='running' is a claim the beam makes once and never revisits, so a
+  ;; process that dies mid-run leaves the row asserting forever. gen-18 and
+  ;; gen-11 both sat that way; the second was filed as a separate bug before
+  ;; anyone noticed it was the same defect, which is the argument for fixing
+  ;; the mechanism rather than the rows.
+  ;;
+  ;; Nothing in-process can distinguish "running" from "was running when we
+  ;; died" — but nothing can be running at STARTUP, because the beam only ever
+  ;; runs in this process. So the reconciliation is sound exactly here and
+  ;; nowhere else.
+  (with-db [c]
+    (let [crashed (runs/start-run! c {:problem "died" :beam-width 1})
+          done    (runs/start-run! c {:problem "finished" :beam-width 1})]
+      (runs/finish-run! c done :completed "answer")
+      (is (= 1 (runs/reconcile-orphans! c))
+          "exactly the one row still claiming to run")
+      (let [r (runs/get-run c crashed)]
+        (is (= "interrupted" (:status r))
+            "a run nobody is running is interrupted, not completed or failed —
+             it neither finished nor errored, and saying either would be a lie")
+        (is (some? (:ended_at r))
+            "an ended run needs an end time or every duration is wrong"))
+      (is (= "completed" (:status (runs/get-run c done)))
+          "a finished run is left alone")
+      (is (zero? (runs/reconcile-orphans! c))
+          "idempotent: a second startup has nothing to reconcile"))))

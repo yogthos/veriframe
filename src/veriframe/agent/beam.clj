@@ -216,7 +216,19 @@
   a fresh confirmation: refilling an empty slot is a different act from
   asking a busy branch for more, and the alternative is a beam that spends
   the rest of the run at width one. The per-branch cooldown still applies,
-  so one death does not produce a stampede of asks at the same branch."
+  so one death does not produce a stampede of asks at the same branch.
+
+  This MARKS the branch; it does not speak to it. The ask itself is the
+  :repopulate gate, which reads the mark. It used to append the message here,
+  which made it an invitation rather than a mechanism: no prediction, nothing
+  to settle, no row in the gate tally. gen-17 sent 12 and 9 were declined, and
+  that was invisible until someone counted branch-opened events by hand — the
+  same argument that turned branch-out into a gate. Speaking from here also
+  put a second harness voice on a boundary that had already had its one steer.
+
+  The precondition needs facts only the scheduler has (how many are alive, the
+  target width, which survivor is strongest), which is why the split is mark
+  here, ask there."
   [{:keys [conn run-id beam-width]} branches total-count turn]
   (let [cap (gates/threshold :max-total-branches)
         cooldown (gates/threshold :fork-invite-cooldown)
@@ -240,21 +252,10 @@
                            {:branch-id (:id candidate) :turn turn
                             :data {:alive (count alive) :target target}}))
           (mapv #(if (= (:id %) (:id candidate))
-                   (-> %
-                       (assoc :fork-invited turn)
-                       (state/add-message
-                        "user"
-                        (str "[harness] The beam is down to " (count alive)
-                             " active branch(es) of " target ". You are the"
-                             " strongest line still running, so you are the one"
-                             " that can repopulate it: name the distinct"
-                             " directions still worth exploring and call"
-                             " branch_theses. The first commits you and the"
-                             " rest become siblings, each opening with what"
-                             " every lineage here has confirmed. If you truly"
-                             " see only one route left, say so by continuing —"
-                             " but a beam at width one is exploring nothing in"
-                             " parallel.")))
+                   (assoc % :fork-invited turn
+                            :repopulate-due turn
+                            :repopulate-alive (count alive)
+                            :repopulate-target target)
                    %)
                 branches)))))
 
@@ -680,12 +681,21 @@
              :abort abort
              ;; One claim registry per run: two branches reaching the same
              ;; claim share one slow verification instead of racing it.
-             :claims (claims/new-registry)}
-        initial (mapv #(open-branch! ctx (str "B" (inc %)) nil nil 0) (range width))]
-    ;; Hand the id back before the first turn so a caller that started this in
-    ;; the background can address the run while it is still running.
+             :claims (claims/new-registry)}]
+    ;; Before the branches, not after. api.control/start-run! blocks until this
+    ;; fires, so this line is how long POST /v1/runs takes — and open-branch!
+    ;; spawns a Prolog session per branch, so putting it after made the endpoint
+    ;; cost the whole beam's startup: 47ms idle, 21095ms under load at width 1,
+    ;; proportionally worse wider. A client bound tighter than that reported a
+    ;; failure for a run already committed and running (vf-36o).
+    ;;
+    ;; The run row exists by here, which is what the id addresses. A caller that
+    ;; fetches run-detail immediately sees zero branches for a moment; the
+    ;; journal poller handles that, and it is the honest picture — the branches
+    ;; genuinely do not exist yet.
     (when on-start (on-start run-id))
-    (run-rounds ctx initial 1)))
+    (let [initial (mapv #(open-branch! ctx (str "B" (inc %)) nil nil 0) (range width))]
+      (run-rounds ctx initial 1))))
 
 (defn summary
   "One line per branch, for logs and the run response."

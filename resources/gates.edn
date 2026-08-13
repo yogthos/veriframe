@@ -158,6 +158,15 @@
         confirming should keep being asked, but not on every boundary while
         it is busy complying."}
 
+ :max-repopulates
+ {:value 8 :kind :re-fire-guard :capability-tunable? false
+  :doc "How often the repopulate rung may ask one branch to refill the beam.
+        Higher than :max-branch-outs, because this fires when the beam is
+        already below width and a run that stops asking at that point simply
+        finishes at width one — which is what five straight campaign runs did.
+        The per-branch fork-invite cooldown still spaces the asks out, so this
+        is the ceiling on a long collapse, not on a burst."}
+
  :fork-invite-cooldown
  {:value 6 :kind :re-fire-guard :capability-tunable? true
   :doc "Turns before the same branch may be invited to fork again. The
