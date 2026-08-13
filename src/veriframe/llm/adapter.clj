@@ -47,9 +47,15 @@
      ignored otherwise — a provider without support has to produce exactly the
      body it produces today.")
 
-  (prefill-support? [this]
-    "Whether this provider will continue a trailing assistant message rather
-     than treating it as a completed turn.
+  (prefill-support? [this config]
+    "Whether this provider AND this endpoint will continue a trailing assistant
+     message rather than treating it as a completed turn.
+
+     Takes config because it is not a property of the provider alone: DeepSeek
+     serves prefix completion only from its beta base URL and REJECTS the
+     request outright on /v1 ('prefix is only available when using beta api').
+     A misconfigured endpoint would therefore fail every steered turn, so the
+     check has to see the URL and simply not prefill when it cannot.
 
      Tool calls here are a fenced JSON block in free text, so the model can
      always answer in prose instead — the harness's dominant mechanical

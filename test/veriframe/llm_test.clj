@@ -27,6 +27,22 @@
 
 (defn- fenced [body] (str "prose before\n```tool-call\n" body "\n```\nprose after"))
 
+(deftest reattach-rebuilds-the-whole-assistant-turn
+  ;; Not only the parser needs this. The completion is just the TAIL of what
+  ;; the assistant said, and both the message history and the journal's
+  ;; assistant_text must carry the opener too — a stored turn that begins
+  ;; mid-fence misrepresents the required format back to the model on every
+  ;; subsequent turn, and to anyone reading the run afterwards.
+  (let [prefix "```tool-call\n"]
+    (is (= "```tool-call\n{\"name\": \"verify\"}"
+           (fence/reattach "{\"name\": \"verify\"}" prefix)))
+    (testing "a completion that already repeats the opener is left alone"
+      (is (= "```tool-call\n{\"name\": \"verify\"}"
+             (fence/reattach "```tool-call\n{\"name\": \"verify\"}" prefix))))
+    (testing "no prefill means the completion stands as the whole turn"
+      (is (= "just prose" (fence/reattach "just prose" nil)))
+      (is (= "just prose" (fence/reattach "just prose" ""))))))
+
 (deftest a-prefilled-response-parses-as-if-it-carried-its-own-fence
   ;; The trap in prefilling the opening fence: the model does not repeat it,
   ;; so the response body starts INSIDE the fence and fence-re — which matches
@@ -267,13 +283,20 @@
       ;; some providers continue a trailing assistant turn. OpenAI does not,
       ;; and asking it to would either be ignored or rejected, so the
       ;; capability is declared rather than assumed.
-      (is (adapter/prefill-support? (registry/adapter-for :deepseek)))
-      (is (not (adapter/prefill-support? (registry/adapter-for :openai))))
-      (is (not (adapter/prefill-support? (registry/adapter-for :ollama)))))
+      (let [beta {:base-url "https://api.deepseek.com/beta"}
+            v1   {:base-url "https://api.deepseek.com/v1"}]
+        (is (adapter/prefill-support? (registry/adapter-for :deepseek) beta))
+        ;; Not a property of the provider alone. On /v1 DeepSeek REJECTS the
+        ;; request — "prefix is only available when using beta api" — so a
+        ;; misconfigured endpoint would fail every steered turn. Checked here
+        ;; so it degrades to today's behaviour instead.
+        (is (not (adapter/prefill-support? (registry/adapter-for :deepseek) v1)))
+        (is (not (adapter/prefill-support? (registry/adapter-for :openai) beta)))
+        (is (not (adapter/prefill-support? (registry/adapter-for :ollama) beta)))))
 
     (testing "a supporting adapter appends the prefix as a trailing assistant turn"
       (let [a (registry/adapter-for :deepseek)
-            body (adapter/chat-body a {:model "m"}
+            body (adapter/chat-body a {:model "m" :base-url "https://api.deepseek.com/beta"}
                                     {:messages [{:role "user" :content "go"}]
                                      :prefill "```tool-call\n"})
             msgs (:messages body)]
@@ -300,7 +323,7 @@
                 (parse-chat [_ _] nil)
                 (parse-models [_ _] [])
                 (error-message [_ _] nil)
-                (prefill-support? [_] true)
+                (prefill-support? [_ _] true)
                 (usage-cap? [_ _ _] false))]
         (try (client/chat a {:max-retries 0} [{:role "user" :content "hi"}]
                           {:prefill "```tool-call\n"})

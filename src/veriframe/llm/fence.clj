@@ -104,6 +104,25 @@
       (when (and ok (map? value) (string? (:name value)) (not (str/blank? (:name value))))
         candidate))))
 
+(defn reattach
+  "The complete assistant turn, given what the request was prefilled with.
+
+  A prefilled request ends mid-fence and the model continues from there
+  WITHOUT repeating the opener, so the raw completion is only the tail of what
+  the assistant actually said. Both the parser and the transcript need the
+  whole thing: the parser because it matches on the opener, and the message
+  history because an assistant turn that begins mid-fence misrepresents the
+  format back to the model on every later turn.
+
+  Providers differ on whether the prefix comes back in the completion, so a
+  response that already starts with it is left alone — reattaching blindly
+  would produce two openers whose first fence body is empty."
+  [response prefill]
+  (if (and (seq prefill)
+           (not (str/starts-with? (str/triml (str response)) (str/triml prefill))))
+    (str prefill response)
+    (str response)))
+
 (declare parse-tool-call*)
 
 (defn parse-tool-call
@@ -129,12 +148,7 @@
   blindly would produce two openers whose first fence body is empty."
   ([response] (parse-tool-call response nil))
   ([response {:keys [prefill]}]
-   (let [response (if (and (seq prefill)
-                           (not (str/starts-with? (str/triml (str response))
-                                                  (str/triml prefill))))
-                    (str prefill response)
-                    response)]
-     (parse-tool-call* response))))
+   (parse-tool-call* (if (seq prefill) (reattach response prefill) response))))
 
 (defn- parse-tool-call* [response]
   (let [fenced (extract-fences response)

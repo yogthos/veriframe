@@ -62,7 +62,7 @@
 
   ;; A local runtime has no billing wall to hit.
   ;; Ollama treats a trailing assistant message as a completed turn.
-  (prefill-support? [_] false)
+  (prefill-support? [_ _] false)
 
   (usage-cap? [_ _ _] false))
 

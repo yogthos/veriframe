@@ -17,7 +17,15 @@
   (:require [clojure.string :as str]))
 
 (def ^:private providers
-  {:deepseek {:base-url "https://api.deepseek.com/v1"
+  {;; /beta rather than /v1, for prefix completion. A gate that names one tool
+   ;; steers by ending the request mid-fence rather than by asking, which
+   ;; DeepSeek serves only from the beta endpoint — on /v1 the same request is
+   ;; rejected outright ("prefix is only available when using beta api").
+   ;; Verified that /beta serves ordinary completions identically, so this is
+   ;; not a trade: nothing else about the run changes. The adapter checks the
+   ;; URL anyway and simply does not prefill against /v1, so overriding
+   ;; HARNESS_BASE_URL back is safe.
+   :deepseek {:base-url "https://api.deepseek.com/beta"
               :key-env  "DEEPSEEK_API_KEY"
               ;; deepseek-v4-flash is the development and test model: cheap
               ;; enough to run the beam repeatedly. deepseek-v4-pro is the

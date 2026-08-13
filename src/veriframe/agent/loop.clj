@@ -151,9 +151,13 @@
   loop steered anyway and forfeited the turn. gen-12 opened with three of these
   in a single round; gen-11 spent 12% of its turns this way against gen-10's
   4%. Truncation that still carried a call is a complete turn and is left
-  alone."
-  [response]
-  (let [parsed (fence/parse-tool-call (:content response))]
+  alone.
+
+  Takes the prefill for the same reason the parser does: a prefilled response
+  begins mid-fence, so parsing it without the opener finds no call and would
+  bill the branch a retry for a turn that had in fact issued one."
+  [response prefill]
+  (let [parsed (fence/parse-tool-call (:content response) {:prefill prefill})]
     (and (:truncated (fence/signals response parsed))
          (or (nil? parsed) (= "__parse_error__" (:name parsed))))))
 
@@ -172,12 +176,19 @@
               {:ok true
                :response (llm/chat (:llm-adapter ctx) (:llm-config ctx)
                                    (:messages branch)
-                                   (when budget {:max-tokens budget}))}
+                                   (cond-> {}
+                                     budget (assoc :max-tokens budget)
+                                     ;; Set by the previous turn's steer. The
+                                     ;; adapter drops it if the provider cannot
+                                     ;; continue a trailing assistant message,
+                                     ;; so this is a hint, never a requirement.
+                                     (:prefill branch)
+                                     (assoc :prefill (:prefill branch))))}
               (catch Throwable e
                 {:ok false :error (ex-message e)}))]
       (if (and (:ok r)
                (< attempt max-call-attempts)
-               (truncated-without-call? (:response r)))
+               (truncated-without-call? (:response r) (:prefill branch)))
         (do (when (and (:conn ctx) (:run-id ctx))
               (journal/note! (:conn ctx) (:run-id ctx) :turn-retry
                              {:branch-id (:id branch)
@@ -223,10 +234,23 @@
                              (str "[harness] The provider call failed: " error
                                   " Try again.")))
       (let [content (:content response)
-            parsed (fence/parse-tool-call content)
+            ;; The prefill the request ended with, if any. Without it the
+            ;; response starts mid-fence and parses as a no-call — the very
+            ;; failure the prefill exists to prevent.
+            prefill (:prefill branch)
+            parsed (fence/parse-tool-call content {:prefill prefill})
             signals (fence/signals response parsed)
+            ;; What the assistant actually said, opener included. Storing the
+            ;; bare completion would leave a turn beginning mid-fence in the
+            ;; transcript, misrepresenting the format back to the model on
+            ;; every later turn.
+            said (fence/reattach content prefill)
             branch (-> branch
-                       (state/add-message "assistant" content)
+                       ;; Cleared here, not where it was set: one steer
+                       ;; forecloses prose on one turn. Leaving it would make
+                       ;; every later turn start inside a fence.
+                       (dissoc :prefill)
+                       (state/add-message "assistant" said)
                        (state/record-mechanics signals))]
         (if (or (nil? parsed) (= "__parse_error__" (:name parsed)))
           ;; No usable call. Say exactly what was wrong; a bare "try again"
@@ -260,7 +284,7 @@
                                    :result msg :category "mechanics"
                                    :parse-error (:parse-error parsed)
                                    :auto-repaired (:auto-repaired? parsed)
-                                   :assistant-text content
+                                   :assistant-text said
                                    :reasoning-text (:reasoning response)
                                    ;; A turn that produced no usable call still
                                    ;; cost tokens, and those are the ones worth
@@ -315,7 +339,7 @@
                                    :result (truncate (:result result))
                                    :category (name (:category result))
                                    :auto-repaired (:auto-repaired? parsed)
-                                   :assistant-text content
+                                   :assistant-text said
                                    :reasoning-text (:reasoning response)
                                    :usage (:usage response)})
             (when-let [a (:artifact result)]
@@ -389,6 +413,10 @@
                                       :prediction (:prediction decision)
                                       :window (:window decision)
                                       :turn turn})
+                    ;; Consumed by the NEXT call-model and cleared there, so a
+                    ;; steer forecloses prose on exactly the turn it steers and
+                    ;; no later one.
+                    decision (assoc :prefill (arbiter/prefill-for decision))
                     ;; Record which budget notices have been delivered, or the
                     ;; gate cannot tell "happened" from "happened and I already
                     ;; reacted" and re-fires every turn past the threshold.

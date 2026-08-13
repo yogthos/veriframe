@@ -24,14 +24,20 @@
             [veriframe.llm.adapter :as adapter]))
 
 (defn- supports-prefill?
-  "Which members of the family continue a flagged trailing assistant message.
+  "Which members of the family continue a flagged trailing assistant message,
+  on the endpoint actually configured.
 
-  DeepSeek does; plain OpenAI does not, and neither does a stock local
-  endpoint. Opted into by id rather than assumed for the family, because the
-  failure is silent — an ignored prefill is indistinguishable from an ordinary
-  turn, so guessing wrong would quietly disable the mechanism."
-  [provider-id]
-  (= :deepseek provider-id))
+  DeepSeek does, but ONLY from its beta base URL: on /v1 the same request is
+  rejected with 'prefix is only available when using beta api', so a prefill
+  sent to the wrong endpoint fails the call outright rather than degrading.
+  Both halves are checked here so a /v1 config simply does not prefill and
+  behaves exactly as it does today.
+
+  Plain OpenAI and a stock local endpoint have no equivalent. Opted into by id
+  rather than assumed for the family."
+  [provider-id config]
+  (and (= :deepseek provider-id)
+       (str/includes? (str (:base-url config)) "/beta")))
 
 (defrecord OpenAIAdapter [provider-id label reasoning-key max-tokens-key]
   adapter/Adapter
@@ -48,7 +54,7 @@
 
   (chat-body [_ config {:keys [messages max-tokens temperature prefill]}]
     (cond-> {:model (:model config)
-             :messages (if (and prefill (supports-prefill? provider-id))
+             :messages (if (and prefill (supports-prefill? provider-id config))
                          ;; `:prefix true` is what makes the provider CONTINUE
                          ;; this message rather than reply after it. Without
                          ;; the flag a trailing assistant turn is just history,
@@ -60,7 +66,7 @@
       max-tokens (assoc max-tokens-key max-tokens)
       temperature (assoc :temperature temperature)))
 
-  (prefill-support? [_] (supports-prefill? provider-id))
+  (prefill-support? [_ config] (supports-prefill? provider-id config))
 
   (parse-chat [_ body]
     (when-let [choice (first (:choices body))]

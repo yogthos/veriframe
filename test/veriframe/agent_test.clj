@@ -3134,6 +3134,35 @@
         (is (= 1 (:consecutive-failures b))
             "and starts from 1, not compounded by the malformed turns")))))
 
+(deftest a-gate-that-names-one-tool-forces-its-fence
+  ;; gen-19 settled gate predictions 4 met to 22 unmet, gen-20 9 to 27. The
+  ;; pattern across both is that a gate which WITHHOLDS something changes
+  ;; behaviour and a gate which SUGGESTS one does not — the audit gate's
+  ;; refusals redirected work, milestone and tier-escalation went 0-for-4.
+  ;;
+  ;; A prefill is the withholding version of a suggestion: the request ends
+  ;; mid-fence, so the model cannot answer in prose. Applied only where a gate
+  ;; already fired, not on every turn — prefilling makes the response BEGIN
+  ;; with the call, which is right when the harness is already steering and
+  ;; wrong as a blanket default.
+  (testing "a gate whose prediction names exactly one tool carries it"
+    (doseq [g [:branch-out :repopulate]]
+      (is (= "branch_theses" (:tool (get gates/by-name g)))
+          (str g " predicts 'the branch calls branch_theses' and should say so"))))
+  (testing "a gate naming a choice or a behaviour carries none"
+    ;; milestone predicts "review or done", stuck predicts a change of
+    ;; technique. Forcing either would be the harness picking, not steering.
+    (doseq [g [:milestone :stuck :progress-stalled :turn-budget]]
+      (is (nil? (:tool (get gates/by-name g)))
+          (str g " names no single tool and must not force one"))))
+  (testing "the prefill is the opening fence, plus the name when there is one"
+    (is (= "```tool-call\n{\"name\": \"branch_theses\""
+           (arbiter/prefill-for {:tool "branch_theses"})))
+    (is (= "```tool-call\n" (arbiter/prefill-for {:tool nil}))
+        "a gate with no named tool still forecloses prose")
+    (is (nil? (arbiter/prefill-for nil))
+        "and no gate at all means no prefill")))
+
 (deftest a-missing-argument-error-shows-the-call-it-wanted
   ;; gen-20 B1 called proof_start without its required arguments five times,
   ;; three of them producing the byte-identical error, and was culled. The

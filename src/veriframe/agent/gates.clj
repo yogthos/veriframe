@@ -188,6 +188,11 @@
                       (* (threshold :wind-down-fraction) (max 1 (or max-turns 40)))))))
     :message (fn [_] (prompt "branch-out"))
     :prediction (fn [_] "the branch calls branch_theses")
+    ;; The one tool this prediction names, so the steer can be prefilled
+    ;; rather than suggested. Only set where the prediction is
+    ;; unambiguous: a gate predicting "review or done" must not have the
+    ;; harness pick for the branch.
+    :tool "branch_theses"
     :window 3}
 
    {:gate :repopulate
@@ -220,6 +225,11 @@
                 (> due last-fired))))
     :message (fn [_] (prompt "repopulate"))
     :prediction (fn [_] "the branch calls branch_theses")
+    ;; The one tool this prediction names, so the steer can be prefilled
+    ;; rather than suggested. Only set where the prediction is
+    ;; unambiguous: a gate predicting "review or done" must not have the
+    ;; harness pick for the branch.
+    :tool "branch_theses"
     :window 3}
 
    {:gate :stuck

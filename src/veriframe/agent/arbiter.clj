@@ -53,8 +53,33 @@
        :priority (:priority chosen)
        :message ((:message chosen) ctx)
        :prediction ((:prediction chosen) ctx)
+       ;; The tool this gate's prediction names, when it names exactly one.
+       ;; Carried so the steer can be prefilled instead of merely asked for.
+       :tool (:tool chosen)
        :window (:window chosen)
        :passed-over (mapv :gate (rest candidates))})))
+
+(defn prefill-for
+  "The partial assistant text that forecloses a prose answer on the steered
+  turn, or nil when no gate fired.
+
+  Gate predictions settled 4 met to 22 unmet in gen-19 and 9 to 27 in gen-20.
+  Across both runs the gates that changed behaviour were the ones that
+  WITHHELD something — the audit's refusals redirected work — while the ones
+  that merely suggested did not: milestone and tier-escalation each went
+  0-for-4. Ending the request mid-fence is the withholding form of a
+  suggestion; the model cannot reply in prose because it is already inside a
+  tool call.
+
+  A gate that names one tool gets that name too, which is the cheapest fix for
+  a prediction like \"the branch runs a slow-tier check\" — not a callable
+  thing. A gate naming a choice gets the bare fence: forcing one of two would
+  be the harness deciding rather than steering."
+  [decision]
+  (when decision
+    (if-let [t (:tool decision)]
+      (str "```tool-call\n{\"name\": \"" t "\"")
+      "```tool-call\n")))
 
 ;; --- settling predictions ---------------------------------------------------
 
