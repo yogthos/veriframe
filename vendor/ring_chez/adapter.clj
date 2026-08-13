@@ -37,6 +37,7 @@
 (ffi/defcfn c-listen     "listen"     [:int :int] :int)
 (ffi/defcfn c-setsockopt "setsockopt" [:int :int :int :pointer :int] :int)
 (ffi/defcfn c-close      "close"      [:int] :int)
+(ffi/defcfn c-shutdown   "shutdown"   [:int :int] :int)
 (ffi/defcfn c-accept     "accept"     [:int :pointer :pointer] :int :blocking)
 ;; fcntl is variadic (int fd, int cmd, ...). The :varargs marker sits at the
 ;; fixed/variadic boundary; a fixed-arity binding silently corrupts the
@@ -281,5 +282,11 @@
   "Stop the server: unblock + exit the accept loop and close the listen socket."
   [server]
   (reset! (:running server) false)
+  ;; shutdown BEFORE close, because close alone does not reliably wake a thread
+  ;; already blocked in accept(). On macOS it does; on Linux the blocked accept
+  ;; keeps the socket alive and the port stays bound after stop-server returns,
+  ;; so a restart fails with address-in-use. shutdown is what wakes it on both.
+  ;; ENOTCONN from a listening socket (macOS) is expected and ignored.
+  (try (c-shutdown (:socket server) 2) (catch Throwable _ nil))
   (c-close (:socket server))
   nil)

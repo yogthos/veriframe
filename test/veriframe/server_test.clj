@@ -49,9 +49,14 @@
   ;; since destroy-tree is a shutdown hook rather than a guarantee — and the
   ;; restart fails with address-in-use against a server that is already gone.
   ;;
-  ;; Rebinding is the assertion because it is the consequence that bites.
-  ;; SO_REUSEADDR lets a new socket past a TIME_WAIT, but not past another live
-  ;; listener, so this fails exactly when a child is still holding one.
+  ;; Two assertions, because they fail for different reasons and CI proved it:
+  ;; the flag was set on Linux and the rebind STILL failed, which is a separate
+  ;; bug — close() does not wake a thread blocked in accept() there, so the
+  ;; socket outlived stop-server. stop-server calls shutdown() first now.
+  ;;
+  ;; Rebinding is worth asserting anyway because it is the consequence that
+  ;; bites. SO_REUSEADDR lets a new socket past a TIME_WAIT, but not past a
+  ;; live listener, so it fails whenever anything still holds one.
   (let [port 39187
         handler (fn [_] {:status 200 :headers {} :body "ok"})
         server (adapter/run-server handler {:port port})
