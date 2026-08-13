@@ -1714,12 +1714,16 @@
           ;; `649`, and insisting on the prefix cost six of the first eleven
           ;; fetches in a run. Dropping punctuation is the obvious thing for a
           ;; model to do and is not worth a turn.
-          a (when (and conn run-id id)
-              (cond
-                shared? (journal/shared-artifact-by-id conn run-id id)
-                own? (journal/artifact-by-id conn run-id id)
-                :else (or (journal/artifact-by-id conn run-id id)
-                          (journal/shared-artifact-by-id conn run-id id))))]
+          own (when (and conn run-id id (not shared?))
+                (journal/artifact-by-id conn run-id id))
+          a (or own
+                (when (and conn run-id id (not own?))
+                  (journal/shared-artifact-by-id conn run-id id)))
+          ;; Which space it actually came from, so the echoed handle matches
+          ;; what the ledger showed. Echoing `a#649` for a seeded row taught
+          ;; the model a handle that then fails, because an explicit `a#`
+          ;; forces the artifacts table.
+          from-shared? (and a (nil? own))]
       (if-not a
         (fail branch (str "No artifact " raw " in this run."
                           " Ids come from the settled-state block: `a#12` for"
@@ -1727,11 +1731,17 @@
                           " it inherited. A run cannot reach another run's"
                           " artifacts."))
         (ok branch
-            (str "a#" (:id a) " [" (:branch_id a) " " (:kind a) "/" (:tier a) "]"
-                 " status " (str/upper-case (str (:claim_status a)))
+            (str (if from-shared? "s#" "a#") (:id a)
+                 " [" (:branch_id a) " " (:kind a) "/" (:tier a) "]"
                  ;; The status travels with the encoding or a refutation reads
                  ;; as an established result — the failure mode that makes
-                 ;; sharing refutations worse than withholding them.
+                 ;; sharing refutations worse than withholding them. Seeded
+                 ;; rows carry no status column of their own; seed-from-run!
+                 ;; copies only confirmed artifacts, so saying so is accurate
+                 ;; rather than a guess, and blank was reading as unknown.
+                 " status " (if from-shared?
+                              "CONFIRMED (inherited from the seed run)"
+                              (str/upper-case (str (:claim_status a))))
                  (when (:verdict a) (str ", verdict " (:verdict a)))
                  "\n\nCLAIM\n" (:claim a)
                  "\n\nENCODING\n" (:code a)))))))

@@ -3222,7 +3222,19 @@
             (is (re-find #"theorem inh" (:result (call2 {:id sid})))
                 "a bare seeded id resolves")
             (is (re-find #"theorem inh" (:result (call2 {:id (str "s#" sid)})))
-                "and so does the explicit form"))))
+                "and so does the explicit form")
+            (testing "and it echoes the handle it actually came from"
+              ;; Echoing a#649 for a seeded row taught the model a handle that
+              ;; then fails, since an explicit a# forces the artifacts table.
+              (let [r (:result (call2 {:id sid}))]
+                (is (re-find (re-pattern (str "s#" sid)) r))
+                (is (not (re-find (re-pattern (str "a#" sid)) r)))))
+            (testing "a seeded row reports its status rather than a blank"
+              ;; shared_artifacts has no claim_status column, so this read as
+              ;; "status " with nothing after it. seed-from-run! copies only
+              ;; confirmed artifacts, so stating that is accurate.
+              (is (re-find #"(?i)confirmed.*inherited"
+                           (:result (call2 {:id sid}))))))))
 
       (testing "an unknown id fails rather than inventing something"
         (let [r (call {:id 999999})]
