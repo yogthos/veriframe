@@ -354,6 +354,44 @@
           (testing "an empty ledger renders nothing rather than an empty heading"
             (is (nil? (artifacts/render-ledger {:established [] :ruled-out []})))))))))
 
+(deftest the-ledger-collapses-a-lemma-several-branches-proved
+  ;; Read live off gen-22 at round 20: a#687, a#689 and a#693 were the same
+  ;; scalarization coefficient inequality, proved by three branches and listed
+  ;; as three established facts. A ledger exists so a branch can see the state
+  ;; of the run at a glance; three spellings of one lemma is the opposite, and
+  ;; it also hides the more useful signal — that the line is well covered and
+  ;; not worth a fourth attempt.
+  (let [rows [{:id 687 :branch_id "B3" :kind "smt" :tier "fast"
+               :claim "For any integers B >= 1, E >= 1, define Qmax = E*B*B, LR = 2*B, K = LR + 1, H = K*Qmax + LR + 1. Then LR < K and K*Qmax + LR < H, so the scalarization coefficient inequalities hold."}
+              {:id 689 :branch_id "B3" :kind "smt" :tier "fast"
+               :claim "For any integers B >= 1, E >= 1, define Qmax = E*B*B, LR = 2*B, K = LR + 1, H = K*Qmax + LR + 1. Then LR < K and K*Qmax + LR < H, i.e. the scalarization coefficient inequalities hold."}
+              {:id 700 :branch_id "B9" :kind "lean" :tier "slow"
+               :claim "An entirely different result about prefix sums of a zero-sum sequence."}]
+        grouped (artifacts/dedupe-claims rows)]
+    (is (= 2 (count grouped)) "the two spellings collapse, the unrelated one stays")
+    (let [block (artifacts/render-ledger {:established rows :ruled-out [] :inherited []})]
+      (is (re-find #"(?i)2 branches|also proved by" block)
+          (str "and the collapse is stated rather than silent: " (subs block 0 400)))
+      (is (re-find #"prefix sums" block) "unrelated results are untouched"))))
+
+(deftest the-ledger-keeps-the-conclusion-when-a-claim-is-long
+  ;; Truncating at a fixed head cut the payload off: one live entry read
+  ;; "...the flow on any edge leaving R is at …", losing the bound, which is
+  ;; the only part a branch needs. Keep both ends — the hypotheses say when it
+  ;; applies and the tail says what it gives you.
+  (let [long-claim (str "Cut lemma for flow coordinate bound: if k is a nonnegative integer flow "
+                        "with divergence b and R is a vertex set with no edge entering it, and "
+                        "several further conditions hold that pad this statement out well past "
+                        "any sensible display width, then the flow on any edge leaving R is at "
+                        "most the total divergence of R.")
+        block (artifacts/render-ledger
+               {:established [{:id 1 :branch_id "B2" :kind "lean" :tier "slow"
+                               :claim long-claim}]
+                :ruled-out [] :inherited []})]
+    (is (re-find #"Cut lemma for flow coordinate bound" block) "the hypotheses survive")
+    (is (re-find #"most the total divergence" block) "and so does the conclusion")
+    (is (< (count block) (+ 400 (count long-claim))) "without printing the whole thing twice")))
+
 (deftest the-ledger-renders-refuted-so-it-cannot-be-read-as-proved
   ;; A refutation formatted like a confirmation is worse than not sharing it.
   ;; Separate sections rather than a status tag on a line, so a model skimming

@@ -23,7 +23,8 @@
   Like the failure log this is FTS5-backed, a query for the lemmas most like
   what a branch is about to try rather than a vector re-rendered whole into
   every context. The FTS table is standalone, and sync is app-managed here."
-  (:require [clojure.string :as str]
+  (:require [clojure.set]
+            [clojure.string :as str]
             [jdbc.core :as jdbc]
             [veriframe.llm.message :as message]
             [veriframe.store.db :as db]
@@ -159,17 +160,70 @@
   headline is what belongs here."
   180)
 
+(defn- shingles [s]
+  (let [toks (re-seq #"[a-z0-9]+" (str/lower-case (str s)))]
+    (if (< (count toks) 4)
+      (set toks)
+      (set (map #(str/join " " %) (partition 4 1 toks))))))
+
+(defn- near-duplicate? [a b]
+  (let [x (shingles a) y (shingles b)]
+    (and (seq x) (seq y)
+         (let [i (count (clojure.set/intersection x y))]
+           (>= (/ (double i) (count (clojure.set/union x y))) 0.6)))))
+
+(defn dedupe-claims
+  "Collapse entries whose claims say the same thing, keeping the fullest.
+
+  Read live off gen-22: three branches proved one scalarization inequality and
+  the ledger listed it three times. A ledger is for seeing the state of a run
+  at a glance, and three spellings of one lemma defeats that — while hiding
+  the signal that actually helps, which is that the line is well covered and
+  does not want a fourth attempt.
+
+  The survivor carries `:also-proved-by`, so the collapse is stated rather
+  than silent. Fuzzy rather than exact: the live duplicates differed only in
+  variable names and an `i.e.` for a `so`."
+  [rows]
+  (reduce (fn [acc r]
+            (if-let [i (first (keep-indexed
+                               (fn [i k] (when (near-duplicate? (:claim k) (:claim r)) i))
+                               acc))]
+              (let [k (nth acc i)
+                    ;; The longer statement is the more useful one to show.
+                    winner (if (> (count (str (:claim r))) (count (str (:claim k)))) r k)]
+                (assoc acc i (assoc winner :also-proved-by
+                                    (conj (vec (:also-proved-by k)) (:branch_id r)))))
+              (conj acc r)))
+          []
+          rows))
+
+(defn- elide
+  "Shorten a long claim while keeping BOTH ends.
+
+  Cutting only the head threw away the conclusion: one live entry read
+  \"…the flow on any edge leaving R is at …\", losing the bound, which is the
+  only part a branch needs. The hypotheses say when a lemma applies and the
+  tail says what it gives you; a middle is the safe thing to drop."
+  [s]
+  (let [c (str/trim (str s))]
+    (if (<= (count c) max-ledger-claim-chars)
+      c
+      (let [head (quot (* 2 max-ledger-claim-chars) 3)
+            tail (- max-ledger-claim-chars head)]
+        (str (subs c 0 head) " … " (subs c (- (count c) tail)))))))
+
 (defn- ledger-line
   "One entry. `prefix` selects the id space: `a#` indexes this run's own
   artifacts, `s#` the shared pool a seed was copied into. Two tables, one
   fetch tool, so the handles must not be confusable."
-  [prefix {:keys [id branch_id kind tier claim]}]
-  (let [c (str/trim (str claim))
-        c (if (> (count c) max-ledger-claim-chars)
-            (str (subs c 0 max-ledger-claim-chars) " …")
-            c)]
-    (str "- [" prefix id " " branch_id " " (name (or kind "?")) "/"
-         (name (or tier "?")) "] " c)))
+  [prefix {:keys [id branch_id kind tier claim also-proved-by]}]
+  (str "- [" prefix id " " branch_id " " (name (or kind "?")) "/"
+       (name (or tier "?")) "] " (elide claim)
+       (when (seq also-proved-by)
+         (str " (also proved by " (str/join ", " (distinct also-proved-by))
+              " — " (inc (count (distinct also-proved-by)))
+              " branches have this; it does not need another)"))))
 
 (defn render-ledger
   "The run's settled state, as a block for a branch's next-turn context.
@@ -188,16 +242,16 @@
          "## What this run has settled\n\n"
          (when (seq established)
            (str "### Established — engine-verified in this run\n"
-                (str/join "\n" (map (partial ledger-line "a#") established)) "\n\n"))
+                (str/join "\n" (map (partial ledger-line "a#") (dedupe-claims established))) "\n\n"))
          (when (seq ruled-out)
            (str "### Ruled out — engine-REFUTED, do not re-attempt these\n"
-                (str/join "\n" (map (partial ledger-line "a#") ruled-out)) "\n\n"))
+                (str/join "\n" (map (partial ledger-line "a#") (dedupe-claims ruled-out))) "\n\n"))
          ;; Last: inherited results are true but were established elsewhere,
          ;; and the done gate still requires in-run verification, so they are
          ;; a starting point rather than something to ship on.
          (when (seq inherited)
            (str "### Inherited — confirmed by the run this one was seeded from\n"
-                (str/join "\n" (map (partial ledger-line "s#") inherited)) "\n\n"))
+                (str/join "\n" (map (partial ledger-line "s#") (dedupe-claims inherited))) "\n\n"))
          "Fetch any encoding with `fetch_artifact` and its id, e.g. `a#12` or `s#7`.\n"
          message/ledger-close)))
 
