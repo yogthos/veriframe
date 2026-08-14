@@ -1160,6 +1160,72 @@
             (is (some? ev))
             (is (str/includes? (:data ev) "B1"))))))))
 
+(deftest the-same-claim-check-never-refuses-a-cross-check
+  ;; The same-claim refusal is for a SECOND FIRST-VERDICT, and two tools it
+  ;; must keep its hands off.
+  ;;
+  ;; `review` exists to re-examine ground the branch has already proved — its
+  ;; body reads (last (state/confirmed-artifacts branch)) — so a check that
+  ;; refuses claims already in the pool refuses review by construction. gen-23
+  ;; made 8 refusals in its first 197 turns and 5 were review, each one
+  ;; costing a branch the independent cross-check of a result it had just
+  ;; verified.
+  ;;
+  ;; And a DIFFERENT engine reaching the same claim is not duplicate work at
+  ;; all: consensus/engine-agreement counts distinct engine kinds precisely
+  ;; because independent empirical checks compose where opinions do not. Two
+  ;; z3 runs on one claim are a wasted call; z3 agreeing with Lean is the
+  ;; evidence the whole tier system is built to collect.
+  (with-db [c]
+    (let [rid (runs/start-run! c {:problem "p"})
+          claim "every stage-2-optimal flow has |k_e| at most S on every edge"]
+      (artifacts/record! c rid {:branch-id "B1" :turn 3 :kind :lean :tier :confirmed
+                                :claim claim :code "theorem t : True := trivial"})
+      (testing "review is never refused, however exactly the claim matches"
+        (let [judged (atom 0)
+              b (merge (state/new-branch {:id "B2" :problem "p"})
+                       {:artifacts [{:claim claim :claim-status :confirmed
+                                     :kind :lean :tier :confirmed :code "t"}]})]
+          (with-redefs [llm/chat (fn [& _] (swap! judged inc)
+                                   {:content "GAPS: none\nVERDICT: PASS"})]
+            (let [r (tools/run-tool {:branch b :turn 1 :conn c :run-id rid
+                                     :claims (claims/new-registry)
+                                     :tool-name "review"
+                                     :args {:claim claim
+                                            :rationale "a different formulation"}})]
+              (is (not= :mechanics (:category r))
+                  "review re-examines proved ground; that is its whole job")))))
+
+      (testing "a different engine on the same claim is agreement, not duplication"
+        (let [engine (atom 0)
+              b (state/new-branch {:id "B3" :problem "p"})]
+          (with-redefs [smt/run-smt (fn [& _] (swap! engine inc)
+                                      {:status :ok :verdict :unsat})
+                        llm/chat (fn [& _] {:content "GAPS: none\nVERDICT: PASS"})]
+            (let [r (tools/run-tool {:branch b :turn 1 :conn c :run-id rid
+                                     :claims (claims/new-registry)
+                                     :tool-name "verify_smt"
+                                     :args {:claim claim :smtlib "(assert true)"
+                                            :expectedVerdict "unsat"}})]
+              (is (= 1 @engine) "z3 still runs on a claim only Lean has confirmed")
+              (is (= :success (:category r)))))))
+
+      (testing "the same engine twice on one claim is still refused"
+        (artifacts/record! c rid {:branch-id "B1" :turn 4 :kind :smt :tier :confirmed
+                                  :claim claim :code "(assert true)"})
+        (let [engine (atom 0)
+              b (state/new-branch {:id "B4" :problem "p"})]
+          (with-redefs [smt/run-smt (fn [& _] (swap! engine inc)
+                                      {:status :ok :verdict :unsat})
+                        llm/chat (fn [& _] {:content "VERDICT: PASS"})]
+            (let [r (tools/run-tool {:branch b :turn 1 :conn c :run-id rid
+                                     :claims (claims/new-registry)
+                                     :tool-name "verify_smt"
+                                     :args {:claim claim :smtlib "(assert true)"
+                                            :expectedVerdict "unsat"}})]
+              (is (= 0 @engine) "z3 is not asked a question z3 already answered")
+              (is (= :mechanics (:category r))))))))))
+
 (deftest a-lemma-already-proved-in-other-words-is-refused-not-re-run
   ;; vf-cak. The registry keys on spelling, so a lemma restated with renamed
   ;; variables is a different claim to it. gen-22 a#687 and a#689 are the same

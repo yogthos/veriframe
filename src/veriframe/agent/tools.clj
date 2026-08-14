@@ -180,13 +180,34 @@
   where a branch re-reading its own lemmas is noise, and wrong here, where a
   branch re-proving its own lemma is the bug.
 
+  ONLY the same engine is refused, and this is the whole of what makes the
+  check safe. Two tools must reach a proved claim freely:
+
+  `review` re-examines ground the branch has already confirmed — its body
+  reads the branch's last confirmed artifact — so refusing claims that are
+  already in the pool refuses review by construction. gen-23 made 8 refusals
+  in its first 197 turns and 5 were review, each costing a branch the
+  independent cross-check of a result it had just verified. review has no
+  engine kind and so is never refused here.
+
+  And a DIFFERENT engine reaching the same claim is not duplicate work:
+  consensus/engine-agreement counts distinct engine kinds precisely because
+  independent empirical checks compose where opinions do not. Two z3 runs on
+  one claim are a wasted call; z3 agreeing with Lean is the evidence the tier
+  system exists to collect, and suppressing it would quietly cost the run its
+  strongest form of confirmation.
+
   PASS means SAME. The polarity is forced by verdict/instruction's fail-closed
   rule — an unsure judge answers FAIL — and the safe reading of unsure is
   \"let it verify\", since a wrong SAME withholds a verification the run may
   need while a wrong DIFFERENT costs one engine call."
-  [{:keys [conn run-id] :as ctx} claim]
-  (when (and conn run-id (not (str/blank? claim)))
-    (when-let [cand (first (artifacts/similar conn run-id claim 1))]
+  [{:keys [conn run-id tool-name] :as ctx} claim]
+  (when-let [engine (get {"verify_smt" "smt" "verify_template" "smt"
+                          "verify_lean" "lean" "verify_octave" "octave"}
+                         tool-name)]
+   (when (and conn run-id (not (str/blank? claim)))
+    (when-let [cand (first (filter #(= engine (str (:kind %)))
+                                   (artifacts/similar conn run-id claim 3)))]
       (let [p (str "Two statements from a mathematics run. Decide whether they"
                    " state the SAME fact.\n\n"
                    "ALREADY PROVED:\n" (:claim cand) "\n\n"
@@ -202,7 +223,7 @@
                    " (injectivity and surjectivity of the same map are"
                    " DIFFERENT facts). When in doubt, answer FAIL.")]
         (when (verdict/passed? (judge ctx :same-claim p))
-          cand)))))
+          cand))))))
 
 (defn- claim-dedup
   "Serve another branch's verification of the same claim instead of spending
@@ -258,8 +279,13 @@
         (when (and (:conn ctx) (:run-id ctx))
           (journal/note! (:conn ctx) (:run-id ctx) :same-claim-refusal
                          {:branch-id (:id branch)
+                          ;; Without the turn this cannot be joined to what it
+                          ;; refused, and the question "which tool did it stop"
+                          ;; had to be answered by matching claim text.
+                          :turn (:turn ctx)
                           :data {:claim claim :matched (:claim cand)
-                                 :holder (:branch_id cand) :artifact (:id cand)}}))
+                                 :holder (:branch_id cand) :artifact (:id cand)
+                                 :tool (:tool-name ctx)}}))
         {:branch branch
          ;; NOT :failure. The branch reasoned its way to a true statement and
          ;; encoded it; it simply aimed at ground the run already holds. That
