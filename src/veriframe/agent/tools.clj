@@ -109,6 +109,49 @@
                             (str "\"" (name k) "\": \"<" (name k) ">\"")))
            "}}\n```"))))
 
+(def ^:private assertion-markers
+  "Tokens that make a sentence assert something rather than name something.
+
+  A relation, a quantifier or a conditional is what turns a noun phrase into a
+  proposition. Deliberately generous: the check exists to catch labels, not to
+  police prose."
+  #{"if" "then" "iff" "implies" "every" "all" "any" "each" "exists" "some"
+    "no" "not" "never" "unless" "whenever" "at most" "at least" "fewer than"
+    "greater" "less" "equals" "divides"})
+
+(defn- vague-claim
+  "A complaint when the claim is a LABEL rather than a statement, else nil.
+
+  Three entries the campaign now inherits forever read `weighted sum yields
+  lex min`, `coordinate bound from Q bound` and `one coordinate
+  scalarization`. Each is the name of a theorem rather than the theorem, so a
+  branch reading the settled-state block learns nothing and must spend a fetch
+  to discover it already holds the result. Artifacts outlive the run that made
+  them, so this is checked where it is still cheap to fix.
+
+  Length alone is the wrong test — short and precise is fine, long and empty is
+  not. What makes a claim usable a generation later is that it ASSERTS
+  something: a relation symbol, a quantifier, or a conditional. Only short
+  claims are examined, so a full sentence is never second-guessed."
+  [ctx]
+  (let [c (str/trim (str (arg ctx :claim)))
+        low (str/lower-case c)]
+    (when (and (< (count c) 45)
+               (not (re-find #"[=<>≤≥≠∈⊆]" c))
+               ;; A number is an assertion: "the minimum cost is 2" and "there
+               ;; are 8 optimal flows" are short, precise and perfectly usable
+               ;; a generation later. The first version of this check refused
+               ;; them, which is the false positive the suite caught — the
+               ;; labels being targeted name a result and quantify nothing.
+               (not (re-find #"\d" c))
+               (not (some #(str/includes? low %) assertion-markers)))
+      (str "That claim names a result rather than stating one: \"" c "\"."
+           " Artifacts outlive the run that made them, and a later branch —"
+           " possibly in a later generation — sees only this sentence."
+           " State what is true, with its hypotheses: not \"coordinate bound"
+           " from Q bound\" but \"if an integer vector has sum-of-squares at"
+           " most Q, every coordinate is at most D whenever D^2 >= Q\"."))))
+
 (defn- claim-dedup
   "Serve another branch's verification of the same claim instead of spending
   this branch's call on it. Returns a result map when the claim is owned by
@@ -411,7 +454,7 @@
             (fail branch (str "Retract failed: " (:error reply)))))))))
 
 (defmethod run-tool "verify" [{:keys [branch] :as ctx}]
-  (if-let [m (missing ctx :claim :check)]
+  (if-let [m (or (missing ctx :claim :check) (vague-claim ctx))]
     (fail branch m)
     (let [claim (arg ctx :claim)
           reply (prolog/query (:prolog branch) (arg ctx :check) {:timeout-s 20})]
@@ -543,7 +586,7 @@
 ;; up the file to satisfy the reader's eye, which is a much larger diff than
 ;; the coupling deserves.
 (defmethod run-tool "verify_smt" [{:keys [branch config] :as ctx}]
-  (if-let [m (missing ctx :claim :smtlib)]
+  (if-let [m (or (missing ctx :claim :smtlib) (vague-claim ctx))]
     (fail branch m)
     (let [claim (arg ctx :claim)
           smtlib (arg ctx :smtlib)
@@ -629,7 +672,7 @@
                                          " (status " (name status) ")"))}})))))))
 
 (defmethod run-tool "verify_template" [{:keys [branch config] :as ctx}]
-  (if-let [m (missing ctx :claim :template)]
+  (if-let [m (or (missing ctx :claim :template) (vague-claim ctx))]
     (fail branch m)
     (if-let [served (claim-dedup ctx (arg ctx :claim))]
       served
@@ -1547,7 +1590,7 @@
   (str/join "\n" (map #(str "  " (str/replace (str (:data %)) "\n" "\n  ")) errors)))
 
 (defmethod run-tool "verify_lean" [{:keys [branch] :as ctx}]
-  (if-let [m (missing ctx :claim :lean)]
+  (if-let [m (or (missing ctx :claim :lean) (vague-claim ctx))]
     (fail branch m)
     (let [{:keys [ok warnings]} (lint/lint-lean (arg ctx :lean))]
       (if-not ok
@@ -1631,7 +1674,7 @@
         (unavailable branch "Mathlib search" e)))))
 
 (defmethod run-tool "proof_start" [{:keys [branch] :as ctx}]
-  (if-let [m (missing ctx :claim :theorem)]
+  (if-let [m (or (missing ctx :claim :theorem) (vague-claim ctx))]
     (fail branch m)
     ;; This tool appends " := by sorry" to open the goal, so a theorem that
     ;; already carries a body becomes `… := by tac := by sorry` and Lean
@@ -1848,7 +1891,7 @@
       expr)))
 
 (defmethod run-tool "verify_octave" [{:keys [branch] :as ctx}]
-  (if-let [m (missing ctx :claim :expr)]
+  (if-let [m (or (missing ctx :claim :expr) (vague-claim ctx))]
     (fail branch m)
     (try
       (let [[s branch] (octave-session! ctx)
@@ -1946,6 +1989,10 @@
   ;; and got culled. What lands here is an :empirical artifact: real evidence,
   ;; visible to the critic and the cull rule, and explicitly not a proof — the
   ;; done gate still refuses to ship on measurements alone.
+  ;; NOT vague-claim guarded, unlike every other artifact producer: a
+  ;; measurement NAMES a quantity where a verification ASSERTS a
+  ;; proposition, and "the number of optimal flows" is exactly right for
+  ;; something whose value is not known until Octave returns it.
   (if-let [m (missing ctx :claim :expr)]
     (fail branch m)
     (try

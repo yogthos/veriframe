@@ -176,7 +176,7 @@
         rid (runs/start-run! c {:problem "p" :beam-width 1})
         b (merge (state/new-branch {:id "B1" :problem "p"})
                  {:thesis {:goal "g" :technique "t" :subClaims []}
-                  :artifacts [{:claim "c" :claim-status :confirmed
+                  :artifacts [{:claim "every element of S satisfies P" :claim-status :confirmed
                                :kind :smt :tier :confirmed :code "c1"}]})]
     (runs/open-branch! c rid {:branch-id "B1" :created-at-turn 0})
     ;; Both judge tools journal the disagreement, and both directions of it
@@ -189,10 +189,10 @@
                                  {:content "GAPS: none\nVERDICT: FAIL"}))]
         (tools/run-tool {:branch b :turn 1 :conn c :run-id rid
                          :tool-name "audit"
-                         :args {:claim "c" :proposedAnswer "42"}})
+                         :args {:claim "every element of S satisfies P" :proposedAnswer "42"}})
         (tools/run-tool {:branch b :turn 1 :conn c :run-id rid
                          :tool-name "review"
-                         :args {:claim "c"
+                         :args {:claim "every element of S satisfies P"
                                 :rationale "independent because encoded in Z3 instead of Prolog"}}))
       (let [evs (filter #(= "verdict-gap-disagreement" (:kind %))
                         (journal/events-since c rid 0))
@@ -210,7 +210,7 @@
         rid (runs/start-run! c {:problem "p" :beam-width 1})
         b (merge (state/new-branch {:id "B1" :problem "p"})
                  {:thesis {:goal "g" :technique "t" :subClaims []}
-                  :artifacts [{:claim "c" :claim-status :confirmed
+                  :artifacts [{:claim "every element of S satisfies P" :claim-status :confirmed
                                :kind :smt :tier :confirmed :code "c1"}]})]
     (runs/open-branch! c rid {:branch-id "B1" :created-at-turn 0})
     ;; A judge that fails while listing patchable defects must hand the branch
@@ -222,7 +222,7 @@
                                             "VERDICT: FAIL")})]
       (let [r (tools/run-tool {:branch b :turn 1 :conn c :run-id rid
                                :tool-name "audit"
-                               :args {:claim "c" :proposedAnswer "42"}})]
+                               :args {:claim "every element of S satisfies P" :proposedAnswer "42"}})]
         (is (str/includes? (:result r) "PATCHES:"))
         (is (str/includes? (:result r) "bind X to a witness"))
         (is (str/includes? (get-in r [:failure :reason]) "1 patchable"))))))
@@ -233,7 +233,7 @@
   ;; must reach both judges or the exemption is a file, not a mechanism.
   (let [b (merge (state/new-branch {:id "B1" :problem "p"})
                  {:thesis {:goal "g" :technique "t" :subClaims []}
-                  :artifacts [{:claim "c" :claim-status :confirmed
+                  :artifacts [{:claim "every element of S satisfies P" :claim-status :confirmed
                                :kind :smt :tier :confirmed :code "c1"}]})
         prompts (atom [])]
     (with-redefs [llm/chat (fn [_ _ msgs _]
@@ -241,9 +241,9 @@
                                     (:content (last msgs)))
                              {:content "VERDICT: FAIL"})]
       (tools/run-tool {:branch b :turn 1 :tool-name "audit"
-                       :args {:claim "c" :proposedAnswer "42"}})
+                       :args {:claim "every element of S satisfies P" :proposedAnswer "42"}})
       (tools/run-tool {:branch b :turn 1 :tool-name "review"
-                       :args {:claim "c" :rationale "different encoding"}}))
+                       :args {:claim "every element of S satisfies P" :rationale "different encoding"}}))
     (is (= 2 (count @prompts)))
     (doseq [p @prompts]
       (is (str/includes? p "what is not a gap")
@@ -269,7 +269,7 @@
     (let [b (branch-with :consecutive-failures 3
                          :any-progress? true
                          :turns-since-progress 9
-                         :artifacts [{:claim "c" :claim-status :confirmed :turn 1}]
+                         :artifacts [{:claim "every element of S satisfies P" :claim-status :confirmed :turn 1}]
                          :turns (vec (repeat 5 {})))
           ctx {:branch b :max-turns 40}
           d (arbiter/decide ctx)]
@@ -284,7 +284,7 @@
   (testing "a human directive outranks every machine gate"
     ;; dirge PR 717 as a design property rather than a bug fix.
     (let [b (branch-with :consecutive-failures 5
-                         :artifacts [{:claim "c" :claim-status :confirmed :turn 1}])
+                         :artifacts [{:claim "every element of S satisfies P" :claim-status :confirmed :turn 1}])
           d (arbiter/decide {:branch b :max-turns 40
                              :directive {:payload "stop and ship what you have"}})]
       (is (= :human-directive (:gate d)))
@@ -317,7 +317,7 @@
                                                                       :max-turns 40}))))))
 
   (testing "a spent budget stops a gate re-firing"
-    (let [b (branch-with :artifacts [{:claim "c" :claim-status :confirmed :turn 1}]
+    (let [b (branch-with :artifacts [{:claim "every element of S satisfies P" :claim-status :confirmed :turn 1}]
                          :gate-history [{:gate :milestone :turn 1}])]
       (is (not-any? #{:milestone} (map :gate (arbiter/eligible {:branch b
                                                                 :max-turns 40}))))))
@@ -328,7 +328,7 @@
     ;; complying. It was the one steer gate with no re-fire guard.
     (let [b (branch-with :consecutive-failures 3
                          :turns (vec (repeat 4 {}))
-                         :artifacts [{:claim "c" :claim-status :confirmed :turn 3}])]
+                         :artifacts [{:claim "every element of S satisfies P" :claim-status :confirmed :turn 3}])]
       (is (some #{:emergency-review} (map :gate (arbiter/eligible {:branch b
                                                                    :max-turns 40})))
           "fires while at the cull threshold holding a recent confirmation")
@@ -366,7 +366,7 @@
 
   (testing "done-blocked outranks it when both hold"
     (let [b (branch-with :turns (vec (repeat 36 {}))
-                         :artifacts [{:claim "c" :claim-status :confirmed :turn 1}])
+                         :artifacts [{:claim "every element of S satisfies P" :claim-status :confirmed :turn 1}])
           d (arbiter/decide {:branch b :max-turns 40
                              :done-block "`done` refused.\n\nNo confirmed artifact."})]
       (is (= :done-blocked (:gate d)) "the correctness rung wins, not the budget steer")
@@ -413,7 +413,7 @@
 
   (testing "progress gates settle on artifacts, not on tool names"
     (let [before (branch-with)
-          after (branch-with :artifacts [{:claim "c" :claim-status :confirmed}])]
+          after (branch-with :artifacts [{:claim "every element of S satisfies P" :claim-status :confirmed}])]
       (is (= :met (arbiter/settle {:gate :progress-stalled :turn 3 :window 3}
                                   {:current-turn 4 :tools-called ["verify"]
                                    :branch-before before :branch-after after})))))
@@ -446,7 +446,7 @@
 
   (testing "stopwords and short words are not evidence claims"
     (is (empty? (tools/uncovered-tokens "the answer is that it exists"
-                                        [{:claim "x" :code "" :witness nil}]))))
+                                        [{:claim "every element of S satisfies P" :code "" :witness nil}]))))
 
   (testing "grammar that slipped through the inflections is not an assertion"
     ;; A live refusal listed `does`, `follow`, `from` and `having` beside the
@@ -616,7 +616,7 @@
            {:branch (branch-with :thesis {:goal "count them" :subClaims []}
                                  :artifacts artifacts)
             :turn 1 :tool-name "audit"
-            :args {:claim "c" :proposedAnswer "the vortex density is 8"}}))
+            :args {:claim "every element of S satisfies P" :proposedAnswer "the vortex density is 8"}}))
         (is (re-find #"(?i)vortex" (str (first @prompts)))
             "the audit sees the word the lexical check flagged")
         (is (re-find #"(?i)appear in no artifact|no artifact" (str (first @prompts)))
@@ -659,7 +659,7 @@
 (deftest audit-stores-established-and-relaxation
   (let [b (merge (state/new-branch {:id "B1" :problem "p"})
                  {:thesis {:goal "g" :technique "t" :subClaims []}
-                  :artifacts [{:claim "c" :claim-status :confirmed
+                  :artifacts [{:claim "every element of S satisfies P" :claim-status :confirmed
                                :kind :smt :tier :confirmed :code "c1"}]})]
     (with-redefs [llm/chat (fn [& _]
                              {:content (str "ESTABLISHED: the sequence converges for n = 1, 2, 3\n"
@@ -667,7 +667,7 @@
                                             "VERDICT: PASS")})]
       (let [la (:last-audit (:branch (tools/run-tool
                                       {:branch b :turn 1 :tool-name "audit"
-                                       :args {:claim "c" :proposedAnswer "42"}})))]
+                                       :args {:claim "every element of S satisfies P" :proposedAnswer "42"}})))]
         (is (true? (:passed la)))
         (is (= "the sequence converges for n = 1, 2, 3" (:established la)))
         (is (true? (:relaxation? la)))))))
@@ -685,7 +685,7 @@
         rid (runs/start-run! c {:problem "p" :beam-width 1})
         b (merge (state/new-branch {:id "B1" :problem "p"})
                  {:thesis {:goal "g" :technique "t" :subClaims []}
-                  :artifacts [{:claim "c" :claim-status :confirmed
+                  :artifacts [{:claim "every element of S satisfies P" :claim-status :confirmed
                                :kind :smt :tier :confirmed :code "c1"}]})
         calls (atom [])]
     (runs/open-branch! c rid {:branch-id "B1" :created-at-turn 0})
@@ -697,7 +697,7 @@
       (let [r (tools/run-tool {:branch b :turn 1 :conn c :run-id rid
                                :llm-config {:max-tokens 100}
                                :tool-name "audit"
-                               :args {:claim "c" :proposedAnswer "42"}})]
+                               :args {:claim "every element of S satisfies P" :proposedAnswer "42"}})]
         (is (true? (get-in r [:branch :last-audit :passed]))
             "the retried verdict is the one that counts")
         (is (= 2 (count @calls)) "one retry resolved it")
@@ -713,13 +713,13 @@
 (deftest judge-retries-are-bounded
   (let [b (merge (state/new-branch {:id "B1" :problem "p"})
                  {:thesis {:goal "g" :technique "t" :subClaims []}
-                  :artifacts [{:claim "c" :claim-status :confirmed
+                  :artifacts [{:claim "every element of S satisfies P" :claim-status :confirmed
                                :kind :smt :tier :confirmed :code "c1"}]})
         calls (atom 0)]
     (with-redefs [llm/chat (fn [& _] (swap! calls inc)
                              {:content "<think>never a verdict"})]
       (let [r (tools/run-tool {:branch b :turn 1 :tool-name "audit"
-                               :args {:claim "c" :proposedAnswer "42"}})]
+                               :args {:claim "every element of S satisfies P" :proposedAnswer "42"}})]
         (is (= :failure (:category r)) "exhausted retries fail closed")
         (is (= 3 @calls) "attempts are bounded")))))
 
@@ -729,13 +729,13 @@
   ;; second loop here would multiply that by three.
   (let [b (merge (state/new-branch {:id "B1" :problem "p"})
                  {:thesis {:goal "g" :technique "t" :subClaims []}
-                  :artifacts [{:claim "c" :claim-status :confirmed
+                  :artifacts [{:claim "every element of S satisfies P" :claim-status :confirmed
                                :kind :smt :tier :confirmed :code "c1"}]})
         calls (atom 0)]
     (with-redefs [llm/chat (fn [& _] (swap! calls inc)
                              (throw (ex-info "socket reset" {})))]
       (let [r (tools/run-tool {:branch b :turn 1 :tool-name "audit"
-                               :args {:claim "c" :proposedAnswer "42"}})]
+                               :args {:claim "every element of S satisfies P" :proposedAnswer "42"}})]
         (is (= :failure (:category r)))
         (is (= 1 @calls))))))
 
@@ -812,7 +812,7 @@
         b (merge (state/new-branch {:id "B1" :problem "p"})
                  {:thesis {:goal "the sequence converges for all natural n"
                            :technique "t" :subClaims []}
-                  :artifacts [{:claim "c" :claim-status :confirmed
+                  :artifacts [{:claim "every element of S satisfies P" :claim-status :confirmed
                                :kind :smt :tier :confirmed :code "c1"}]})]
     (runs/open-branch! c rid {:branch-id "B1" :created-at-turn 0})
     ;; A passing audit that declares the evidence weaker than the goal records
@@ -824,7 +824,7 @@
                                             "VERDICT: PASS")})]
       (tools/run-tool {:branch b :turn 1 :conn c :run-id rid
                        :tool-name "audit"
-                       :args {:claim "c" :proposedAnswer "42"}}))
+                       :args {:claim "every element of S satisfies P" :proposedAnswer "42"}}))
     (let [evs (filter #(= "thesis-drift" (:kind %))
                       (journal/events-since c rid 0))]
       (is (= 1 (count evs)) "one drift entry per relaxation audit")
@@ -1071,7 +1071,7 @@
       (journal/record-turn! c rid {:branch-id "B1" :turn 1 :tool-name "verify"
                                    :result "ok" :category "success"})
       (journal/record-artifact! c rid {:branch-id "B1" :turn 1 :kind :prolog
-                                       :claim "c" :claim-status :confirmed})
+                                       :claim "every element of S satisfies P" :claim-status :confirmed})
       (is (= 1 (count (journal/turns c rid))))
       (is (= 1 (count (journal/confirmed-artifacts c rid "B1")))))))
 
@@ -1500,12 +1500,12 @@
   ;; ordinary cull path rather than the newborn protection.
   (let [failing (-> (branch-with :consecutive-failures 3)
                     (assoc :turns (vec (repeat 10 {}))))
-        productive (assoc failing :artifacts [{:claim "c" :claim-status :confirmed
+        productive (assoc failing :artifacts [{:claim "every element of S satisfies P" :claim-status :confirmed
                                                :turn 5}])]
     (is (= :culled (:status (#'beam/cull-or-keep {} failing 2 []))))
     (is (= :active (:status (#'beam/cull-or-keep {} productive 2 []))))
     (testing "a stale confirmation does not protect it forever"
-      (let [stale (assoc failing :artifacts [{:claim "c" :claim-status :confirmed
+      (let [stale (assoc failing :artifacts [{:claim "every element of S satisfies P" :claim-status :confirmed
                                               :turn 0}])]
         (is (= :culled (:status (#'beam/cull-or-keep {} stale 2 []))))))
     (testing "the last branch standing is never culled"
@@ -1531,7 +1531,7 @@
   ;; the first confirmation sends the branch to review rather than straight
   ;; to forking. Result, then review, THEN widen — reproduce from a result
   ;; that survived a check, not from a raw one.
-  (let [fit (branch-with :artifacts [{:claim "c" :claim-status :confirmed :turn 5}]
+  (let [fit (branch-with :artifacts [{:claim "every element of S satisfies P" :claim-status :confirmed :turn 5}]
                          :turns (vec (repeat 6 {}))
                          :gate-history [{:gate :milestone :turn 5}])]
     (testing "the first confirmation goes to review, not to forking"
@@ -1673,7 +1673,7 @@
   ;; acting on it spends the budget on repetition, which is what re-fire
   ;; guards exist for.
   (let [fit (fn [now last-fired]
-              (branch-with :artifacts [{:claim "c" :claim-status :confirmed :turn 5}]
+              (branch-with :artifacts [{:claim "every element of S satisfies P" :claim-status :confirmed :turn 5}]
                            :turns (vec (repeat now {}))
                            :gate-history (into [{:gate :milestone :turn 1}]
                                                (when last-fired
@@ -2050,13 +2050,13 @@
   (testing "a direct proof outranks a relaxation even when the relaxation carries more artifacts"
     (let [direct (finished-branch "B1"
                                   :last-audit {:relaxation? false}
-                                  :artifacts [{:kind :prolog :claim "c"
+                                  :artifacts [{:kind :prolog :claim "every element of S satisfies P"
                                                :claim-status :confirmed :tier :fast}])
           relaxed (finished-branch "B2"
                                    :last-audit {:relaxation? true}
-                                   :artifacts [{:kind :prolog :claim "c"
+                                   :artifacts [{:kind :prolog :claim "every element of S satisfies P"
                                                 :claim-status :confirmed :tier :fast}
-                                               {:kind :smt :claim "c2"
+                                               {:kind :smt :claim "every element of T satisfies Q"
                                                 :claim-status :confirmed :tier :fast}
                                                {:kind :smt :claim "c3"
                                                 :claim-status :confirmed :tier :fast}])]
@@ -2066,13 +2066,13 @@
 (deftest rank-finished-slow-tier-beats-fast-only
   (testing "any slow-tier evidence outranks a fast-only branch with more artifacts"
     (let [fast (finished-branch "B1"
-                                :artifacts [{:kind :prolog :claim "c"
+                                :artifacts [{:kind :prolog :claim "every element of S satisfies P"
                                              :claim-status :confirmed :tier :fast}
-                                            {:kind :smt :claim "c2"
+                                            {:kind :smt :claim "every element of T satisfies Q"
                                              :claim-status :confirmed :tier :fast}])
           slow (finished-branch "B2"
                                 :tiers-seen #{:slow}
-                                :artifacts [{:kind :prolog :claim "c"
+                                :artifacts [{:kind :prolog :claim "every element of S satisfies P"
                                              :claim-status :confirmed :tier :fast}])]
       (is (= ["B2" "B1"] (mapv :id (state/rank-finished [fast slow])))
           "the review/template signal is compared before artifact count"))))
@@ -2080,14 +2080,14 @@
 (deftest rank-finished-engine-diversity-beats-count
   (testing "distinct engine kinds compare before artifact count"
     (let [two-smt (finished-branch "B1"
-                                   :artifacts [{:kind :smt :claim "c"
+                                   :artifacts [{:kind :smt :claim "every element of S satisfies P"
                                                 :claim-status :confirmed :tier :fast}
-                                               {:kind :smt :claim "c2"
+                                               {:kind :smt :claim "every element of T satisfies Q"
                                                 :claim-status :confirmed :tier :fast}])
           smt-plus-prolog (finished-branch "B2"
-                                           :artifacts [{:kind :smt :claim "c"
+                                           :artifacts [{:kind :smt :claim "every element of S satisfies P"
                                                         :claim-status :confirmed :tier :fast}
-                                                       {:kind :prolog :claim "c"
+                                                       {:kind :prolog :claim "every element of S satisfies P"
                                                         :claim-status :confirmed :tier :fast}])]
       (is (= ["B2" "B1"] (mapv :id (state/rank-finished [two-smt smt-plus-prolog])))
           "one z3 + one prolog beats two z3s: diversity (component c) outranks count (component d)"))))
@@ -2095,7 +2095,7 @@
 (deftest rank-finished-id-breaks-ties-stably
   (testing "identical evidence ranks by branch id ascending, independent of input order"
     (let [mk (fn [id] (finished-branch id
-                                       :artifacts [{:kind :prolog :claim "c"
+                                       :artifacts [{:kind :prolog :claim "every element of S satisfies P"
                                                     :claim-status :confirmed :tier :fast}]))
           expect ["B10" "B2" "B7"]]
       (is (= expect (mapv :id (state/rank-finished [(mk "B7") (mk "B10") (mk "B2")]))))
@@ -2107,12 +2107,12 @@
           winner (beam/select-done-branch
                   {:conn c :run-id rid}
                   [(finished-branch "B1"
-                                    :artifacts [{:kind :prolog :claim "c"
+                                    :artifacts [{:kind :prolog :claim "every element of S satisfies P"
                                                  :claim-status :confirmed :tier :fast}])
                    (finished-branch "B2"
-                                    :artifacts [{:kind :prolog :claim "c"
+                                    :artifacts [{:kind :prolog :claim "every element of S satisfies P"
                                                  :claim-status :confirmed :tier :fast}
-                                                {:kind :smt :claim "c2"
+                                                {:kind :smt :claim "every element of T satisfies Q"
                                                  :claim-status :confirmed :tier :fast}])])
           evs (filter #(= "candidate-selection" (:kind %))
                       (journal/events-since c rid 0))
@@ -2130,7 +2130,7 @@
           winner (beam/select-done-branch
                   {:conn c :run-id rid}
                   [(finished-branch "B1"
-                                    :artifacts [{:kind :prolog :claim "c"
+                                    :artifacts [{:kind :prolog :claim "every element of S satisfies P"
                                                  :claim-status :confirmed :tier :fast}])])]
       (is (= "B1" (:id winner)))
       (is (empty? (filter #(= "candidate-selection" (:kind %))
@@ -2390,7 +2390,7 @@
       (is (= :ambiguous
              (-> (tools/run-tool {:branch b :turn 1 :conn c :run-id rid
                                   :tool-name "verify_smt"
-                                  :args {:claim "c" :smtlib "(check-sat)"}})
+                                  :args {:claim "every element of S satisfies P" :smtlib "(check-sat)"}})
                  :artifact :claim-status))
           "no expectedVerdict means no assertion, so nothing to review"))))
 
@@ -2514,7 +2514,7 @@
          (-> (prolog-verify {:answers [{:bindings {:A "_G123"} :formatted "A = _G123"}]
                              :rules [{:code "r :- true."}]
                              :judge-reply "irrelevant, must not be called"
-                             :claim "c" :check "r"})
+                             :claim "every element of S satisfies P" :check "r"})
              :artifact :claim-status))))
 
 ;; --- a rejection has to carry the reviewer's actual objection ---------------
@@ -2540,7 +2540,7 @@
                   llm/chat (fn [& _] {:content objection})]
       (let [r (tools/run-tool {:branch b :turn 3 :conn c :run-id rid
                                :tool-name "verify_smt"
-                               :args {:claim "some claim"
+                               :args {:claim "every element of S satisfies P"
                                       :smtlib "(assert (>= x 1))(check-sat)"
                                       :expectedVerdict "unsat"}})]
         (is (= :unfaithful (get-in r [:artifact :claim-status])))
@@ -2645,7 +2645,7 @@
                                             "VERDICT: FAIL")})]
       (tools/run-tool {:branch b :turn 4 :conn c :run-id rid
                        :tool-name "verify_smt"
-                       :args {:claim "some claim" :smtlib "(assert (>= x 1))(check-sat)"
+                       :args {:claim "every element of S satisfies P" :smtlib "(assert (>= x 1))(check-sat)"
                               :expectedVerdict "unsat"}}))
     (let [evs (filter #(= "judge-verdict" (:kind %)) (journal/events-since c rid 0))
           d (some-> (first evs) :data)]
@@ -2671,7 +2671,7 @@
                   llm/chat (fn [& _] {:content "GAPS: none\nVERDICT: PASS"})]
       (tools/run-tool {:branch b :turn 4 :conn c :run-id rid
                        :tool-name "verify_smt"
-                       :args {:claim "some claim" :smtlib "(assert (>= x 1))(check-sat)"
+                       :args {:claim "every element of S satisfies P" :smtlib "(assert (>= x 1))(check-sat)"
                               :expectedVerdict "unsat"}}))
     (is (= 1 (count (filter #(= "judge-verdict" (:kind %))
                             (journal/events-since c rid 0)))))))
@@ -2916,7 +2916,7 @@
                   llm/chat (fn [& _] (throw (ex-info "judge must not be called" {})))]
       (let [r (tools/run-tool {:branch b :turn 1 :conn c :run-id rid
                                :tool-name "verify_lean"
-                               :args {:claim "some claim"
+                               :args {:claim "every element of S satisfies P"
                                       :lean "theorem foo : True := nonsense"}})]
         (is (nil? (:artifact r)) "a broken proof is not a refutation")
         (is (= :failure (:category r)))))))
@@ -3059,7 +3059,7 @@
                              llm/chat (fn [& _] (throw (ex-info "judge must not be called" {})))]
                  (tools/run-tool {:branch b :turn 1 :conn c :run-id rid
                                   :tool-name tool :args args})))]
-    (doseq [[tool args] [["verify_lean" {:claim "c" :lean "theorem t : True := trivial"}]
+    (doseq [[tool args] [["verify_lean" {:claim "every element of S satisfies P" :lean "theorem t : True := trivial"}]
                          ["octave_eval" {:code "x = 1;"}]]]
       (let [r (down tool args)]
         (is (= :neutral (:category r))
@@ -3134,6 +3134,51 @@
         (is (= 1 (:consecutive-failures b))
             "and starts from 1, not compounded by the malformed turns")))))
 
+(deftest a-claim-has-to-be-a-statement-not-a-label
+  ;; Three entries in the campaign's inherited set read "weighted sum yields
+  ;; lex min", "coordinate bound from Q bound" and "one coordinate
+  ;; scalarization". Each is the NAME of a theorem, not the theorem: a branch
+  ;; reading the settled-state block learns nothing from them and has to spend
+  ;; a fetch to discover it already holds that result. They are permanent —
+  ;; the campaign inherits them forward — so the fix belongs at the point of
+  ;; recording, where it is still cheap.
+  ;;
+  ;; Length alone is the wrong test. Short and precise is fine; long and empty
+  ;; is not. What makes a claim usable later is that it asserts something —
+  ;; a relation, a quantifier, a conditional.
+  (testing "labels are refused, with the shape spelled out"
+    (doseq [label ["weighted sum yields lex min"
+                   "coordinate bound from Q bound"
+                   "one coordinate scalarization"
+                   "Nat.succ_inj is available."
+                   "Simple Finset product environment check"]]
+      (let [m (#'tools/vague-claim {:args {:claim label}})]
+        (is (some? m) (str "should be refused: " label))
+        (is (re-find #"(?i)state what is true" (str m))))))
+
+  (testing "short but precise passes — a relation is an assertion"
+    ;; A real confirmed claim from the odd-covering campaign.
+    (doseq [ok ["uE({3,5,9,15}) >= 17 over period 45"
+                "1 + 1 = 2"
+                "no odd covering system has fewer than 4 primes"]]
+      (is (nil? (#'tools/vague-claim {:args {:claim ok}}))
+          (str "should pass: " ok))))
+
+  (testing "a full statement passes on its own terms"
+    (is (nil? (#'tools/vague-claim
+               {:args {:claim (str "If k1 is C-minimal over finite set S and k2 is "
+                                   "Q-minimal among elements with C equal to C k1, "
+                                   "then Q(k2) <= Q(k1).")}}))))
+
+  (testing "the check fires where artifacts are made"
+    (let [b (state/new-branch {:id "B1" :problem "p"})
+          r (tools/run-tool {:branch b :turn 1 :tool-name "verify_lean"
+                             :args {:claim "one coordinate scalarization"
+                                    :lean "theorem t : True := trivial"}})]
+      (is (= :failure (:category r)))
+      (is (re-find #"(?i)state what is true" (:result r)))
+      (is (nil? (:artifact r)) "and nothing is recorded under a label"))))
+
 (deftest a-missing-expectedVerdict-is-an-annotation-fault-not-a-failed-proof
   ;; gen-21 B3 composed the previous run's two lemmas into a full three-stage
   ;; selector, ran Z3, got a real unsat — and was charged a verification
@@ -3180,7 +3225,7 @@
   ;; names the fix.
   (let [b (state/new-branch {:id "B1" :problem "p"})
         call (fn [thm] (tools/run-tool {:branch b :turn 1 :tool-name "proof_start"
-                                        :args {:claim "c" :theorem thm}}))]
+                                        :args {:claim "every element of S satisfies P" :theorem thm}}))]
     (let [r (call "theorem foo : True := by trivial")]
       (is (= :failure (:category r)))
       (is (re-find #"(?i)statement only|without the proof" (:result r))
@@ -3365,13 +3410,13 @@
     (is (re-find #"\{" msg)
         "and show the shape of a valid call")
     (testing "an argument that was supplied is not demanded again"
-      (let [m (#'tools/missing {:tool-name "proof_start" :args {:claim "c"}}
+      (let [m (#'tools/missing {:tool-name "proof_start" :args {:claim "every element of S satisfies P"}}
                                :claim :theorem)]
         (is (not (re-find #"claim," m)))
         (is (re-find #"theorem" m))))
     (testing "nothing missing is still nil, not an empty complaint"
       (is (nil? (#'tools/missing {:tool-name "proof_start"
-                                  :args {:claim "c" :theorem "t"}}
+                                  :args {:claim "every element of S satisfies P" :theorem "t"}}
                                  :claim :theorem))))))
 
 (deftest repeating-a-failed-call-gets-a-different-answer
