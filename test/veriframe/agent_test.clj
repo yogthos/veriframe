@@ -3226,6 +3226,80 @@
     (is (= :unfaithful (run "GAP: proves 1+1=2, not the claim\nVERDICT: FAIL")))
     (is (= :confirmed (run "GAPS: none\nVERDICT: PASS")))))
 
+(deftest a-lean-rejection-names-the-fault-not-just-the-error
+  ;; vf-7k8. The rejection used to be the raw engine output plus one generic
+  ;; sentence, and the same error classes recurred for three generations: 34
+  ;; Lean failures across gen-22/23/24, of which 8 linarith/omega, 7 syntax,
+  ;; 4 instance.
+  ;;
+  ;; All 8 arithmetic failures are the same mistake. The run is deriving
+  ;; polynomial work bounds — 125*E^5*V^4 < (2*(E*S)+1)*(…) — from E ≤ 2V and
+  ;; S ≤ 2V, which requires MULTIPLYING hypotheses, against tactics that are
+  ;; linear by construction and cannot. Naming that is worth more than the
+  ;; goal state it already prints, because the goal state looks the same
+  ;; whether the tactic was wrong or the mathematics was.
+  ;;
+  ;; The hint names the fault and the tactic that addresses it. It does not do
+  ;; the mathematics — same discipline as `missing` and `vague-claim`.
+  (let [hint #'tools/lean-hint]
+    (testing "linear tactics on a goal that multiplies unknowns"
+      (let [h (hint (str "linarith failed to find a contradiction case h E V S : ℕ "
+                         "hE : 1 ≤ E hS : S ≤ 2 * V a✝ : 125 * E ^ 5 * V ^ 4 < "
+                         "(2 * (E * S) + 1) * (2 * E)"))]
+        (is (some? h))
+        (is (str/includes? h "nlinarith"))
+        (is (or (str/includes? h "linear") (str/includes? h "multipl"))
+            "says WHY the tactic could not do it")))
+
+    (testing "omega reports the same limitation differently"
+      (is (str/includes? (str (hint "omega could not prove the goal: a possible counterexample"))
+                         "nlinarith")))
+
+    (testing "the deprecated big-operator binder"
+      (let [h (hint "unexpected token 'in'; expected ','")]
+        (is (some? h))
+        (is (str/includes? h "∈") "names the spelling Mathlib now wants")))
+
+    (testing "indexing a function with bracket syntax"
+      (let [h (hint (str "failed to synthesize instance of type class GetElem "
+                         "(Fin 4 → ℤ) (Fin 4) ?m.5 ?m.6"))]
+        (is (some? h))
+        (is (str/includes? h "f i"))))
+
+    (testing "a missing Fintype instance"
+      (is (str/includes? (str (hint "failed to synthesize instance of type class Fintype A4"))
+                         "deriving instance")))
+
+    (testing "a rewrite whose pattern is not present"
+      (is (str/includes? (str/lower-case
+                          (str (hint "Tactic `rewrite` failed: Did not find an occurrence of the pattern")))
+                         "syntactically")))
+
+    (testing "an unknown constant is a name to look up, not a proof problem"
+      (is (str/includes? (str (hint "unknown constant 'Finset.sum_sub_distrib'"))
+                         "lean_search")))
+
+    (testing "an error with no known class gets no invented advice"
+      (is (nil? (hint "some entirely novel Lean failure nobody has seen")))))
+
+  ;; And it reaches the branch.
+  (with-db [c]
+    (let [rid (runs/start-run! c {:problem "p"})
+          b (state/new-branch {:id "B1" :problem "p"})]
+      (with-redefs [lean-repl/create-session (fn [& _] {:id "s"})
+                    lean-repl/mathlib-env (fn [& _] nil)
+                    lean-pool/checkout! (fn [& _] {:id "s"})
+                    lean-repl/run-command
+                    (fn [& _] {:ok false :sorries []
+                               :errors [{:data "linarith failed to find a contradiction"}]})]
+        (let [r (tools/run-tool {:branch b :turn 1 :conn c :run-id rid
+                                 :tool-name "verify_lean"
+                                 :args {:claim "the total work is at most 1000 * V^7"
+                                        :lean "theorem t : True := by linarith"}})]
+          (is (= :failure (:category r)))
+          (is (str/includes? (:result r) "nlinarith")
+              "the hint is in what the branch actually reads"))))))
+
 (deftest a-lean-snippet-lean-rejects-records-no-artifact
   ;; It used to record one with claim-status :refuted, so a type error or a
   ;; failed tactic read as evidence AGAINST the claim. A proof that does not

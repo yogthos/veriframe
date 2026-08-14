@@ -1732,6 +1732,87 @@
                   (lean-repl/mathlib-env)))]
       [s (assoc branch :lean s)])))
 
+(def ^:private lean-hints
+  "Recurring Lean failures, and what each one actually means.
+
+  Ranked by how often they cost a turn across gen-22, gen-23 and gen-24: 34
+  Lean rejections, of which 8 linarith/omega, 7 syntax, 7 unsolved goals, 4
+  instance resolution, 3 rewrite. The engine's own text is printed above these
+  and is often precise; what it does not say is which of them is a TACTIC
+  fault the branch can fix in one line and which is a real gap in the proof.
+  Those look identical from the goal state, and a branch that reads a tactic
+  limitation as a mathematical obstruction abandons a true lemma.
+
+  Each entry names the fault and the tactic that addresses it, and stops
+  there. Supplying the proof would move the work from the branch to the
+  harness, and the harness is not the thing being tested."
+  [[#"(?i)linarith failed|omega could not"
+    (str "`linarith` and `omega` are LINEAR arithmetic: neither can multiply"
+         " two unknowns, and a goal comparing products or powers of variables"
+         " is out of reach for both however true it is. If the goal needs"
+         " hypotheses multiplied together — bounding E*S from E ≤ 2V and"
+         " S ≤ 2V, say — use `nlinarith`, which adds products of hypotheses to"
+         " the problem, and give it the products it should consider as hint"
+         " terms: `nlinarith [sq_nonneg V, mul_le_mul hE hS ...]`. For a chain"
+         " of monotone steps, `mul_le_mul`, `Nat.mul_le_mul` and `pow_le_pow_left`"
+         " prove it directly and say more clearly what is going on.")]
+
+   [#"(?i)unexpected token 'in'"
+    (str "Mathlib 4 writes big operators with ∈, not `in`: `∑ x ∈ s, f x` and"
+         " `∏ x ∈ s, f x`. The `∑ x in s` spelling is deprecated and no longer"
+         " parses. This is the single most common syntax failure here, because"
+         " the old form is everywhere in the training data.")]
+
+   [#"(?i)failed to synthesize.{0,40}GetElem"
+    (str "You indexed with bracket syntax something that is a FUNCTION, not a"
+         " collection. For `f : Fin n → α`, application is `f i`, not `f[i]`."
+         " `GetElem` is for arrays, lists and vectors.")]
+
+   [#"(?i)failed to synthesize.{0,40}Fintype"
+    (str "Lean cannot enumerate that type, and a Finset sum or a `∑ x, …` over"
+         " it needs to. Either derive it — `deriving instance Fintype for X`,"
+         " which Lean's own hint above suggests — or state the lemma over a"
+         " type that already has the instance, `Fin n` being the usual choice.")]
+
+   [#"(?i)failed to synthesize.{0,60}Decidable"
+    (str "The predicate is not decidable as stated, so Lean cannot build the"
+         " `if` or the `Finset.filter` it needs. Add the instance as a binder"
+         " — `[DecidableRel G.Adj]`, `[DecidablePred p]` — or `open Classical"
+         " in` before the declaration to get it classically.")]
+
+   [#"(?i)rewrite.{0,20}failed|Did not find an occurrence"
+    (str "`rw` matches the pattern SYNTACTICALLY against the goal, so a lemma"
+         " that is true here still fails if the goal is not in its exact shape."
+         " The goal above is what it had to match. `simp only [lemma]` matches"
+         " up to reducible unfolding, and `conv` lets you point at the"
+         " subterm you meant.")]
+
+   [#"(?i)unknown (constant|identifier)"
+    (str "That name does not exist in this environment. It is a lookup, not a"
+         " proof problem: `lean_search` finds the real name, and the one you"
+         " want is often spelled differently or namespaced.")]
+
+   [#"(?i)no goals"
+    (str "More tactics than goals — something above already closed it. Delete"
+         " the trailing tactics, or check that a `·` / `case` block is not"
+         " claiming a branch that no longer exists.")]
+
+   [#"(?i)unsolved goals"
+    (str "The proof ran to the end with goals still open; the ones printed"
+         " above are what remain. If a case looks unreachable, it still needs"
+         " discharging — `omega`, `simp` or an explicit `exact absurd …` on"
+         " the contradictory hypothesis.")]])
+
+(defn lean-hint
+  "What the harness can say about a Lean error beyond quoting it, or nil.
+
+  nil when nothing matches, deliberately: an invented hint on an unfamiliar
+  error is worse than none, because the branch has no way to tell the two
+  apart and will spend turns on advice the harness made up."
+  [text]
+  (let [t (str text)]
+    (some (fn [[re hint]] (when (re-find re t) hint)) lean-hints)))
+
 (defn- lean-error-text [errors]
   (str/join "\n" (map #(str "  " (str/replace (str (:data %)) "\n" "\n  ")) errors)))
 
@@ -1816,11 +1897,13 @@
               ;; as evidence against the claim. The failure log keeps the
               ;; record; the artifact table should not, and neither should the
               ;; claim registry.
-              (do
+              (let [etext (lean-error-text (:errors r))]
                 (settle-claim! ctx claim :released nil)
-                (fail branch (str "Lean rejected it:\n" (lean-error-text (:errors r))
+                (fail branch (str "Lean rejected it:\n" etext
                                   "\n\nThat is a problem with the proof, not evidence"
-                                  " about the claim.")
+                                  " about the claim."
+                                  (when-let [h (lean-hint etext)]
+                                    (str "\n\n" h)))
                       :failure {:claim claim
                                 :reason (str "lean: " (some-> (first (:errors r)) :data
                                                               (str/replace #"\s+" " ")
