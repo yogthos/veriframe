@@ -2988,6 +2988,77 @@
       (#'aloop/call-model {:llm-adapter :a :llm-config {:max-tokens 16384}} {:messages []})
       (is (= 2 @calls)))))
 
+;; --- a turn that emitted no call is prefilled into the fence ----------------
+
+(deftest a-turn-that-emitted-no-tool-call-prefills-the-next-one
+  ;; gen-22 B1 spent 24 of its 44 turns on __no_call__ — more than half the
+  ;; branch. It was told "[harness] No ```tool-call block in your response"
+  ;; twenty-four times, which is the measurement: asking a model that just
+  ;; wrote 109,360 characters without a fence to please emit one does not
+  ;; work. Turn 42 is the shape of it — a full page of sound reasoning ending
+  ;; "let me confirm the composition theorem a#712's exact statement", and
+  ;; then nothing.
+  ;;
+  ;; arbiter/prefill-for already argues the general case: across gen-19 and
+  ;; gen-20 the gates that changed behaviour were the ones that WITHHELD, and
+  ;; ending the request mid-fence is the withholding form of an instruction —
+  ;; the model cannot answer in prose because it is already inside a tool
+  ;; call. That mechanism was reachable only from a gate decision, so it never
+  ;; reached the branch with the most to gain from it.
+  (let [c (db/connect ":memory:")
+        _ (db/migrate! c)
+        rid (runs/start-run! c {:problem "p" :beam-width 1})
+        b (state/new-branch {:id "B1" :problem "p"})]
+    (runs/open-branch! c rid {:branch-id "B1" :created-at-turn 0})
+    (with-redefs [llm/chat (fn [& _] {:content "Let me confirm a#712 first."
+                                      :finish-reason "stop"})]
+      (let [after (aloop/run-turn {:conn c :run-id rid :max-turns 40
+                                   :llm-adapter :a :llm-config {:max-tokens 16384}}
+                                  b 1)]
+        (is (= "```tool-call\n" (:prefill after))
+            "the next request ends mid-fence, so prose is not an available reply")
+        (is (not (str/includes? (:prefill after) "\"name\""))
+            "bare: which tool to call is the branch's decision, not the harness's")))))
+
+(deftest a-turn-that-called-a-tool-leaves-no-prefill-behind
+  ;; The complement, and the one that would go wrong quietly: a branch that is
+  ;; working normally must not be forced into a fence, or it can never write
+  ;; the reasoning that earns the next call.
+  (let [c (db/connect ":memory:")
+        _ (db/migrate! c)
+        rid (runs/start-run! c {:problem "p" :beam-width 1})
+        b (state/new-branch {:id "B1" :problem "p"})]
+    (runs/open-branch! c rid {:branch-id "B1" :created-at-turn 0})
+    (with-redefs [llm/chat (fn [& _]
+                             {:content (str "```tool-call\n"
+                                            (json/write-str
+                                             {:name "thesis"
+                                              :args {:goal "settle Q-1"
+                                                     :technique "scalarization"
+                                                     :subClaims ["the box bound holds"]}})
+                                            "\n```")
+                              :finish-reason "stop"})]
+      (let [after (aloop/run-turn {:conn c :run-id rid :max-turns 40
+                                   :llm-adapter :a :llm-config {:max-tokens 16384}}
+                                  b 1)]
+        (is (nil? (:prefill after)))))))
+
+(deftest a-prefilled-turn-that-still-emits-no-call-keeps-the-fence
+  ;; One prefill is not a guarantee. A model can open the fence and then fail
+  ;; to close it, and the recovery from that is the same recovery — not a
+  ;; branch that silently reverts to prose on the turn after.
+  (let [c (db/connect ":memory:")
+        _ (db/migrate! c)
+        rid (runs/start-run! c {:problem "p" :beam-width 1})
+        b (assoc (state/new-branch {:id "B1" :problem "p"})
+                 :prefill "```tool-call\n")]
+    (runs/open-branch! c rid {:branch-id "B1" :created-at-turn 0})
+    (with-redefs [llm/chat (fn [& _] {:content "{\"name\": " :finish-reason "length"})]
+      (let [after (aloop/run-turn {:conn c :run-id rid :max-turns 40
+                                   :llm-adapter :a :llm-config {:max-tokens 16384}}
+                                  b 1)]
+        (is (= "```tool-call\n" (:prefill after)))))))
+
 (deftest done-lets-a-branch-cite-a-number-a-sibling-branch-confirmed
   ;; vf-b9c. The coverage rung read only (:artifacts branch). Artifacts
   ;; confirmed elsewhere in the run reach a branch through the shared-artifact

@@ -313,7 +313,24 @@
                                    :usage (:usage response)})
             (-> branch
                 (state/record-outcome {:category :mechanics :progress? false})
-                (state/add-message "user" msg)))
+                (state/add-message "user" msg)
+                ;; And make the next request end mid-fence, so prose is not an
+                ;; available reply. Telling the model to emit a fence is the
+                ;; suggesting form; this is the withholding form, which is the
+                ;; one that has ever worked — see arbiter/prefill-for.
+                ;;
+                ;; gen-22 B1 was sent the message above twenty-four times in
+                ;; forty-four turns and answered in prose every time, once at
+                ;; 109,360 characters against a 32,768-token cap. A branch
+                ;; that cannot reach a tool is not thinking; it is idling at
+                ;; full spend.
+                ;;
+                ;; Bare, with no tool named: a gate that knows which tool it
+                ;; wants supplies the name itself, but here nothing is being
+                ;; steered — the branch had a plan and failed to act on it,
+                ;; and picking its next call for it would replace a mechanics
+                ;; failure with the harness doing the reasoning.
+                (assoc :prefill "```tool-call\n")))
 
           ;; A real tool call.
           (let [tool (:name parsed)
