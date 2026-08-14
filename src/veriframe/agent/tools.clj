@@ -196,6 +196,27 @@
                             " — carried over, not re-run.")
                :failure {:claim claim :reason (:reason answer)}})))))))
 
+(defn- verdict-disposition
+  "How a claim-status settles in the registry.
+
+  The distinction the registry has to get right, and the one with the longest
+  blast radius if it does not: a settled claim stays settled for the whole
+  run, so the only outcomes allowed to settle one are verdicts ABOUT THE
+  CLAIM. `:confirmed` and `:refuted` are that. Everything else — a proof Lean
+  rejected, an open `sorry`, an encoding that formalised a different question,
+  an engine that died — is a fact about the attempt, and verify_lean already
+  makes this argument for the artifact table: \"a snippet Lean rejects is a
+  failed proof ATTEMPT, which says nothing about whether the claim is true.\"
+
+  Recording one of those as a verdict would tell every later branch that a
+  true claim had been checked and failed, and no branch would ever check it
+  again."
+  [status]
+  (case status
+    :confirmed :confirmed
+    :refuted :failed
+    :released))
+
 (defn- settle-claim!
   "Record the verdict of a verification this branch just ran, or release the
   claim when the run never produced one. The UCLA rule lives here: a verdict —
@@ -588,12 +609,15 @@
 (defmethod run-tool "verify_smt" [{:keys [branch config] :as ctx}]
   (if-let [m (or (missing ctx :claim :smtlib) (vague-claim ctx))]
     (fail branch m)
-    (let [claim (arg ctx :claim)
+    (if-let [served (claim-dedup ctx (arg ctx :claim))]
+      served
+      (let [claim (arg ctx :claim)
           smtlib (arg ctx :smtlib)
           expected (some-> (arg ctx :expectedVerdict) str/lower-case keyword)
           r (smt/run-smt smtlib (get-in config [:engines :z3]))]
       (if (= :error (:status r))
-        (fail branch (:error r) :failure {:claim claim :reason (:error r)})
+        (do (settle-claim! ctx claim :released nil)
+            (fail branch (:error r) :failure {:claim claim :reason (:error r)}))
         (let [free (free-variables smtlib)
               status (smt-claim-status (:verdict r) expected (seq free))
               review (fn [dir] (encoding-faithful?
@@ -614,7 +638,13 @@
                        (nil? verdict-review) status
                        (:ok? verdict-review) status
                        :else :unfaithful)
-              objection (when (= :unfaithful status) (:reason verdict-review))]
+              objection (when (= :unfaithful status) (:reason verdict-review))
+              artifact {:kind :smt :claim claim :code smtlib :verdict (:verdict r)
+                        :witness (:model r) :claim-status status :tier :fast}]
+          (settle-claim! ctx claim (verdict-disposition status)
+                         (if (= :confirmed status)
+                           artifact
+                           (or objection (str "z3 returned " (name (:verdict r))))))
           (merge
            {:branch branch
             ;; An UNDECLARED expectedVerdict is an annotation fault, not a
@@ -659,8 +689,7 @@
                              "Z3 returned UNKNOWN, which is not evidence either way."))
                          (when (:model r)
                            (str "\nWitness: " (pr-str (:model r)))))
-            :artifact {:kind :smt :claim claim :code smtlib :verdict (:verdict r)
-                       :witness (:model r) :claim-status status :tier :fast}}
+            :artifact artifact}
            ;; The failure log is what crosses branches, so it carries the
            ;; objection rather than a description of the engine's output.
            ;; "z3 returned unsat (status unfaithful)" taught the next branch
@@ -669,7 +698,7 @@
              {:failure {:claim claim
                         :reason (or objection
                                     (str "z3 returned " (name (:verdict r))
-                                         " (status " (name status) ")"))}})))))))
+                                         " (status " (name status) ")"))}}))))))))
 
 (defmethod run-tool "verify_template" [{:keys [branch config] :as ctx}]
   (if-let [m (or (missing ctx :claim :template) (vague-claim ctx))]
@@ -714,7 +743,12 @@
                           :verdict verdict
                           :witness (get-in r [:primary :model])
                           :claim-status status :tier :slow}]
-            (settle-claim! ctx claim (if confirmed? :confirmed :failed)
+            ;; Not `(if confirmed? :confirmed :failed)`. An :unfaithful status
+            ;; means the template was filled to ask a different question, which
+            ;; settles nothing about the claim — recording it as a verdict shut
+            ;; the claim for the rest of the run against every branch that
+            ;; could have filled the template correctly.
+            (settle-claim! ctx claim (verdict-disposition status)
                            (if confirmed? artifact (:note r)))
             (merge
              {:branch (update branch :tiers-seen conj :slow)
@@ -1592,28 +1626,38 @@
 (defmethod run-tool "verify_lean" [{:keys [branch] :as ctx}]
   (if-let [m (or (missing ctx :claim :lean) (vague-claim ctx))]
     (fail branch m)
-    (let [{:keys [ok warnings]} (lint/lint-lean (arg ctx :lean))]
+    (if-let [served (claim-dedup ctx (arg ctx :claim))]
+      served
+      ;; Every exit below except a confirmation releases the claim. Lean has no
+      ;; refuting outcome — it rejects PROOFS, never claims — so a branch that
+      ;; cannot get its snippet past the elaborator has learned nothing about
+      ;; whether the statement is true, and must not hold the claim shut
+      ;; against a branch that can.
+      (let [{:keys [ok warnings]} (lint/lint-lean (arg ctx :lean))]
       (if-not ok
         ;; `sorry` compiles with a warning, so without the lint a snippet that
         ;; proves nothing would be recorded as confirmed. Observed in the
         ;; Frankl run in the original harness.
-        (fail branch (str "Lean lint rejected the snippet — nothing was run:\n  • "
-                          (str/join "\n  • " warnings)))
+        (do (settle-claim! ctx (arg ctx :claim) :released nil)
+            (fail branch (str "Lean lint rejected the snippet — nothing was run:\n  • "
+                              (str/join "\n  • " warnings))))
         (try
           (let [[s branch] (lean-session! ctx)
                 claim (arg ctx :claim)
                 r (lean-repl/run-command s (arg ctx :lean))]
             (cond
               (:error r)
-              (fail branch (str "The Lean REPL failed: " (:error r))
-                    :failure {:claim claim :reason (:error r)})
+              (do (settle-claim! ctx claim :released nil)
+                  (fail branch (str "The Lean REPL failed: " (:error r))
+                        :failure {:claim claim :reason (:error r)}))
 
               (seq (:sorries r))
-              (fail branch
-                    (str "The snippet elaborated but left " (count (:sorries r))
-                         " `sorry` goal(s) open, so it proves nothing. Close them,"
-                         " or use proof_start to develop the proof step by step.")
-                    :failure {:claim claim :reason "the proof contained sorry"})
+              (do (settle-claim! ctx claim :released nil)
+                  (fail branch
+                        (str "The snippet elaborated but left " (count (:sorries r))
+                             " `sorry` goal(s) open, so it proves nothing. Close them,"
+                             " or use proof_start to develop the proof step by step.")
+                        :failure {:claim claim :reason "the proof contained sorry"}))
 
               (:ok r)
               (let [code (arg ctx :lean)
@@ -1629,38 +1673,49 @@
                                 :extra lean-faithfulness-note
                                 :structural (faithful/check-lean claim code)})]
                 (if (:ok? faithful?)
-                  {:branch branch :category :success :progress? true
-                   :result "Lean accepted it. Claim CONFIRMED."
-                   :artifact {:kind :lean :claim claim :code code
-                              :claim-status :confirmed :tier :fast}}
-                  (fail branch
-                        (str "Lean accepted the declaration, so the PROOF is sound —"
-                             " but review found the STATEMENT is not the claim, so"
-                             " what you proved is not what you said.\n\n"
-                             (:reason faithful?)
-                             "\n\nCheck the quantifiers, their ranges, the"
-                             " hypotheses and the direction of each inequality"
-                             " against the claim's wording, then state the theorem"
-                             " the claim describes.")
-                        :failure {:claim claim :reason (:reason faithful?)}
-                        :artifact {:kind :lean :claim claim :code code
-                                   :claim-status :unfaithful :tier :fast})))
+                  (let [artifact {:kind :lean :claim claim :code code
+                                  :claim-status :confirmed :tier :fast}]
+                    (settle-claim! ctx claim :confirmed artifact)
+                    {:branch branch :category :success :progress? true
+                     :result "Lean accepted it. Claim CONFIRMED."
+                     :artifact artifact})
+                  (do
+                    ;; Lean proved SOMETHING, just not this. The claim is
+                    ;; untouched by that, and the next branch may state the
+                    ;; theorem the claim actually describes.
+                    (settle-claim! ctx claim :released nil)
+                    (fail branch
+                          (str "Lean accepted the declaration, so the PROOF is sound —"
+                               " but review found the STATEMENT is not the claim, so"
+                               " what you proved is not what you said.\n\n"
+                               (:reason faithful?)
+                               "\n\nCheck the quantifiers, their ranges, the"
+                               " hypotheses and the direction of each inequality"
+                               " against the claim's wording, then state the theorem"
+                               " the claim describes.")
+                          :failure {:claim claim :reason (:reason faithful?)}
+                          :artifact {:kind :lean :claim claim :code code
+                                     :claim-status :unfaithful :tier :fast}))))
 
               :else
               ;; No artifact. A snippet Lean rejects is a failed proof ATTEMPT,
               ;; which says nothing about whether the claim is true — this used
               ;; to record it with claim-status :refuted, so a type error read
               ;; as evidence against the claim. The failure log keeps the
-              ;; record; the artifact table should not.
-              (fail branch (str "Lean rejected it:\n" (lean-error-text (:errors r))
-                                "\n\nThat is a problem with the proof, not evidence"
-                                " about the claim.")
-                    :failure {:claim claim
-                              :reason (str "lean: " (some-> (first (:errors r)) :data
-                                                            (str/replace #"\s+" " ")
-                                                            (subs 0 (min 160 (count (str (:data (first (:errors r)))))))))})))
+              ;; record; the artifact table should not, and neither should the
+              ;; claim registry.
+              (do
+                (settle-claim! ctx claim :released nil)
+                (fail branch (str "Lean rejected it:\n" (lean-error-text (:errors r))
+                                  "\n\nThat is a problem with the proof, not evidence"
+                                  " about the claim.")
+                      :failure {:claim claim
+                                :reason (str "lean: " (some-> (first (:errors r)) :data
+                                                              (str/replace #"\s+" " ")
+                                                              (subs 0 (min 160 (count (str (:data (first (:errors r)))))))))}))))
           (catch Throwable e
-            (unavailable branch "Lean" e)))))))
+            (settle-claim! ctx (arg ctx :claim) :released nil)
+            (unavailable branch "Lean" e))))))))
 
 (defmethod run-tool "lean_search" [{:keys [branch config] :as ctx}]
   (if-let [m (missing ctx :query)]
@@ -1893,16 +1948,19 @@
 (defmethod run-tool "verify_octave" [{:keys [branch] :as ctx}]
   (if-let [m (or (missing ctx :claim :expr) (vague-claim ctx))]
     (fail branch m)
-    (try
+    (if-let [served (claim-dedup ctx (arg ctx :claim))]
+      served
+      (try
       (let [[s branch] (octave-session! ctx)
             claim (arg ctx :claim)
             tol (or (arg ctx :tol) 0)
             expr (arg ctx :expr)
             r (octave/check s expr tol)]
         (if-not (:ok r)
-          (fail branch (str "The expression did not evaluate to a verdict: " (:error r)
-                            "\nThat is an encoding problem, not evidence about the claim.")
-                :failure {:claim claim :reason (:error r)})
+          (do (settle-claim! ctx claim :released nil)
+              (fail branch (str "The expression did not evaluate to a verdict: " (:error r)
+                                "\nThat is an encoding problem, not evidence about the claim.")
+                    :failure {:claim claim :reason (:error r)}))
           (let [true? (boolean (:verdict r))
                 exact? (:exact r)
                 code (octave-artifact-code s expr)
@@ -1925,7 +1983,12 @@
                 artifact {:kind :octave
                           :claim (octave-claim-text claim tol exact?)
                           :code code
-                          :claim-status status :tier :fast}]
+                          :claim-status status :tier :fast}
+                ;; Settled against the claim as the branch stated it, not
+                ;; against the tolerance-decorated artifact text — the next
+                ;; branch to ask will ask in the plain words.
+                _ (settle-claim! ctx claim (verdict-disposition status)
+                                 (if (= :confirmed status) artifact objection))]
             (case status
               :confirmed
               {:branch branch :category :success :progress? true
@@ -1969,7 +2032,8 @@
                     :failure {:claim claim :reason "the Octave check evaluated to false"}
                     :artifact artifact)))))
       (catch Throwable e
-        (unavailable branch "Octave" e)))))
+        (settle-claim! ctx (arg ctx :claim) :released nil)
+        (unavailable branch "Octave" e))))))
 
 (defn- measurement-claim-text
   "The claim with the number Octave actually returned written into it.

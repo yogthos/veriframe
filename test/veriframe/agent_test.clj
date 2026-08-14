@@ -1160,6 +1160,159 @@
             (is (some? ev))
             (is (str/includes? (:data ev) "B1"))))))))
 
+(deftest every-slow-engine-consults-the-claim-registry
+  ;; vf-3k4. The registry was reachable from `review` and `verify_template`
+  ;; and from nothing else, in EITHER direction — the engines neither asked it
+  ;; nor filled it. gen-22 ran 97 slow verifications and the dedup fired zero
+  ;; times, while B3:t11 and B2.2:t17 sent Z3 the same claim, byte for byte.
+  ;;
+  ;; One case per engine, each asserting the thing that costs money: the
+  ;; engine is not invoked at all on the second branch.
+  (with-db [c]
+    (let [rid (runs/start-run! c {:problem "p"})
+          claim "every stage-2-optimal flow has |k_e| at most S on every edge"
+          mk (fn [id] (state/new-branch {:id id :problem "p"}))
+          run (fn [registry id tool args]
+                (tools/run-tool (merge {:branch (mk id) :turn 1 :conn c :run-id rid
+                                        :claims registry :tool-name tool}
+                                       {:args (assoc args :claim claim)})))]
+      (testing "verify_smt"
+        (let [registry (claims/new-registry)
+              calls (atom 0)]
+          (with-redefs [smt/run-smt (fn [& _] (swap! calls inc)
+                                      {:status :ok :verdict :unsat})
+                        llm/chat (fn [& _] {:content "GAPS: none\nVERDICT: PASS"})]
+            (let [ra (run registry "B1" "verify_smt"
+                          {:smtlib "(assert true)" :expectedVerdict "unsat"})
+                  rb (run registry "B2" "verify_smt"
+                          {:smtlib "(assert (not false))" :expectedVerdict "unsat"})]
+              (is (= :success (:category ra)))
+              (is (= :success (:category rb)))
+              (is (= 1 @calls) "z3 is not run a second time on the same claim")
+              (is (str/includes? (:result rb) "B1"))))))
+
+      (testing "verify_lean"
+        (let [registry (claims/new-registry)
+              calls (atom 0)]
+          (with-redefs [lean-repl/create-session (fn [& _] {:id "s"})
+                        lean-repl/mathlib-env (fn [& _] nil)
+                        lean-pool/checkout! (fn [& _] {:id "s"})
+                        lean-repl/run-command (fn [& _] (swap! calls inc)
+                                                {:ok true :sorries []})
+                        llm/chat (fn [& _] {:content "GAPS: none\nVERDICT: PASS"})]
+            (let [ra (run registry "B1" "verify_lean" {:lean "theorem t : True := trivial"})
+                  rb (run registry "B2" "verify_lean" {:lean "theorem u : True := by trivial"})]
+              (is (= :success (:category ra)))
+              (is (= :success (:category rb)))
+              (is (= 1 @calls) "the Lean pool is not paid twice for one claim")))))
+
+      (testing "verify_octave"
+        (let [registry (claims/new-registry)
+              calls (atom 0)]
+          (with-redefs [octave/create-session (fn [& _] {:dir "/tmp/x"
+                                                        :log (atom [{:code "x = 1;"}])
+                                                        :alive (atom true)})
+                        octave/check (fn [& _] (swap! calls inc)
+                                       {:ok true :verdict true :tol 0 :exact true})
+                        llm/chat (fn [& _] {:content "GAPS: none\nVERDICT: PASS"})]
+            (let [ra (run registry "B1" "verify_octave" {:expr "x == 1"})
+                  rb (run registry "B2" "verify_octave" {:expr "y == 1"})]
+              (is (= :success (:category ra)))
+              (is (= :success (:category rb)))
+              (is (= 1 @calls) "octave is not run a second time on the same claim"))))))))
+
+(deftest a-failed-proof-attempt-does-not-lock-the-claim
+  ;; The rule the registry has to follow, and the one that would be quietly
+  ;; catastrophic to get wrong. verify_lean already argues it for the artifact
+  ;; table — "a snippet Lean rejects is a failed proof ATTEMPT, which says
+  ;; nothing about whether the claim is true" — and the registry is the same
+  ;; argument with a longer blast radius: a settled claim stays settled for the
+  ;; whole run, so recording one branch's type error as a verdict would tell
+  ;; every later branch that a TRUE claim had been checked and failed.
+  ;;
+  ;; Only a verdict about the claim settles it. A bad proof, an open `sorry`,
+  ;; an unfaithful encoding and a dead engine all release.
+  (with-db [c]
+    (let [rid (runs/start-run! c {:problem "p"})
+          claim "every stage-2-optimal flow has |k_e| at most S on every edge"
+          mk (fn [id] (state/new-branch {:id id :problem "p"}))
+          run (fn [registry id tool args]
+                (tools/run-tool (merge {:branch (mk id) :turn 1 :conn c :run-id rid
+                                        :claims registry :tool-name tool}
+                                       {:args (assoc args :claim claim)})))]
+      (testing "Lean rejects B1's proof, so B2 may still try"
+        (let [registry (claims/new-registry)
+              calls (atom 0)]
+          (with-redefs [lean-repl/create-session (fn [& _] {:id "s"})
+                        lean-repl/mathlib-env (fn [& _] nil)
+                        lean-pool/checkout! (fn [& _] {:id "s"})
+                        lean-repl/run-command
+                        (fn [& _] (swap! calls inc)
+                          (if (= 1 @calls)
+                            {:ok false :sorries []
+                             :errors [{:data "unknown identifier 'foo'"}]}
+                            {:ok true :sorries []}))
+                        llm/chat (fn [& _] {:content "GAPS: none\nVERDICT: PASS"})]
+            (let [ra (run registry "B1" "verify_lean" {:lean "theorem t : True := foo"})
+                  rb (run registry "B2" "verify_lean" {:lean "theorem t : True := trivial"})]
+              (is (= :failure (:category ra)))
+              (is (= :success (:category rb))
+                  "B1's broken proof must not settle the claim against B2")
+              (is (= 2 @calls) "B2 really ran Lean rather than being served a verdict")))))
+
+      (testing "an open sorry is not a verdict either"
+        ;; The snippet must not contain the literal `sorry` — lint/lint-lean
+        ;; rejects that before the REPL is reached, which is a different
+        ;; refusal. This is the case that gets past the lint: a declaration
+        ;; that elaborates and leaves a goal open anyway.
+        (let [registry (claims/new-registry)
+              calls (atom 0)]
+          (with-redefs [lean-repl/create-session (fn [& _] {:id "s"})
+                        lean-repl/mathlib-env (fn [& _] nil)
+                        lean-pool/checkout! (fn [& _] {:id "s"})
+                        lean-repl/run-command
+                        (fn [& _] (swap! calls inc)
+                          (if (= 1 @calls)
+                            {:ok true :sorries [{:goal "True"}]}
+                            {:ok true :sorries []}))
+                        llm/chat (fn [& _] {:content "GAPS: none\nVERDICT: PASS"})]
+            (run registry "B1" "verify_lean" {:lean "theorem t : True := openGoal"})
+            (is (= :success (:category (run registry "B2" "verify_lean"
+                                            {:lean "theorem t : True := trivial"})))))))
+
+      (testing "an unfaithful encoding leaves the claim open for a correct one"
+        ;; Keyed on which encoding the judge is looking at, not on call order:
+        ;; the faithfulness check runs a structural pass first and does not
+        ;; always reach the model, so a counter here measures the wrong thing.
+        (let [registry (claims/new-registry)]
+          (with-redefs [smt/run-smt (fn [& _] {:status :ok :verdict :unsat})
+                        llm/chat (fn [_a _b msgs & _rest]
+                                   {:content
+                                    (if (str/includes? (str msgs) "the-wrong-question")
+                                      "GAP: the encoding proves something else\nVERDICT: FAIL"
+                                      "GAPS: none\nVERDICT: PASS")})]
+            (run registry "B1" "verify_smt" {:smtlib "(assert the-wrong-question)"
+                                             :expectedVerdict "unsat"})
+            (is (= :success (:category (run registry "B2" "verify_smt"
+                                            {:smtlib "(assert (<= k S))"
+                                             :expectedVerdict "unsat"})))
+                "B1 encoded the wrong question; that is not a verdict on the claim"))))
+
+      (testing "a refutation IS a verdict and does settle"
+        (let [registry (claims/new-registry)
+              calls (atom 0)]
+          (with-redefs [smt/run-smt (fn [& _] (swap! calls inc)
+                                      {:status :ok :verdict :sat})
+                        llm/chat (fn [& _] {:content "GAPS: none\nVERDICT: PASS"})]
+            (let [ra (run registry "B1" "verify_smt"
+                          {:smtlib "(assert (= x 1))" :expectedVerdict "unsat"})
+                  rb (run registry "B2" "verify_smt"
+                          {:smtlib "(assert (= y 1))" :expectedVerdict "unsat"})]
+              (is (= :failure (:category ra)))
+              (is (= :failure (:category rb)))
+              (is (= 1 @calls) "the refutation carries over instead of being re-run")
+              (is (str/includes? (:result rb) "B1")))))))))
+
 (deftest shared-artifact-log-round-trips
   ;; The failure log's twin: what an engine CONFIRMED, with provenance inline.
   (with-db [c]
