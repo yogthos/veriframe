@@ -434,6 +434,42 @@
                                             :branch-before b :branch-after b}))
           "unmet once the window passes"))))
 
+(deftest every-gate-that-fires-can-actually-be-met
+  ;; vf-9bo. settle dispatches on gate in a case whose fallthrough is false, so
+  ;; a gate missing from that case is not merely unhandled — its prediction can
+  ;; never come true. It fires, expires, and is recorded :unmet, which reads
+  ;; off the gate table as a gate the model ignores when the harness never
+  ;; checked. safe-state sat at 0 met / 2 unmet across gen-22/23/24 for exactly
+  ;; this reason.
+  ;;
+  ;; The same shape as the failures charged to the cull counter in vf-jki: a
+  ;; tally blaming the branch for something nobody measured. This asserts the
+  ;; dispatch covers the table, so adding a gate without a settle rule fails
+  ;; here rather than silently three generations later.
+  (let [b (branch-with)
+        every-tool (vec (tools/tool-names))]
+    (doseq [{:keys [gate]} gates/gates]
+      (is (= :met (arbiter/settle {:gate gate :turn 1 :window 3}
+                                  {:current-turn 2
+                                   :tools-called every-tool
+                                   :branch-before b
+                                   :branch-after (branch-with
+                                                  :artifacts
+                                                  [{:claim "every element of S satisfies P"
+                                                    :claim-status :confirmed}])}))
+          (str "gate " gate " has no way to be met; it can only expire unmet")))))
+
+(deftest safe-state-settles-on-the-fallback-it-names
+  ;; Its prediction is "the branch retracts, changes technique, or ships what
+  ;; it has", and each of those is a tool call the harness can see.
+  (let [b (branch-with)
+        settles (fn [tool] (arbiter/settle {:gate :safe-state :turn 1 :window 3}
+                                           {:current-turn 2 :tools-called [tool]
+                                            :branch-before b :branch-after b}))]
+    (are [tool] (= :met (settles tool))
+      "retract_rule" "thesis" "done" "give_up" "review")
+    (is (nil? (settles "verify_smt")) "still open inside the window")))
+
 ;; --- the done gate ----------------------------------------------------------
 
 (deftest answer-must-be-covered-by-evidence
