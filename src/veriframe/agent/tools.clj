@@ -44,6 +44,7 @@
             [veriframe.engine.smt-templates :as templates]
             [veriframe.llm.client :as llm]
             [veriframe.llm.message :as message]
+            [veriframe.store.artifacts :as artifacts]
             [veriframe.store.journal :as journal]))
 
 (defmulti run-tool
@@ -152,6 +153,57 @@
            " from Q bound\" but \"if an integer vector has sum-of-squares at"
            " most Q, every coordinate is at most D whenever D^2 >= Q\"."))))
 
+;; Defined below, with the other judge-backed checks; the same-claim question
+;; has to be asked from here, before a claim is taken.
+(declare judge)
+
+(defn- already-proved
+  "The confirmed artifact that already states this claim, or nil.
+
+  The registry above keys on spelling, so it sees `|k_e| <= S` and `every
+  coordinate is at most S` as two different claims. gen-22 proved the same
+  coefficient-feasibility lemma twice on ONE branch — a#687 and a#689, the
+  same fact with B renamed to D = E*R, 4-gram Jaccard 0.28 — and a#717's own
+  claim text reads \"(re-verified on this branch)\", so the branch had the
+  neighbour in its ledger and re-proved it anyway. No lexical threshold
+  separates those pairs: they differ in wording exactly where they agree in
+  content, and a threshold loose enough to catch them merges facts a run
+  needs apart, like the injectivity and surjectivity of one map.
+
+  So the comparison is a judgement, made by a judge. FTS supplies at most one
+  candidate — the best match, not a slate, which bounds this at one model call
+  and makes a miss the failure mode rather than a slate of near-misses to
+  adjudicate. No candidate, no call: a run whose pool holds nothing like the
+  claim pays nothing for this.
+
+  Own-branch matches count. Excluding them is right for the context block,
+  where a branch re-reading its own lemmas is noise, and wrong here, where a
+  branch re-proving its own lemma is the bug.
+
+  PASS means SAME. The polarity is forced by verdict/instruction's fail-closed
+  rule — an unsure judge answers FAIL — and the safe reading of unsure is
+  \"let it verify\", since a wrong SAME withholds a verification the run may
+  need while a wrong DIFFERENT costs one engine call."
+  [{:keys [conn run-id] :as ctx} claim]
+  (when (and conn run-id (not (str/blank? claim)))
+    (when-let [cand (first (artifacts/similar conn run-id claim 1))]
+      (let [p (str "Two statements from a mathematics run. Decide whether they"
+                   " state the SAME fact.\n\n"
+                   "ALREADY PROVED:\n" (:claim cand) "\n\n"
+                   "ABOUT TO BE VERIFIED:\n" claim "\n\n"
+                   "Answer PASS only if the second states the same fact as the"
+                   " first — the same hypotheses and the same conclusion, so"
+                   " that a proof of one IS a proof of the other. Renamed"
+                   " variables, reordered clauses and different notation do not"
+                   " make two statements different.\n\n"
+                   "Answer FAIL if they differ in any way that matters: a"
+                   " different bound, a weaker or stronger hypothesis, a"
+                   " converse, a special case, or two halves of one result"
+                   " (injectivity and surjectivity of the same map are"
+                   " DIFFERENT facts). When in doubt, answer FAIL.")]
+        (when (verdict/passed? (judge ctx :same-claim p))
+          cand)))))
+
 (defn- claim-dedup
   "Serve another branch's verification of the same claim instead of spending
   this branch's call on it. Returns a result map when the claim is owned by
@@ -164,10 +216,9 @@
   with the source branch named, the failure reason carried over without
   re-running the check."
   [{:keys [claims branch] :as ctx} claim]
-  (when-let [r claims]
-    (let [answer (claims/try-claim! r (:id branch) claim)]
-      (when (not= :claimed answer)
-        (let [holder (:holder answer)
+  (let [answer (when claims (claims/try-claim! claims (:id branch) claim))]
+    (if (and answer (not= :claimed answer))
+      (let [holder (:holder answer)
               disposition (if (= :held (:status answer)) :held (:outcome answer))]
           (when (and (:conn ctx) (:run-id ctx))
             (journal/note! (:conn ctx) (:run-id ctx) :verification-dedup-hit
@@ -194,7 +245,42 @@
                :result (str "Claim `" claim "` was already checked by branch " holder
                             " and FAILED: " (:reason answer)
                             " — carried over, not re-run.")
-               :failure {:claim claim :reason (:reason answer)}})))))))
+               :failure {:claim claim :reason (:reason answer)}})))
+
+      ;; No exact hit. The same statement may still be in the pool under
+      ;; different words, which is a judgement rather than a lookup.
+      (when-let [cand (already-proved ctx claim)]
+        ;; This branch holds the claim it is not going to verify. Releasing is
+        ;; the point of release! — no verdict was produced here, so nothing may
+        ;; settle, and a later branch that genuinely needs this key must not
+        ;; find it locked by a verification that never ran.
+        (when claims (claims/release! claims (:id branch) claim))
+        (when (and (:conn ctx) (:run-id ctx))
+          (journal/note! (:conn ctx) (:run-id ctx) :same-claim-refusal
+                         {:branch-id (:id branch)
+                          :data {:claim claim :matched (:claim cand)
+                                 :holder (:branch_id cand) :artifact (:id cand)}}))
+        {:branch branch
+         ;; NOT :failure. The branch reasoned its way to a true statement and
+         ;; encoded it; it simply aimed at ground the run already holds. That
+         ;; is a fact about the run's coverage, not about this line of
+         ;; inquiry, and charging it to the counter that decides whether the
+         ;; branch lives is the vf-jki mistake in a fifth place.
+         :category :mechanics
+         :progress? false
+         ;; No :artifact. Crediting a branch with a verified result on a
+         ;; judge's say-so would put a claim it never proved into the list the
+         ;; audit and done gates read. It gets the neighbour's exact words and
+         ;; decides for itself — it is the only party that knows what it meant.
+         :result (str "That statement is already proved. Branch "
+                      (:branch_id cand) " confirmed it as s#" (:id cand)
+                      ", in different words:\n\n  " (:claim cand)
+                      "\n\nThe engine was not run. If that is your statement,"
+                      " build on it — `fetch_artifact s#" (:id cand) "` has the"
+                      " encoding. If what you meant differs from it, say how it"
+                      " differs and state the claim so the difference is on the"
+                      " face of it; a claim that reads as a restatement will be"
+                      " refused again.")}))))
 
 (defn- verdict-disposition
   "How a claim-status settles in the registry.

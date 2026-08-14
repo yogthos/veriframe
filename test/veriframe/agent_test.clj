@@ -1160,6 +1160,111 @@
             (is (some? ev))
             (is (str/includes? (:data ev) "B1"))))))))
 
+(deftest a-lemma-already-proved-in-other-words-is-refused-not-re-run
+  ;; vf-cak. The registry keys on spelling, so a lemma restated with renamed
+  ;; variables is a different claim to it. gen-22 a#687 and a#689 are the same
+  ;; coefficient-feasibility fact with B renamed to D = E*R — 4-gram Jaccard
+  ;; 0.28, and BOTH on branch B3, which proved it twice. a#712 and a#717 sit
+  ;; at 0.19 and a#717's own text says "(re-verified on this branch)": the
+  ;; model had the neighbour in its ledger and re-proved it anyway, so
+  ;; surfacing is not enough. Something has to decline.
+  ;;
+  ;; It declines rather than crediting. A judge that wrongly says "same" would
+  ;; hand a branch a verdict it never earned, which in a claim-first harness is
+  ;; worse than the duplicate engine call; the branch is the only party that
+  ;; knows what it meant, so it gets the neighbour's exact words and decides.
+  (with-db [c]
+    (let [rid (runs/start-run! c {:problem "p"})]
+      (artifacts/record! c rid
+                         {:branch-id "B3" :turn 11 :kind :smt :tier :confirmed
+                          :claim (str "For any integers B >= 1, E >= 1, define Qmax = E*B*B,"
+                                      " LR = 2*B, K = LR + 1, H = K*Qmax + LR + 1. Then"
+                                      " LR < K and K*Qmax + LR < H.")
+                          :code "(assert true)"})
+      (let [engine (atom 0)
+            judged (atom [])
+            b (state/new-branch {:id "B2" :problem "p"})
+            restated (str "For any integers E >= 1, R >= 1, define D = E*R, Qmax = E*D*D,"
+                          " LR = 2*D, K = LR+1, H = K*Qmax+LR+1. Then LR < K and"
+                          " K*Qmax + LR < H.")]
+        (with-redefs [smt/run-smt (fn [& _] (swap! engine inc)
+                                    {:status :ok :verdict :unsat})
+                      llm/chat (fn [_a _b msgs & _r]
+                                 (swap! judged conj (str msgs))
+                                 ;; PASS means "same statement". The polarity is
+                                 ;; forced by verdict/instruction's fail-closed
+                                 ;; rule: an unsure judge answers FAIL, and the
+                                 ;; safe reading of unsure is "let it verify".
+                                 {:content "VERDICT: PASS"})]
+          (let [r (tools/run-tool {:branch b :turn 1 :conn c :run-id rid
+                                   :claims (claims/new-registry)
+                                   :tool-name "verify_smt"
+                                   :args {:claim restated :smtlib "(assert true)"
+                                          :expectedVerdict "unsat"}})]
+            (is (= 0 @engine) "z3 is never asked a question already answered")
+            (is (= :mechanics (:category r))
+                "aiming at settled ground is not a failed line of inquiry")
+            (is (nil? (:artifact r))
+                "the branch is not credited with an artifact it did not earn")
+            (is (str/includes? (:result r) "B3") "provenance names the source")
+            (is (str/includes? (:result r) "Qmax = E*B*B")
+                "and quotes the neighbour verbatim, so the branch can see what it is")
+            (is (seq @judged) "the comparison went through a judge, not a threshold")))))))
+
+(deftest a-merely-adjacent-lemma-is-not-mistaken-for-the-same-one
+  ;; The false positive is the expensive direction, so the judge's default has
+  ;; to be "different". These two share almost all of their vocabulary and are
+  ;; separate facts — injectivity and surjectivity of the same map, gen-22
+  ;; a#706 and a#710, which the run needed both of.
+  (with-db [c]
+    (let [rid (runs/start-run! c {:problem "p"})]
+      (artifacts/record! c rid
+                         {:branch-id "B3" :turn 30 :kind :lean :tier :confirmed
+                          :claim (str "The alternating snake order on an M×N grid is"
+                                      " injective: snakepos(i,j) maps distinct cells to"
+                                      " distinct positions.")
+                          :code "theorem inj : True := trivial"})
+      (let [engine (atom 0)
+            b (state/new-branch {:id "B2" :problem "p"})]
+        (with-redefs [smt/run-smt (fn [& _] (swap! engine inc)
+                                    {:status :ok :verdict :unsat})
+                      ;; FAIL to the same-claim question only. The
+                      ;; faithfulness judge runs afterwards and must not be
+                      ;; answered by the same stub, or the verification fails
+                      ;; for an unrelated reason and the test proves nothing.
+                      llm/chat (fn [_a _b msgs & _r]
+                                 {:content (if (str/includes? (str msgs) "state the SAME fact")
+                                             "VERDICT: FAIL"
+                                             "GAPS: none\nVERDICT: PASS")})]
+          (let [r (tools/run-tool {:branch b :turn 1 :conn c :run-id rid
+                                   :claims (claims/new-registry)
+                                   :tool-name "verify_smt"
+                                   :args {:claim (str "The alternating snake order on an M×N"
+                                                      " grid is surjective: every position p"
+                                                      " is snakepos(i,j) for some cell.")
+                                          :smtlib "(assert true)"
+                                          :expectedVerdict "unsat"}})]
+            (is (= 1 @engine) "a different statement still gets its verification")
+            (is (= :success (:category r)))))))))
+
+(deftest the-same-claim-check-is-skipped-when-nothing-is-close
+  ;; The prefilter is what keeps this affordable: no FTS candidate, no judge
+  ;; call. A run whose pool holds nothing like the claim pays nothing.
+  (with-db [c]
+    (let [rid (runs/start-run! c {:problem "p"})
+          calls (atom 0)
+          b (state/new-branch {:id "B1" :problem "p"})]
+      (with-redefs [smt/run-smt (fn [& _] {:status :ok :verdict :unsat})
+                    llm/chat (fn [& _] (swap! calls inc)
+                               {:content "GAPS: none\nVERDICT: PASS"})]
+        (tools/run-tool {:branch b :turn 1 :conn c :run-id rid
+                         :claims (claims/new-registry)
+                         :tool-name "verify_smt"
+                         :args {:claim "the minimum cost is 2"
+                                :smtlib "(assert true)" :expectedVerdict "unsat"}})
+        (is (= 1 @calls)
+            "one judge call — the faithfulness check — and no same-claim call")))))
+
 (deftest every-slow-engine-consults-the-claim-registry
   ;; vf-3k4. The registry was reachable from `review` and `verify_template`
   ;; and from nothing else, in EITHER direction — the engines neither asked it
