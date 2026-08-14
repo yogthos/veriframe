@@ -56,6 +56,27 @@
 (defn- fail [branch result & {:as extra}]
   (merge {:result result :category :failure :progress? false :branch branch} extra))
 
+(defn- malformed
+  "A call the harness could not act on because its arguments were wrong.
+
+  NOT a failure. The branch produced no claim and tested nothing, so there is
+  no evidence here about its line of inquiry — the same reasoning `unavailable`
+  makes about an engine outage and the branch loop makes about a malformed
+  fence. Charging it to the counter that decides whether a branch lives is the
+  vf-jki mistake, and this is the fifth place it turned up: fences,
+  expectedVerdict, proof_start, outages, and argument shape.
+
+  Across gen-22, 23 and 24, roughly 21 of 213 failure-turns were pure argument
+  shape, 16 of them `branch_theses` emitting the byte-identical complaint,
+  while gen-24 culled five of eight branches with reasons like \"after 3
+  consecutive failures\".
+
+  `:mechanics` rather than `:neutral`, deliberately: the count is still kept
+  and still bounds a branch looping on malformed calls, which is real spend.
+  It just stops being read as mathematics."
+  [branch result]
+  {:result result :category :mechanics :progress? false :branch branch})
+
 (defn- unavailable
   "An engine could not be reached. Not the branch's fault, so not its failure.
 
@@ -547,7 +568,7 @@
 
 (defmethod run-tool "add_rule" [{:keys [branch] :as ctx}]
   (if-let [m (missing ctx :code)]
-    (fail branch m)
+    (malformed branch m)
     (let [name (arg ctx :name)
           reply (prolog/assert-rules! (:prolog branch) (arg ctx :code)
                                       (when name {:name name}))]
@@ -561,7 +582,7 @@
 
 (defmethod run-tool "retract_rule" [{:keys [branch] :as ctx}]
   (if-let [m (missing ctx :name)]
-    (fail branch m)
+    (malformed branch m)
     (let [name (arg ctx :name)
           depended (filter #(and (= :prolog (:kind %))
                                  (= :confirmed (:claim-status %))
@@ -588,7 +609,7 @@
 
 (defmethod run-tool "verify" [{:keys [branch] :as ctx}]
   (if-let [m (or (missing ctx :claim :check) (vague-claim ctx))]
-    (fail branch m)
+    (malformed branch m)
     (let [claim (arg ctx :claim)
           reply (prolog/query (:prolog branch) (arg ctx :check) {:timeout-s 20})]
       (cond
@@ -720,7 +741,7 @@
 ;; the coupling deserves.
 (defmethod run-tool "verify_smt" [{:keys [branch config] :as ctx}]
   (if-let [m (or (missing ctx :claim :smtlib) (vague-claim ctx))]
-    (fail branch m)
+    (malformed branch m)
     (if-let [served (claim-dedup ctx (arg ctx :claim))]
       served
       (let [claim (arg ctx :claim)
@@ -814,7 +835,7 @@
 
 (defmethod run-tool "verify_template" [{:keys [branch config] :as ctx}]
   (if-let [m (or (missing ctx :claim :template) (vague-claim ctx))]
-    (fail branch m)
+    (malformed branch m)
     (if-let [served (claim-dedup ctx (arg ctx :claim))]
       served
       (let [claim (arg ctx :claim)
@@ -892,7 +913,7 @@
 
 (defmethod run-tool "thesis" [{:keys [branch] :as ctx}]
   (if-let [m (missing ctx :goal :technique)]
-    (fail branch m)
+    (malformed branch m)
     (let [thesis {:goal (arg ctx :goal)
                   :subClaims (vec (or (arg ctx :subClaims) []))
                   :technique (arg ctx :technique)
@@ -1069,7 +1090,7 @@
 
 (defmethod run-tool "review" [{:keys [branch] :as ctx}]
   (if-let [m (missing ctx :claim :rationale)]
-    (fail branch m)
+    (malformed branch m)
     (if-let [served (claim-dedup ctx (arg ctx :claim))]
       served
       (let [claim (arg ctx :claim)
@@ -1127,7 +1148,7 @@
 (defmethod run-tool "audit" [{:keys [branch] :as ctx}]
   (cond
     (missing ctx :claim :proposedAnswer)
-    (fail branch (missing ctx :claim :proposedAnswer))
+    (malformed branch (missing ctx :claim :proposedAnswer))
 
     ;; The auditor cross-references the thesis against what was verified, so
     ;; without a thesis it has nothing to check the claim's scope against.
@@ -1676,15 +1697,15 @@
   (let [proposals (arg ctx :theses)]
     (cond
       (or (not (sequential? proposals)) (empty? proposals))
-      (fail branch (str "`theses` must be a non-empty array of"
+      (malformed branch (str "`theses` must be a non-empty array of"
                         " {goal, subClaims, technique} objects."))
 
       (> (count proposals) max-branch-theses)
-      (fail branch (str "At most " max-branch-theses " theses per call; you proposed "
-                        (count proposals) "."))
+      (malformed branch (str "At most " max-branch-theses " theses per call; you proposed "
+                             (count proposals) "."))
 
       (not (every? #(and (map? %) (string? (:goal %))) proposals))
-      (fail branch "Every thesis must be an object with a `goal` string.")
+      (malformed branch "Every thesis must be an object with a `goal` string.")
 
       :else
       ;; The first commits THIS branch; the rest become siblings. The scheduler
@@ -1818,7 +1839,7 @@
 
 (defmethod run-tool "verify_lean" [{:keys [branch] :as ctx}]
   (if-let [m (or (missing ctx :claim :lean) (vague-claim ctx))]
-    (fail branch m)
+    (malformed branch m)
     (if-let [served (claim-dedup ctx (arg ctx :claim))]
       served
       ;; Every exit below except a confirmation releases the claim. Lean has no
@@ -1914,7 +1935,7 @@
 
 (defmethod run-tool "lean_search" [{:keys [branch config] :as ctx}]
   (if-let [m (missing ctx :query)]
-    (fail branch m)
+    (malformed branch m)
     (try
       (let [q (arg ctx :query)
             hits (lean-search/search (get-in config [:engines :lean]) q
@@ -1925,7 +1946,7 @@
 
 (defmethod run-tool "proof_start" [{:keys [branch] :as ctx}]
   (if-let [m (or (missing ctx :claim :theorem) (vague-claim ctx))]
-    (fail branch m)
+    (malformed branch m)
     ;; This tool appends " := by sorry" to open the goal, so a theorem that
     ;; already carries a body becomes `… := by tac := by sorry` and Lean
     ;; answers "unexpected token ':='" — an error about a parse, not about the
@@ -1960,7 +1981,7 @@
 
 (defmethod run-tool "proof_step" [{:keys [branch] :as ctx}]
   (cond
-    (missing ctx :tactic) (fail branch (missing ctx :tactic))
+    (missing ctx :tactic) (malformed branch (missing ctx :tactic))
     (nil? (:proof branch)) (fail branch "No proof is open. Call proof_start first.")
     :else
     (let [s (:lean branch)
@@ -2006,7 +2027,7 @@
   ;; progress, which is the "well-formed but useless call" failure the
   ;; progress guards exist to catch.
   (if-let [m (missing ctx :id)]
-    (fail branch m)
+    (malformed branch m)
     (let [raw (str/trim (str (arg ctx :id)))
           ;; `a#` is this run's own artifacts, `s#` the shared pool a seed was
           ;; copied into — two tables, two id spaces. A bare number means the
@@ -2060,7 +2081,7 @@
   ;; :neutral for the same reason as fetch_artifact — a lookup establishes
   ;; nothing, and reporting success would clear the failure count.
   (if-let [m (missing ctx :turn)]
-    (fail branch m)
+    (malformed branch m)
     (let [raw (str/trim (str (arg ctx :turn)))
           n (parse-long (str/replace raw #"^t" ""))
           t (when (and conn run-id n)
@@ -2106,7 +2127,7 @@
 
 (defmethod run-tool "octave_eval" [{:keys [branch] :as ctx}]
   (if-let [m (missing ctx :code)]
-    (fail branch m)
+    (malformed branch m)
     (try
       (let [[s branch] (octave-session! ctx)
             r (octave/eval-code! s (arg ctx :code))]
@@ -2142,7 +2163,7 @@
 
 (defmethod run-tool "verify_octave" [{:keys [branch] :as ctx}]
   (if-let [m (or (missing ctx :claim :expr) (vague-claim ctx))]
-    (fail branch m)
+    (malformed branch m)
     (if-let [served (claim-dedup ctx (arg ctx :claim))]
       served
       (try
@@ -2253,7 +2274,7 @@
   ;; proposition, and "the number of optimal flows" is exactly right for
   ;; something whose value is not known until Octave returns it.
   (if-let [m (missing ctx :claim :expr)]
-    (fail branch m)
+    (malformed branch m)
     (try
       (let [[s branch] (octave-session! ctx)
             claim (arg ctx :claim)

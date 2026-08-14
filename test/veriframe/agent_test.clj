@@ -1807,7 +1807,10 @@
       (is (nil? (:children r)) "the scheduler owns the branch table"))
 
     (testing "malformed proposals are refused rather than partially applied"
-      (are [theses] (= :failure (:category (tools/run-tool
+      ;; :mechanics since vf-v6x. A proposal the harness cannot parse says
+      ;; nothing about the branch's mathematics, and this exact complaint was
+      ;; 16 of the campaign's failure-turns.
+      (are [theses] (= :mechanics (:category (tools/run-tool
                                             {:branch b :turn 1 :tool-name "branch_theses"
                                              :args {:theses theses}})))
         []
@@ -3680,7 +3683,11 @@
           r (tools/run-tool {:branch b :turn 1 :tool-name "verify_lean"
                              :args {:claim "one coordinate scalarization"
                                     :lean "theorem t : True := trivial"}})]
-      (is (= :failure (:category r)))
+      ;; :mechanics, not :failure, since vf-v6x. The refusal happens BEFORE
+      ;; any engine runs, so the branch has no verdict either way and there is
+      ;; nothing here to hold against its line of inquiry. The count is still
+      ;; kept, so a branch that keeps writing labels is still bounded.
+      (is (= :mechanics (:category r)))
       (is (re-find #"(?i)state what is true" (:result r)))
       (is (nil? (:artifact r)) "and nothing is recorded under a label"))))
 
@@ -3896,6 +3903,49 @@
         "a gate with no named tool still forecloses prose")
     (is (nil? (arbiter/prefill-for nil))
         "and no gate at all means no prefill")))
+
+(deftest a-malformed-call-does-not-spend-cull-budget
+  ;; vf-v6x, and the fifth place this pattern has turned up: fences,
+  ;; expectedVerdict, proof_start, engine outages, and now argument shape. A
+  ;; branch that mis-serialised its arguments has produced no claim and tested
+  ;; nothing, so there is no evidence here about its line of inquiry — but
+  ;; `fail` marks it :failure and the cull counter reads that as a dead line.
+  ;;
+  ;; Across gen-22/23/24, ~21 of 213 failure-turns are pure argument shape, 16
+  ;; of them branch_theses emitting the byte-identical complaint. gen-24 culled
+  ;; five of eight branches, several "after 3 consecutive failures".
+  ;;
+  ;; :mechanics, not :neutral — the count is still kept, so a branch looping on
+  ;; malformed calls is still bounded. It just stops reading as mathematics.
+  (with-db [c]
+    (let [rid (runs/start-run! c {:problem "p"})
+          b (state/new-branch {:id "B1" :problem "p"})
+          run (fn [tool args] (tools/run-tool {:branch b :turn 1 :conn c :run-id rid
+                                               :tool-name tool :args args}))]
+      (testing "a missing required argument"
+        (are [tool args] (= :mechanics (:category (run tool args)))
+          "verify_smt"    {:smtlib "(assert true)"}
+          "verify_lean"   {:lean "theorem t : True := trivial"}
+          "verify_octave" {:expr "x == 1"}
+          "audit"         {:claim "every element of S satisfies P"}
+          "review"        {:claim "every element of S satisfies P"}
+          "fetch_turn"    {}))
+
+      (testing "branch_theses with a malformed theses array"
+        ;; The one that actually did the damage: 16 identical complaints.
+        (are [args] (= :mechanics (:category (run "branch_theses" args)))
+          {}
+          {:theses []}
+          {:theses "not an array"}))
+
+      (testing "a real verification failure is still a failure"
+        (with-redefs [smt/run-smt (fn [& _] {:status :ok :verdict :sat})
+                      llm/chat (fn [& _] {:content "GAPS: none\nVERDICT: PASS"})]
+          (is (= :failure (:category (run "verify_smt"
+                                          {:claim "the minimum cost is 2"
+                                           :smtlib "(assert (= x 1))"
+                                           :expectedVerdict "unsat"})))
+              "a refutation is evidence about the claim and must still count"))))))
 
 (deftest a-missing-argument-error-shows-the-call-it-wanted
   ;; gen-20 B1 called proof_start without its required arguments five times,
