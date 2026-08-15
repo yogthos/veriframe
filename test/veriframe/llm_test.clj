@@ -663,3 +663,43 @@
             "the fold is unchanged — one parser still sees one string")
         (is (= "91*10=910, 91*3=273" (:reasoning r))
             "and the reasoning is still reachable on its own, for the column that stores it")))))
+
+(deftest the-other-two-wrappers-pro-reaches-for-are-accepted
+  ;; Every one of gen-30's first twelve no-calls was a valid call in the wrong
+  ;; wrapper: 8 in Anthropic's <invoke> syntax, 3 in <tool-call> tags, 1 in a
+  ;; ```json fence. Not prose, not confusion about what to do next — the call
+  ;; was right there each time.
+  (testing "<tool-call> tags carry the documented body"
+    ;; Unambiguous intent, so treated exactly like the ```tool-call fence:
+    ;; a malformed body here should still earn a parse error rather than
+    ;; silence, which is what a branch needs to correct itself.
+    (let [p (fence/parse-tool-call
+             "<tool-call>\n{\"name\": \"fetch_artifact\", \"args\": {\"id\": 1421}}\n</tool-call>")]
+      (is (= "fetch_artifact" (:name p)))
+      (is (= {:id 1421} (:args p))))
+    (let [p (fence/parse-tool-call "<tool-call>\n{not json}\n</tool-call>")]
+      (is (= "__parse_error__" (:name p))
+          "a broken body in an unmistakable wrapper is still worth reporting")))
+
+  (testing "a ```json fence counts only when the body is actually a call"
+    (let [p (fence/parse-tool-call
+             "```json\n{\"name\": \"lean_search\", \"args\": {\"query\": \"chain\"}}\n```")]
+      (is (= "lean_search" (:name p))))
+
+    ;; Guarded, unlike the two wrappers above, because ```json is a general
+    ;; purpose fence a model also uses to show data. gen-30 emitted
+    ;; {"lean_search": {...}} — the tool name as the KEY — which is NOT the
+    ;; documented shape, and guessing that a one-key object is a call would
+    ;; mean the parser deciding what is a tool name.
+    (is (nil? (fence/parse-tool-call
+               "```json\n{\"lean_search\": {\"query\": \"chain\"}}\n```"))
+        "an unrecognised shape is a no-call, not a parse error")
+    (is (nil? (fence/parse-tool-call
+               "Here is the data I used:\n```json\n{\"vertices\": 4, \"edges\": 6}\n```"))
+        "and quoted data is left alone"))
+
+  (testing "the documented fence still wins over both"
+    (let [p (fence/parse-tool-call
+             (str "<tool-call>\n{\"name\": \"wrong\"}\n</tool-call>\n"
+                  "```tool-call\n{\"name\": \"right\"}\n```"))]
+      (is (= "right" (:name p))))))

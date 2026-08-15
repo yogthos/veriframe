@@ -31,6 +31,16 @@
 
 (def fence-re #"(?s)```tool-call\s*\r?\n(.*?)```")
 
+;; The same body in a tag rather than a fence. Unmistakable in intent — a model
+;; writing <tool-call> is calling a tool — so it is treated exactly like the
+;; documented fence, malformed bodies included: those earn a parse error, which
+;; is what lets a branch correct itself.
+(def ^:private tag-fence-re #"(?s)<tool-call>\s*(.*?)</tool-call>")
+
+;; A general-purpose ```json fence, which a model also uses to show data. Only
+;; counts when the body is the DOCUMENTED shape, checked in json-fence below.
+(def ^:private json-fence-re #"(?s)```json\s*\r?\n(.*?)```")
+
 (defn repair-control-chars
   "Escape literal control characters appearing INSIDE JSON string literals.
 
@@ -79,9 +89,33 @@
       {:ok false :error (ex-message e)})))
 
 (defn extract-fences
-  "Every tool-call fence body in the response, in order."
+  "Every tool-call fence body in the response, in order.
+
+  Both spellings of the deliberate wrapper — the ```tool-call fence and
+  <tool-call> tags — because a model that writes either is unambiguously
+  calling a tool, and only the punctuation differs."
   [response]
-  (mapv (comp str/trim second) (re-seq fence-re (or response ""))))
+  (let [r (or response "")]
+    (mapv (comp str/trim second)
+          (sort-by first (concat (re-seq fence-re r) (re-seq tag-fence-re r))))))
+
+(defn- json-fence
+  "A ```json fence whose body is the documented call shape, or nil.
+
+  Guarded where the two wrappers above are not, because ```json is what a
+  model reaches for to show data as well. gen-30 emitted
+  {\"lean_search\": {…}} — the tool name as the KEY — and accepting that would
+  mean this parser deciding which strings are tool names, which is the
+  registry's business and not punctuation's. An unrecognised shape stays a
+  no-call rather than becoming a parse error, on the same reasoning as
+  trailing-call: telling a model its call is broken when it never made one
+  sends it looking in the wrong place."
+  [response]
+  (when-let [body (some-> (last (re-seq json-fence-re (or response "")))
+                          second str/trim)]
+    (let [{:keys [ok value]} (read-json (repair-control-chars body))]
+      (when (and ok (map? value) (string? (:name value)) (not (str/blank? (:name value))))
+        body))))
 
 ;; A trailing JSON object, for a response that ends in a well-formed call and
 ;; simply omits the fence. Anchored to the END of the response and required to
@@ -204,7 +238,8 @@
         ;; followed by a real fenced call is unaffected, because the fence wins.
         bodies (if (seq fenced)
                  fenced
-                 (when-let [t (trailing-call response)] [t]))
+                 (when-let [t (or (trailing-call response) (json-fence response))]
+                   [t]))
         unfenced? (and (empty? fenced) (seq bodies))]
     ;; Third rung, and last: only when neither a fence nor a trailing JSON
     ;; object was found. Recorded rather than silently normalised, for the same
