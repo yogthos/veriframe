@@ -2104,10 +2104,37 @@
         (catch Throwable e
           (unavailable branch "Lean" e))))))
 
+(def ^:private placeholder-tactic-re
+  "`sorry` and `admit` DISCHARGE a goal — Lean only warns — so a step using one
+  legitimately reports no goals left, and proof_step is the path that reads
+  that as :closed? and banks a confirmed artifact.
+
+  gen-30 a#829 was recorded confirmed on the slow tier with the body
+  `cases l with | nil => simp at hlen | cons x rest => sorry`. verify_lean has
+  guarded this since the Frankl run, by lint and again by the REPL's
+  `sorries`; this path had neither."
+  #"\b(sorry|admit)\b")
+
+(defn- sorry-refusal
+  "What a branch is told when a step would close on a placeholder."
+  [what]
+  (str "That would close the proof with " what ", which discharges the goal"
+       " without proving anything — Lean emits only a warning, so nothing"
+       " here would have caught it downstream. The step is refused and the"
+       " goal is unchanged.\n\nProve the case, or if it is genuinely a"
+       " separate result, close this proof without it and state that case as"
+       " its own claim."))
+
 (defmethod run-tool "proof_step" [{:keys [branch] :as ctx}]
   (cond
     (missing ctx :tactic) (malformed branch (missing ctx :tactic))
     (nil? (:proof branch)) (fail branch "No proof is open. Call proof_start first.")
+    ;; Before a session is spent. The tactic text is the common case and the
+    ;; cheap one to catch.
+    (re-find placeholder-tactic-re (str (arg ctx :tactic)))
+    (fail branch (sorry-refusal "`sorry` or `admit`")
+          :failure {:claim (:claim (:proof branch))
+                    :reason "the proof step used sorry or admit"})
     :else
     (let [s (:lean branch)
           p (:proof branch)
@@ -2124,16 +2151,23 @@
                           (lean-error-text (:errors r))))
 
         (:closed? r)
-        (let [p (update p :tactics conj (arg ctx :tactic))]
-          {:branch (assoc branch :proof (assoc p :state (:proof-state r) :closed? true))
-           :category :success :progress? true
-           :result (str "No goals remain — the proof is CLOSED.\n\n"
-                        (:theorem p) " := by\n  "
-                        (str/join "\n  " (:tactics p)))
-           :artifact {:kind :lean :claim (:claim p)
-                      :code (str (:theorem p) " := by\n  "
-                                 (str/join "\n  " (:tactics p)))
-                      :claim-status :confirmed :tier :slow}})
+        (let [p (update p :tactics conj (arg ctx :tactic))
+              code (str (:theorem p) " := by\n  " (str/join "\n  " (:tactics p)))]
+          ;; Two ways a placeholder reaches here despite the text check above:
+          ;; the REPL reports a sorry the tactic introduced some other way
+          ;; (`exact sorry`, a macro), or an EARLIER tactic carried one and
+          ;; this honest step merely finished the proof. The artifact is
+          ;; assembled from every tactic, so the second is not hypothetical —
+          ;; the banked code would contain the sorry whatever closed it.
+          (if (or (seq (:sorries r)) (re-find placeholder-tactic-re code))
+            (fail branch (sorry-refusal "a `sorry` left open earlier in this proof")
+                  :failure {:claim (:claim p)
+                            :reason "the assembled proof contained sorry"})
+            {:branch (assoc branch :proof (assoc p :state (:proof-state r) :closed? true))
+             :category :success :progress? true
+             :result (str "No goals remain — the proof is CLOSED.\n\n" code)
+             :artifact {:kind :lean :claim (:claim p) :code code
+                        :claim-status :confirmed :tier :slow}}))
 
         :else
         (ok (assoc branch :proof (-> p

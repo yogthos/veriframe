@@ -4355,3 +4355,61 @@
     (is (re-find #"(?i)appears in|names.*statement|mentioned" note)
         "and whether what the claim names is actually in the statement")))
 
+
+;; --- a sorry closes a Lean goal, and must not close a claim ------------------
+
+(deftest a-proof-step-cannot-bank-a-sorry
+  ;; gen-30 a#829, confirmed on the SLOW tier, whole proof body:
+  ;;
+  ;;   cases l with
+  ;;   | nil => simp at hlen
+  ;;   | cons x rest => sorry
+  ;;
+  ;; `sorry` DISCHARGES a goal in Lean, so the reply legitimately carried no
+  ;; goals and no errors — Lean only warns — and proof_step recorded a
+  ;; confirmed artifact. verify_lean has guarded this twice over since the
+  ;; Frankl run, by lint and by the REPL's `sorries`; proof_step had neither,
+  ;; and it is the path that reports :closed?.
+  ;;
+  ;; Two layers, because they fail differently: the text check catches it
+  ;; before a session is spent, and the REPL's own report catches a sorry that
+  ;; arrives some other way (`exact sorry`, a macro, an abbreviation).
+  (let [step (fn [branch tactic reply]
+               (with-redefs [lean-repl/apply-tactic (fn [& _] reply)]
+                 (tools/run-tool {:branch branch :turn 1
+                                  :tool-name "proof_step"
+                                  :args {:tactic tactic}})))
+        open-proof {:id "B1" :problem "p" :lean {:id "s"}
+                    :proof {:claim "every closed walk has a simple sub-walk"
+                            :theorem "lemma l : True"
+                            :state 0 :tactics []}}
+        closed {:ok true :closed? true :goals [] :proof-state 1 :errors []}]
+
+    (testing "the tactic text is refused before a REPL call is spent"
+      (let [r (step open-proof "cases l with\n| nil => simp\n| cons x rest => sorry" closed)]
+        (is (nil? (:artifact r)) "nothing may be banked")
+        (is (not= :success (:category r)))
+        (is (re-find #"(?i)sorry" (:result r)) "and the branch is told which word did it")))
+
+    (testing "`admit` is the same mistake"
+      (is (nil? (:artifact (step open-proof "admit" closed)))))
+
+    (testing "a sorry the REPL reports is refused even when the text looked clean"
+      (let [r (step open-proof "exact foo"
+                    (assoc closed :sorries [{:goal "True" :proofState 2}]))]
+        (is (nil? (:artifact r)))
+        (is (re-find #"(?i)sorry" (:result r)))))
+
+    (testing "an honest closing tactic still banks its artifact"
+      (let [r (step open-proof "trivial" closed)]
+        (is (= :success (:category r)))
+        (is (= :confirmed (get-in r [:artifact :claim-status])))
+        (is (= :slow (get-in r [:artifact :tier])))))
+
+    (testing "a sorry earlier in the proof taints a later honest close"
+      ;; The artifact is assembled from every tactic, so a sorry in tactic one
+      ;; is in the code that gets banked no matter what closes it.
+      (let [tainted (assoc-in open-proof [:proof :tactics] ["refine ⟨?_, ?_⟩" "sorry"])
+            r (step tainted "trivial" closed)]
+        (is (nil? (:artifact r))
+            "the assembled proof still contains sorry, whatever the last tactic was")))))

@@ -825,3 +825,24 @@ sidon(S) :- sums(S, Sums), sort(Sums, Sorted), length(Sums, N), length(Sorted, N
     (testing "sorries still come through"
       (is (seq (:sorries (reply {:env 2 :messages [] :sorries [{:goal "True"}]})))))))
 
+
+(deftest apply-tactic-reports-the-sorries-the-repl-saw
+  ;; `sorry` discharges a goal, so a step using one comes back with an empty
+  ;; goal list and no errors — Lean warns and nothing else. The REPL does say
+  ;; so, in `sorries`, and apply-tactic was dropping the field on the floor,
+  ;; leaving proof_step nothing to check. gen-30 a#829 was banked confirmed on
+  ;; that path with a `sorry` in its body.
+  (let [reply (fn [m] (with-redefs [lean-repl/send-command (fn [& _] (assoc m :ok true))]
+                        (lean-repl/apply-tactic {:id "s"} "exact sorry" 1)))]
+
+    (testing "reported sorries are carried out"
+      (let [r (reply {:proofState 2 :goals []
+                      :sorries [{:goal "True" :proofState 3}]})]
+        (is (= 1 (count (:sorries r))))
+        (is (not (:closed? r))
+            "and a goal discharged by sorry is not a closed proof")))
+
+    (testing "an ordinary close is unaffected"
+      (let [r (reply {:proofState 2 :goals []})]
+        (is (empty? (:sorries r)))
+        (is (:closed? r))))))

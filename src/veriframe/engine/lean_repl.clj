@@ -347,9 +347,17 @@
                                        " the harness cannot tell whether the tactic"
                                        " closed the proof. Treating it as unproved."
                                        " Reply keys: " (pr-str (vec (keys r)))))})}
-          {:ok (empty? errs)
-           :proof-state (:proofState r)
-           :goals (vec (:goals r))
-           :closed? (and (empty? errs) (empty? (:goals r)))
-           :messages (:messages r)
-           :errors (vec errs)})))))
+          ;; `sorry` DISCHARGES a goal, so a step using one comes back with an
+          ;; empty goal list and no errors — Lean only warns. The REPL does
+          ;; say so, in `sorries`, and dropping the field left the caller
+          ;; nothing to check: gen-30 a#829 was banked confirmed on this path
+          ;; with a sorry in its body. Same distinction `errors` draws for
+          ;; warnings, one field over.
+          (let [sorries (vec (:sorries r))]
+            {:ok (empty? errs)
+             :proof-state (:proofState r)
+             :goals (vec (:goals r))
+             :sorries sorries
+             :closed? (and (empty? errs) (empty? (:goals r)) (empty? sorries))
+             :messages (:messages r)
+             :errors (vec errs)}))))))
