@@ -309,10 +309,22 @@
            :messages (:messages r)
            :errors (conj (vec errs)
                          {:severity "error"
-                          :data (str "The Lean REPL replied without a goal list, so"
-                                     " the harness cannot tell whether the tactic"
-                                     " closed the proof. Treating it as unproved."
-                                     " Reply keys: " (pr-str (vec (keys r))))})}
+                          ;; The reply shape that actually occurs is
+                          ;; {:message ... :ok ...}: the REPL is returning an
+                          ;; error and saying what it is. The first version of
+                          ;; this recorded the reply's KEYS and dropped the
+                          ;; message, which is the half that matters — gen-27
+                          ;; hit it 19 times and every branch was told only
+                          ;; that the harness could not tell.
+                          :data (if-let [m (:message r)]
+                                  (str "The Lean REPL rejected the request: " m
+                                       " (no goal list came back, so the tactic"
+                                       " is not treated as having closed the"
+                                       " proof.)")
+                                  (str "The Lean REPL replied without a goal list, so"
+                                       " the harness cannot tell whether the tactic"
+                                       " closed the proof. Treating it as unproved."
+                                       " Reply keys: " (pr-str (vec (keys r)))))})}
           {:ok (empty? errs)
            :proof-state (:proofState r)
            :goals (vec (:goals r))

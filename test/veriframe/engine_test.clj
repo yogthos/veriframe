@@ -720,6 +720,18 @@ sidon(S) :- sums(S, Sums), sort(Sums, Sorted), length(Sums, N), length(Sorted, N
             "a proof is closed only when the REPL says the goal list is empty")
         (is (not (:ok r)) "and the turn does not read as a success")))
 
+    (testing "when the REPL says WHY, the branch is told"
+      ;; The reply shape that actually occurs: keys [:message :ok]. The REPL is
+      ;; returning an error and explaining it, and the first version of this
+      ;; check recorded the reply's KEYS while discarding the message — the
+      ;; half that matters. gen-27 hit it 19 times and every branch saw only
+      ;; "the harness cannot tell whether the tactic closed the proof".
+      (let [r (reply {:message "Unknown proof state 7"})]
+        (is (not (:closed? r)))
+        (is (not (:ok r)))
+        (is (some #(re-find #"Unknown proof state 7" (str (:data %))) (:errors r))
+            "the REPL's own words reach the branch")))
+
     (testing "an affirmatively empty goal list IS closed"
       (let [r (reply {:proofState 2 :goals []})]
         (is (:closed? r))
