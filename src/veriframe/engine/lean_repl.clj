@@ -29,6 +29,7 @@
             [clojure.string :as str]
             [jolt.process :as p]
             [veriframe.engine.lint :as lint]
+            [veriframe.engine.proc :as proc]
             [clojure.tools.logging :as log]))
 
 ;; import Mathlib is the slow case; a tactic step after it is sub-second.
@@ -50,6 +51,8 @@
   (and (.exists (io/file (or repl-bin "")))
        (.exists (io/file (or workspace "")))))
 
+(declare shutdown-proc!)
+
 (defn create-session
   "Spawn the repl. Returns a session, or throws with an actionable message when
   the toolchain is missing."
@@ -66,8 +69,12 @@
         lake (or (:lake-bin cfg)
                  (let [elan (io/file (System/getProperty "user.home") ".elan/bin/lake")]
                    (if (.exists elan) (.getAbsolutePath elan) "lake")))
+        ;; The shutdown hook cannot be p/destroy-tree either: at JVM exit it
+        ;; kills `lake` and leaves the repl grandchild behind, which is how
+        ;; these accumulated across restarts in the first place. `shutdown!`
+        ;; below collects descendants before killing, same as dispose!.
         proc (p/process [lake "env" abs-repl]
-                        {:dir workspace :shutdown p/destroy-tree})]
+                        {:dir workspace :shutdown #(shutdown-proc! %)})]
     {:proc proc
      :out-stream (:in proc)
      :reader (java.io.BufferedReader.
@@ -81,11 +88,75 @@
 
 (defn alive? [s] (boolean (some-> s :alive deref)))
 
+;; --- teardown ---------------------------------------------------------------
+;;
+;; A session is `lake env .../repl`, so the process the harness talks to is a
+;; GRANDCHILD: jolt -> lake -> repl. jolt's destroy-tree cannot reach a
+;; grandchild (jolt-hpdu), and both kill paths went through it — dispose!
+;; directly, and the JVM shutdown hook via :shutdown — so nothing ever killed
+;; the repl. It was orphaned to pid 1 and stayed there.
+;;
+;; Measured before this fix: 19 repl processes alive, five reparented to init,
+;; the oldest up 1 day 7 hours, 2.1GB resident between them. Each had about
+;; nine seconds of CPU time, which is the Mathlib import and nothing since.
+;;
+;; So the descendants are collected BEFORE the parent is killed, while they are
+;; still discoverable, and then killed by pid. That needs nothing from jolt.
+
+(defn session-pid
+  "The OS pid of the process this session spawned, or nil."
+  [s]
+  (try
+    (some-> s :proc :proc (.pid))
+    (catch Throwable _ nil)))
+
+(defn child-pids
+  "Direct children of `pid`, via pgrep. [] when there are none or it fails."
+  [pid]
+  (let [{:keys [out exit]} (proc/run {:timeout-ms 5000} "pgrep" "-P" (str pid))]
+    (if-not (zero? (or exit 1))
+      []
+      (->> (str/split-lines (or out ""))
+           (map str/trim)
+           (remove str/blank?)
+           (keep #(try (Long/parseLong %) (catch Throwable _ nil)))
+           vec))))
+
+(defn kill-pid! [pid]
+  (proc/run {:timeout-ms 5000} "kill" "-KILL" (str pid))
+  nil)
+
+(defn- descendant-pids
+  "Every pid below `pid`, breadth first. Bounded so a pgrep cycle cannot spin."
+  [pid]
+  (loop [frontier [pid] found [] guard 0]
+    (if (or (empty? frontier) (> guard 64))
+      found
+      (let [kids (vec (mapcat child-pids frontier))
+            fresh (remove (set found) kids)]
+        (recur (vec fresh) (into found fresh) (inc guard))))))
+
+(defn shutdown-proc!
+  "Kill a spawned process and everything under it. Used as the JVM shutdown
+  hook, where p/destroy-tree would leave the repl grandchild behind."
+  [proc]
+  (let [doomed (try (descendant-pids (.pid (:proc proc))) (catch Throwable _ []))]
+    (try (p/destroy-tree proc) (catch Throwable _ nil))
+    (doseq [pid (reverse doomed)]
+      (try (kill-pid! pid) (catch Throwable _ nil)))))
+
 (defn dispose! [s]
   (when s
     (reset! (:alive s) false)
-    (try (.close (:out-stream s)) (catch Throwable _ nil))
-    (try (p/destroy-tree (:proc s)) (catch Throwable _ nil))
+    ;; Before the parent dies, while the children still have a parent to be
+    ;; found by.
+    (let [doomed (if-let [pid (session-pid s)] (descendant-pids pid) [])]
+      (try (.close (:out-stream s)) (catch Throwable _ nil))
+      (try (p/destroy-tree (:proc s)) (catch Throwable _ nil))
+      ;; Deepest first: killing a parent first would orphan the rest and lose
+      ;; the handle on them, which is the original bug in miniature.
+      (doseq [pid (reverse doomed)]
+        (try (kill-pid! pid) (catch Throwable _ nil))))
     nil))
 
 (defn- read-reply

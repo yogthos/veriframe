@@ -16,7 +16,8 @@
   caller's own session rather than surfacing as an error. None of that needs a
   Mathlib import, so these run offline in milliseconds."
   (:require [clojure.test :refer [deftest is testing]]
-            [veriframe.engine.lean-pool :as pool]))
+            [veriframe.engine.lean-pool :as pool]
+            [veriframe.engine.lean-repl :as lean-repl]))
 
 ;; A stand-in for a session. The pool only ever asks lean-repl/alive? about it,
 ;; so a map with the same shape is enough.
@@ -86,3 +87,52 @@
   (is (= 2 (pool/shutdown!)))
   (is (zero? (pool/warmed-count)))
   (is (nil? (pool/checkout! 0))))
+
+;; --- session teardown -------------------------------------------------------
+
+(deftest disposing-a-session-kills-the-repl-lake-spawned
+  ;; vf-cfp. A session is `lake env .../repl`, so the repl the harness talks to
+  ;; is a GRANDCHILD: jolt -> lake -> repl. jolt's destroy-tree cannot reach a
+  ;; grandchild (jolt-hpdu), and BOTH kill paths went through it — dispose!
+  ;; explicitly, and the JVM shutdown hook via :shutdown. So nothing ever killed
+  ;; the repl. It was orphaned to init and stayed.
+  ;;
+  ;; Measured on this machine before the fix: 19 repl processes, five of them
+  ;; reparented to pid 1, the oldest up 1 day 7 hours, 2.1GB resident. Each had
+  ;; ~9s of CPU time — the Mathlib import and nothing since.
+  ;;
+  ;; The fix does not wait on jolt: collect the descendants BEFORE killing the
+  ;; parent, then kill them by pid.
+  (testing "descendants are collected before the parent dies, then killed"
+    (let [killed (atom [])]
+      (with-redefs [lean-repl/child-pids (fn [pid] (get {100 [200] 200 [300]} pid []))
+                    lean-repl/kill-pid! (fn [pid] (swap! killed conj pid))]
+        (let [order (atom [])
+              s {:alive (atom true)
+                 :out-stream (proxy [java.io.OutputStream] []
+                               (write [_])
+                               (close [] (swap! order conj :stream)))
+                 :proc {:proc (reify Object)}}]
+          (with-redefs [lean-repl/session-pid (fn [_] 100)]
+            (lean-repl/dispose! s))
+          (is (= [300 200] @killed)
+              "the whole chain below the session is killed, deepest first, so no
+               descendant is even briefly orphaned")
+          (is (false? @(:alive s)) "and the session is marked dead")))))
+
+  (testing "a session with no discoverable pid still disposes cleanly"
+    (with-redefs [lean-repl/session-pid (fn [_] nil)
+                  lean-repl/child-pids (fn [_] (throw (ex-info "must not be called" {})))
+                  lean-repl/kill-pid! (fn [_] nil)]
+      (is (nil? (lean-repl/dispose! {:alive (atom true) :proc nil})))))
+
+  (testing "a failure killing one descendant does not strand the rest"
+    (let [killed (atom [])]
+      (with-redefs [lean-repl/session-pid (fn [_] 1)
+                    lean-repl/child-pids (fn [pid] (get {1 [2 3 4]} pid []))
+                    lean-repl/kill-pid! (fn [pid]
+                                          (when (= pid 3) (throw (ex-info "denied" {})))
+                                          (swap! killed conj pid))]
+        (lean-repl/dispose! {:alive (atom true) :proc nil})
+        (is (= [4 2] @killed))))))
+
