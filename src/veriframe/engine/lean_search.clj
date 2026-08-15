@@ -118,6 +118,43 @@
        distinct
        vec))
 
+(defn idf
+  "Inverse document frequency of a token: how much matching it narrows things.
+
+  log(N / (1 + df)). A token absent from Mathlib scores highest, which is
+  right — a query term that appears nowhere is either the caller's own coinage
+  or a misspelling, and either way a name containing it is unusually
+  interesting."
+  [df-map n t]
+  (Math/log (/ (double n) (inc (double (get df-map t 0))))))
+
+(def ^:private df-cache
+  "Token -> how many declaration names contain it, plus the declaration count.
+
+  One pass over the index, memoised for the process. The index is already on
+  disk for grep, so this needs no new artefact and stays correct as Mathlib
+  moves — the alternative, a hand-curated stoplist of common name-particles,
+  would need maintaining and would still be a guess."
+  (atom nil))
+
+(defn- doc-freq
+  [cfg]
+  (or @df-cache
+      (let [{:keys [df n]}
+            (with-open [r (io/reader (index-file cfg))]
+              (reduce (fn [{:keys [df n]} line]
+                        (let [parts (str/split (str/trim line) #"\s+")
+                              nm (last parts)]
+                          (if (or (nil? nm) (str/blank? nm))
+                            {:df df :n n}
+                            {:n (inc n)
+                             :df (reduce (fn [m t] (update m t (fnil inc 0)))
+                                         df
+                                         (distinct (tokens nm)))})))
+                      {:df {} :n 0}
+                      (line-seq r)))]
+        (reset! df-cache {:df df :n (max n 1)}))))
+
 (defn search
   "Top-k Mathlib declarations matching `query`.
 
@@ -127,7 +164,9 @@
   land in `Real.sqrt_le_sqrt` directly."
   ([cfg query] (search cfg query 10))
   ([cfg query k]
-   (let [qt (tokens query)]
+   (let [qt (tokens query)
+         {dfm :df dn :n} (doc-freq cfg)
+         qidf (reduce + 0.0 (map #(idf dfm dn %) qt))]
      (if (empty? qt)
        []
        (let [pattern (str/join "|" qt)
@@ -150,32 +189,44 @@
                             (let [nt (set (tokens nm))
                                   overlap (count (filter nt qt))]
                               (when (pos? overlap)
-                                ;; Prefer a name that is mostly the query over
-                                ;; a long one that happens to contain it.
-                                ;; `:overlap` is carried so `render` can tell a
-                                ;; real hit from a name that shares a common
-                                ;; word — the ranking alone cannot, since the
-                                ;; best of a bad field still sorts first.
-                                {:n nm :k kind :overlap overlap
-                                 :score (- overlap (* 0.05 (count nt)))}))))))
+                                ;; Weighted by how much each matched token
+                                ;; narrows the space, so a name sharing
+                                ;; `transgen` outranks one sharing `iff` even
+                                ;; though both share exactly one word.
+                                ;; `:idf-frac` is what render reads to tell a
+                                ;; hit from a name that happens to contain a
+                                ;; Mathlib particle — the ranking alone cannot,
+                                ;; since the best of a bad field still sorts
+                                ;; first.
+                                (let [matched (filter nt qt)
+                                      got (reduce + 0.0 (map #(idf dfm dn %) matched))]
+                                  {:n nm :k kind :overlap overlap
+                                   :idf-frac (if (pos? qidf) (/ got qidf) 0.0)
+                                   :score (- got (* 0.05 (count nt)))})))))))
                 (sort-by :score >)
                 (take k)
                 vec)))))))
 
 (def ^:private relevance-floor
-  "Fraction of the QUERY's tokens a name must share to count as a match.
+  "Share of the query's INFORMATION a name must match to count as a hit.
 
-  A fraction, not an absolute count: two shared tokens is strong for a two-word
-  query and meaningless for an eight-word one, and an absolute floor gets one
-  of those wrong."
+  Information rather than token count. Counting tokens equally made a match on
+  `iff` worth a match on `transgen`, and in the 215,781-declaration index `iff`
+  appears in 17,610 names against `transgen`'s 30 — about 600x apart in how
+  much they narrow anything. gen-27 asked for \"Relation.TransGen iff exists
+  list Chain'\" and got `mem_closure_iff_exists_list`: three shared tokens,
+  every one a Mathlib name-particle, clearing a token-count floor while missing
+  the whole point of the query.
+
+  Raising a token-count floor would not have helped — it suppresses genuine
+  short matches at the same rate. The fix is to stop pretending the tokens are
+  worth the same."
   0.4)
 
 (defn relevant?
-  "Whether a hit shares enough of the query to be worth calling a match."
-  [hit query-token-count]
-  (and (pos? (:overlap hit 0))
-       (pos? query-token-count)
-       (>= (/ (double (:overlap hit 0)) query-token-count) relevance-floor)))
+  "Whether a hit matched enough of the query's information to be called a hit."
+  [hit]
+  (>= (double (:idf-frac hit 0.0)) relevance-floor))
 
 (defn render
   "The search result as the branch reads it.
@@ -193,7 +244,7 @@
   list searches again."
   [hits query]
   (let [qn (count (tokens query))
-        strong (filter #(relevant? % qn) hits)]
+        strong (filter relevant? hits)]
     (cond
       (empty? hits)
       (str "No Mathlib declaration matched `" query "`. Try the mathematical"

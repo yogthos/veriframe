@@ -638,9 +638,10 @@ sidon(S) :- sums(S, Sums), sort(Sums, Sorted), length(Sums, N), length(Sorted, N
   ;; The names stay visible: a near-miss is occasionally the right lead. What
   ;; goes is the false confidence.
   (testing "a weak best match is reported as a miss, with the near misses kept"
-    (let [out (lean-search/render [{:n "Finite.subset" :k "theorem" :score 1.9 :overlap 2}
+    (let [out (lean-search/render [{:n "Finite.subset" :k "theorem" :score 1.9
+                                    :overlap 2 :idf-frac 0.18}
                                    {:n "eventually_subset_of_finite" :k "lemma"
-                                    :score 1.8 :overlap 2}]
+                                    :score 1.8 :overlap 2 :idf-frac 0.15}]
                                   "finite directed graph cycle balanced indegree outdegree equal subset")]
       (is (not (str/includes? out "Mathlib matches for"))
           "it must not present noise the way it presents a hit")
@@ -654,7 +655,7 @@ sidon(S) :- sums(S, Sums), sort(Sums, Sorted), length(Sums, N), length(Sorted, N
 
   (testing "a strong match is still reported as a match"
     (let [out (lean-search/render [{:n "Finset.sum_sub_distrib" :k "theorem"
-                                    :score 2.9 :overlap 3}]
+                                    :score 2.9 :overlap 3 :idf-frac 0.95}]
                                   "Finset sum sub")]
       (is (str/includes? out "Mathlib matches"))
       (is (str/includes? out "Finset.sum_sub_distrib"))))
@@ -662,12 +663,28 @@ sidon(S) :- sums(S, Sums), sort(Sums, Sorted), length(Sums, N), length(Sorted, N
   (testing "an empty result set keeps its own advice"
     (is (re-find #"(?i)vocabulary" (lean-search/render [] "zzz"))))
 
-  (testing "relevance is a fraction of the QUERY, not an absolute count"
-    ;; Two shared tokens is strong for a two-word query and weak for an
-    ;; eight-word one; an absolute floor gets one of those wrong.
-    (is (lean-search/relevant? {:overlap 2} 2))
-    (is (not (lean-search/relevant? {:overlap 2} 8)))
-    (is (lean-search/relevant? {:overlap 1} 1))))
+  (testing "relevance is a share of the query's INFORMATION, not of its tokens"
+    ;; Counting tokens equally made a match on `iff` worth a match on
+    ;; `transgen`. In the 215,781-declaration index `iff` appears in 17,610
+    ;; names and `transgen` in 30, so they are about 600x apart in how much
+    ;; they narrow anything. gen-27 asked for "Relation.TransGen iff exists
+    ;; list Chain'" and got mem_closure_iff_exists_list — three shared tokens,
+    ;; every one of them a Mathlib name-particle, clearing a token-count floor
+    ;; while missing the entire point of the query.
+    (is (lean-search/relevant? {:idf-frac 0.9}))
+    (is (not (lean-search/relevant? {:idf-frac 0.1})))
+    (is (not (lean-search/relevant? {})) "no information matched is not a match"))
+
+  (testing "IDF is computed from the index, so it needs no stoplist"
+    (let [df {"iff" 17610 "exists" 3960 "list" 331 "transgen" 30 "acyclic" 10}
+          n 215781
+          idf (fn [t] (lean-search/idf df n t))]
+      (is (> (idf "transgen") (idf "list")))
+      (is (> (idf "list") (idf "exists")))
+      (is (> (idf "exists") (idf "iff")))
+      (is (> (idf "acyclic") (idf "transgen")))
+      (is (> (idf "zzz-unseen") (idf "acyclic"))
+          "a token absent from Mathlib is maximally discriminating"))))
 
 ;; --- Lean proof state -------------------------------------------------------
 
