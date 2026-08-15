@@ -4145,6 +4145,55 @@
 
 ;; --- searching is not a substitute for proving ------------------------------
 
+(deftest a-search-that-finds-nothing-costs-more-rope-than-one-that-finds-something
+  ;; gen-29. The counter charged every search the same, so a branch mining
+  ;; Mathlib successfully and a branch rewording a doomed query got the same
+  ;; eight turns. They are not the same situation: a search returning strong
+  ;; hits is the tool working, and one returning none is evidence the lemma is
+  ;; not there — which is exactly when the branch should stop and prove it.
+  ;;
+  ;; gen-29's first 48 turns: 22 searches, 13 of them empty. B2 asked
+  ;; "List.Chain' sublist take drop append getLast" (hits), then
+  ;; "List.Chain' take drop sublist" (nothing), then
+  ;; "List.Chain' append take drop" (the same hits as the first). Three turns
+  ;; to arrive back where it started, none of them charged differently.
+  ;;
+  ;; So an empty search counts double. Four fruitless ones exhaust the same
+  ;; rope eight productive ones do, and a branch alternating search with proof
+  ;; still never sees the refusal.
+  (let [hit {:k "theorem" :n "append_take_drop" :idf-frac 0.9 :overlap 3}
+        search-turn (fn [branch hits]
+                      (with-redefs [lean-search/search (fn [& _] hits)
+                                    lean-search/render (fn [& _] "rendered")]
+                        (tools/run-tool {:branch branch :turn 1
+                                         :tool-name "lean_search"
+                                         :args {:query "TransGen chain"}})))
+        run-n (fn [n hits]
+                (reduce (fn [b _] (:branch (search-turn b hits)))
+                        (state/new-branch {:id "B1" :problem "p"})
+                        (range n)))]
+
+    (testing "a search with strong hits costs one"
+      (is (= 3 (:searches-since-attempt (run-n 3 [hit])))))
+
+    (testing "a search with nothing above the relevance floor costs two"
+      ;; Present in the ranking but under the floor — the "closest names are"
+      ;; branch of render, which is the case that actually recurs.
+      (is (= 6 (:searches-since-attempt
+                (run-n 3 [(assoc hit :idf-frac 0.1)]))))
+      (is (= 6 (:searches-since-attempt (run-n 3 [])))
+          "and no ranking at all is no better"))
+
+    (testing "so four fruitless searches exhaust what eight productive ones do"
+      (is (= :mechanics (:category (search-turn (run-n 4 []) [])))
+          "the fifth empty search is refused")
+      (is (= :neutral (:category (search-turn (run-n 7 [hit]) [hit])))
+          "while a branch getting real hits still has rope at eight"))
+
+    (testing "the refusal still names what clears it"
+      (let [r (search-turn (run-n 4 []) [])]
+        (is (re-find #"(?i)prove|verify_lean|proof_start" (:result r)))))))
+
 (deftest searching-without-attempting-anything-is-eventually-refused
   ;; vf-*, gen-27. lean_search is :neutral, so it neither counts against a
   ;; branch nor advances it, and a branch can therefore search indefinitely.

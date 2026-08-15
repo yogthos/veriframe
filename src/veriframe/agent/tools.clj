@@ -2023,6 +2023,11 @@
   \"Mathlib may not have this, prove it directly\" and searches again with
   different words.
 
+  Charged per search, except that a search returning no hit above the
+  relevance floor counts two — see run-tool \"lean_search\". So this is eight
+  productive searches or four fruitless ones, and the branch that is finding
+  things keeps its rope.
+
   Eight, which is generous against the observed streaks and leaves real
   exploration alone: a branch that alternates searching and proving never
   reaches it."
@@ -2034,10 +2039,13 @@
     (if (>= (:searches-since-attempt branch 0) max-searches-without-attempt)
       ;; Withheld, not advised. The count clears on any verification attempt,
       ;; including one that fails — trying is the point, not succeeding.
+      ;; Deliberately not "that is N searches": N is a weighted cost, since a
+      ;; search finding nothing counts double, and quoting it as a count would
+      ;; overstate by up to 2x. The branch does not need the number.
       (malformed branch
-                 (str "That is " (:searches-since-attempt branch 0)
-                      " searches in a row without attempting a proof, so this"
-                      " one is refused.\n\nIf Mathlib had the lemma under a"
+                 (str "You have searched repeatedly without attempting a"
+                      " proof — and the ones that found nothing count for"
+                      " more — so this search is refused.\n\nIf Mathlib had the lemma under a"
                       " name close to what you have been asking for, it would"
                       " have come up by now. State the lemma yourself and"
                       " prove it — `verify_lean` for a whole declaration, or"
@@ -2047,8 +2055,16 @@
       (try
         (let [q (arg ctx :query)
               hits (lean-search/search (get-in config [:engines :lean]) q
-                                       (or (arg ctx :top_k) 10))]
-          (ok (update branch :searches-since-attempt (fnil inc 0))
+                                       (or (arg ctx :top_k) 10))
+              ;; A search that finds nothing costs double. Charging both the
+              ;; same gave a branch mining Mathlib successfully and a branch
+              ;; rewording a doomed query the same eight turns, and they are
+              ;; not the same situation: no hit above the relevance floor is
+              ;; the evidence that the lemma is not there to be found, which
+              ;; is precisely when searching again is the wrong move. gen-29
+              ;; spent 22 of its first 48 turns here, 13 of them empty.
+              cost (if (some lean-search/relevant? hits) 1 2)]
+          (ok (update branch :searches-since-attempt (fnil + 0) cost)
               (lean-search/render hits q)))
         (catch Throwable e
           (unavailable branch "Mathlib search" e))))))
