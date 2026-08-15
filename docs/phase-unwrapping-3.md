@@ -137,11 +137,73 @@ Run outside the harness, against the runs' own claims:
   being `{−1,0,1}`; both work bounds hold with room.
 - **gen-24's counterexample**, as above.
 
+## gen-25 to gen-27: the correctness chain narrows to one lemma
+
+| | gen-25 | gen-26 | gen-27 |
+| --- | --- | --- | --- |
+| run | `1b1bddc7` | `3c3ac1f0` | `9468647d` |
+| turns | 187 (aborted) | 195 | 680 |
+| confirmed | 10 | 8 | 10 |
+| refused as unfaithful | 0 | 3 | 5 |
+| branches culled | 1 | 4 | 6 |
+
+**gen-25 was aborted, and the reason matters more than the run.** It reported
+TARGET 1 closed. It was not: the proof's entire body was the tactic
+`classical`, which adds a decidability instance and closes nothing. Two of
+gen-24's artifacts — both purporting to prove lemma (B) — were the same. The
+harness had been reading a Lean reply carrying no `goals` key as an
+affirmative "no goals remain", so `(empty? nil)` was true and the proof was
+recorded CLOSED. Three void results, seeded forward as inherited CONFIRMED
+lemmas.
+
+That is why every artifact quoted below was read as a proof BODY rather than
+trusted as a confirmed label, and why runs since carry a quarantine list.
+
+**gen-26 proved lemma (B) properly** (`a#788`): a finite directed graph with no
+directed cycle admits a rank function, constructed as |V| minus the cardinality
+of the transitive-closure reachable set. For an edge a → b, `Reach b ⊆ Reach a`
+by transitivity, `b ∈ Reach a` but `b ∉ Reach b` by acyclicity, so the
+containment is strict and the rank inequality follows. Verified here by hand.
+It also produced a verified witness that the stage-2 optimum is genuinely
+non-unique — two minimisers at Q = 2 on a 4-cycle — which until then had been
+a premise rather than a fact.
+
+**gen-27 built the walk-extraction machinery**, which is the route into TARGET
+1 that avoids `Fin` arithmetic:
+
+- `transgen_walk` — from `Relation.TransGen r x y`, a list with `Chain' r`,
+  head `x`, last `y`. With x = y that is a closed walk.
+- `transgen_walk_len` — the same with `2 ≤ length`, so at least one edge.
+- `chain_append_step` — appending a step to an r-chain keeps it an r-chain.
+- plus list-splitting lemmas: membership gives `l = s ++ a :: t`, and a
+  non-`Nodup` list has a repeated element.
+
+All checked by hand. TARGET 1 now needs two steps: extract a SIMPLE cycle from
+a closed walk by stopping at the first repeat, then show a simple cycle's arc
+set is balanced.
+
+### The drift, three runs running
+
+Each of gen-24, gen-26 and gen-27 hit the hard lemma, backed off, and spent its
+remaining turns confirming things that were already settled — small-instance
+SMT probes in the first two, cross-engine re-verification of inherited bounds
+in the third — then shipped a partial built from those. gen-27's shipping
+branch was refused `done` twice before the coverage gate let a third attempt
+through, and its answer describes the run's real contribution as "three
+confirmed Lean list/Chain′ lemmas", because the branch that writes the answer
+can only see its own work.
+
+Every one of those answers was honest about what it had not established. None
+of them were wrong. They were just not what the run had been asked for, and the
+formulation now says so explicitly: re-verifying inherited work is not
+progress, and a branch beaten by TARGET 1 should say which step beat it.
+
 ## What to point the next run at
 
-1. **A directed cycle's arc set is balanced.** One step, and (A) closes, and
-   with it the entire correctness half of Q-1 including the exponential
-   stage-2 face and the lexicographic tie-break.
+1. **Two steps close TARGET 1**: extract a simple cycle from a closed walk
+   (stop at the first repeat — the list-splitting lemmas for this are proved),
+   then show a simple cycle's arc set is balanced. Lemma (B) and the walk
+   extraction are done and citable by name.
 2. **The arc-subdivision reduction theorem itself.** Every runtime bound in the
    campaign is stated as conditional on it. Its ingredients are proved; the
    theorem is not.
