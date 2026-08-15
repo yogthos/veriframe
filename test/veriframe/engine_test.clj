@@ -789,3 +789,39 @@ sidon(S) :- sums(S, Sums), sort(Sums, Sorted), length(Sums, N), length(Sorted, N
   (testing "the sorry check still fires, and first"
     (is (not (:ok (lint/lint-lean "theorem foo : True := by sorry"))))))
 
+(deftest an-error-reply-is-not-a-successful-elaboration
+  ;; The twin of vf-4tw, in the other REPL entry point, and worse. run-command
+  ;; computed :ok as (empty? errs) with errs drawn from (:messages r), so a
+  ;; reply carrying no :messages key gave errs = [] and :ok = true.
+  ;;
+  ;; That reply shape occurs: the REPL answers {:message ... :ok ...} when it
+  ;; rejects a request, and apply-tactic hit it 19 times in gen-27 alone.
+  ;; verify_lean branches on (:ok r) — so with :ok true and no sorries it runs
+  ;; the faithfulness judge and, on a pass, banks a CONFIRMED artifact. A REPL
+  ;; error laundered into a verified result, which is exactly how the three
+  ;; `classical` artifacts happened, by the other door.
+  ;;
+  ;; Absence is not assent: a successful elaboration reply carries :env.
+  (let [reply (fn [m] (with-redefs [lean-repl/send-command (fn [& _] (assoc m :ok true))]
+                        (lean-repl/run-command {:id "s"} "theorem t : True := trivial" 1)))]
+
+    (testing "an error reply with no messages key is not a success"
+      (let [r (reply {:message "Unknown environment 3"})]
+        (is (not (:ok r)))
+        (is (some #(re-find #"Unknown environment 3" (str (:data %))) (:errors r))
+            "and the REPL's own words reach the caller")))
+
+    (testing "a clean elaboration is still a success"
+      (let [r (reply {:env 2 :messages []})]
+        (is (:ok r))
+        (is (= 2 (:env r)))))
+
+    (testing "a clean elaboration with only warnings is still a success"
+      (is (:ok (reply {:env 2 :messages [{:severity "warning" :data "unused variable"}]}))))
+
+    (testing "a genuine error is still a failure"
+      (is (not (:ok (reply {:env 2 :messages [{:severity "error" :data "type mismatch"}]})))))
+
+    (testing "sorries still come through"
+      (is (seq (:sorries (reply {:env 2 :messages [] :sorries [{:goal "True"}]})))))))
+

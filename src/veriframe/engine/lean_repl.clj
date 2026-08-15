@@ -268,12 +268,34 @@
          r (send-command session {:cmd code :env base})]
      (if-not (:ok r)
        r
-       (let [errs (errors (:messages r))]
-         {:ok (empty? errs)
-          :env (:env r)
-          :messages (:messages r)
-          :errors (vec errs)
-          :sorries (vec (:sorries r))})))))
+       (let [errs (errors (:messages r))
+             ;; Affirmative, not merely the absence of a negative. :ok was
+             ;; (empty? errs) with errs drawn from (:messages r), so a reply
+             ;; carrying no :messages key gave errs = [] and :ok = true — and
+             ;; verify_lean branches on :ok, so a REPL error could be laundered
+             ;; into a CONFIRMED artifact. The same defect vf-4tw fixed in
+             ;; apply-tactic, by the other door, and this door banks results.
+             ;;
+             ;; A successful elaboration carries :env; a rejected request
+             ;; carries :message instead. Absence is not assent.
+             elaborated? (contains? r :env)]
+         (if-not elaborated?
+           {:ok false
+            :env nil
+            :messages (:messages r)
+            :sorries []
+            :errors (conj (vec errs)
+                          {:severity "error"
+                           :data (if-let [m (:message r)]
+                                   (str "The Lean REPL rejected the request: " m)
+                                   (str "The Lean REPL replied without an environment,"
+                                        " so nothing was elaborated. Reply keys: "
+                                        (pr-str (vec (keys r)))))})}
+           {:ok (empty? errs)
+            :env (:env r)
+            :messages (:messages r)
+            :errors (vec errs)
+            :sorries (vec (:sorries r))}))))))
 
 (defn apply-tactic
   "One tactic against a proof state. Returns the new state and its goals; an
