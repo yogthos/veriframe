@@ -104,6 +104,45 @@
       (when (and ok (map? value) (string? (:name value)) (not (str/blank? (:name value))))
         candidate))))
 
+;; Anthropic's XML tool syntax, which deepseek-v4-pro emits in place of the
+;; fenced JSON this harness documents. Both parts are required — an opener with
+;; no closer is not a call — so prose ABOUT the format does not become one.
+(def ^:private invoke-re
+  #"(?s)<invoke\s+name=\"([^\"]+)\"\s*>(.*?)</invoke>")
+
+(def ^:private parameter-re
+  #"(?s)<parameter\s+name=\"([^\"]+)\"\s*>(.*?)</parameter>")
+
+(defn- xml-value
+  "A parameter's value. Verbatim, except that something which is entirely a
+  number becomes one.
+
+  Values here are NOT JSON-escaped — that is the whole reason a model reaches
+  for this form when handing over a Lean proof — so the text is kept exactly
+  as written, newlines, quotes and backslashes included. The number case is
+  not cosmetic: `top_k` reaches `(take k)` and a string throws there. Anchored
+  and strict, so `s#1392` and a claim that merely mentions a figure stay
+  strings."
+  [s]
+  (let [t (str/trim s)]
+    (if (re-matches #"-?\d+" t)
+      (parse-long t)
+      s)))
+
+(defn- xml-call
+  "The response's last complete <invoke>, as {:name :args}, or nil.
+
+  Last rather than first, matching the fence rule and for the same reason: a
+  model that drafts one call while reasoning and then issues the real one puts
+  the real one last."
+  [response]
+  (when-let [m (last (re-seq invoke-re (or response "")))]
+    (let [[_ nm body] m]
+      (when-not (str/blank? nm)
+        {:name nm
+         :args (reduce (fn [acc [_ k v]] (assoc acc (keyword k) (xml-value v)))
+                       {} (re-seq parameter-re (or body "")))}))))
+
 (defn reattach
   "The complete assistant turn, given what the request was prefilled with.
 
@@ -167,7 +206,14 @@
                  fenced
                  (when-let [t (trailing-call response)] [t]))
         unfenced? (and (empty? fenced) (seq bodies))]
-    (when (seq bodies)
+    ;; Third rung, and last: only when neither a fence nor a trailing JSON
+    ;; object was found. Recorded rather than silently normalised, for the same
+    ;; reason :unfenced? is — a run where the model never once used the
+    ;; documented format is a fact about the arm, not a detail.
+    (if (empty? bodies)
+      (when-let [x (xml-call response)]
+        (assoc x :fences 0 :xml-call? true))
+      (when (seq bodies)
       (let [body (peek bodies)
             n (count fenced)
             repaired (repair-control-chars body)
@@ -227,7 +273,7 @@
                            {:name (:name parsed)
                             :args (let [a (:args parsed)] (if (map? a) a {}))})
                     (parse-error "tool-call body must be a JSON object with a non-empty `name` string"
-                                 base)))))))))))
+                                 base))))))))))))
 
 (defn signals
   "The mechanics signals from one parse, for the capability tier.

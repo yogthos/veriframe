@@ -567,3 +567,99 @@
       ;; would silently leave thinking on for a run that asked for neither.
       (is (= "none" (:reasoning_effort
                      (adapter/chat-body a {:model "m" :reasoning-effort "none"} req)))))))
+
+(deftest an-xml-style-tool-call-is-accepted-rather-than-discarded
+  ;; gen-30, the first run on deepseek-v4-pro. The model emits Anthropic's XML
+  ;; tool syntax instead of the fenced JSON this harness documents, and the
+  ;; parser saw no fence and reported a no-call. Eight of the run's first
+  ;; twelve no-calls were this, on a branch that alternated failing turn and
+  ;; prefill-recovered turn all the way to turn 13.
+  ;;
+  ;; Same reasoning as the unfenced-JSON path already here: the model said
+  ;; exactly what it wanted, unambiguously, and throwing it away over
+  ;; punctuation costs a turn and teaches nothing — it retries the same way,
+  ;; because that IS its native format.
+  ;;
+  ;; Narrow, like that path. Only when no fence and no trailing JSON was
+  ;; found, and only for a complete <invoke name="..."> … </invoke>.
+  (testing "a plain call becomes name and args"
+    (let [p (fence/parse-tool-call
+             (str "Let me look.\n<tool_calls>\n<invoke name=\"lean_search\">\n"
+                  "<parameter name=\"query\">List.Chain' dropLast</parameter>\n"
+                  "</invoke>\n</tool_calls>"))]
+      (is (= "lean_search" (:name p)))
+      (is (= {:query "List.Chain' dropLast"} (:args p)))
+      (is (:xml-call? p) "recorded, so it stays visible rather than silently normalised")))
+
+  (testing "a value that is a number arrives as one"
+    ;; top_k reaches (take k) and a string throws there.
+    (let [p (fence/parse-tool-call
+             (str "<invoke name=\"lean_search\">"
+                  "<parameter name=\"query\">chain</parameter>"
+                  "<parameter name=\"top_k\">8</parameter></invoke>"))]
+      (is (= {:query "chain" :top_k 8} (:args p)))))
+
+  (testing "an id that merely contains digits stays a string"
+    (let [p (fence/parse-tool-call
+             "<invoke name=\"fetch_artifact\"><parameter name=\"id\">s#1392</parameter></invoke>")]
+      (is (= {:id "s#1392"} (:args p)))))
+
+  (testing "a Lean body keeps its newlines, quotes and backslashes verbatim"
+    ;; The whole point of the XML form is that values are not JSON-escaped.
+    (let [lean "theorem t : True := by\n  simp [\"a\\b\"]\n  trivial"
+          p (fence/parse-tool-call
+             (str "<invoke name=\"verify_lean\">"
+                  "<parameter name=\"claim\">a claim</parameter>"
+                  "<parameter name=\"lean\">" lean "</parameter></invoke>"))]
+      (is (= lean (get-in p [:args :lean])))))
+
+  (testing "a real fence still wins"
+    ;; A model that shows the XML while reasoning and then issues a proper
+    ;; fenced call must not have the reasoning parsed as its call.
+    (let [p (fence/parse-tool-call
+             (str "<invoke name=\"lean_search\"><parameter name=\"query\">x</parameter></invoke>\n"
+                  "```tool-call\n{\"name\": \"verify_lean\", \"args\": {\"claim\": \"c\"}}\n```"))]
+      (is (= "verify_lean" (:name p)))
+      (is (not (:xml-call? p)))))
+
+  (testing "the last invoke wins, as the last fence does"
+    (let [p (fence/parse-tool-call
+             (str "<invoke name=\"lean_search\"><parameter name=\"query\">first</parameter></invoke>\n"
+                  "<invoke name=\"fetch_artifact\"><parameter name=\"id\">827</parameter></invoke>"))]
+      (is (= "fetch_artifact" (:name p)))))
+
+  (testing "prose about the format is not a call"
+    (is (nil? (fence/parse-tool-call
+               "Do not use <invoke name=...> syntax; use the fenced form.")))
+    (is (nil? (fence/parse-tool-call "<invoke name=\"lean_search\">unterminated"))
+        "an opener with no closer is not a call")
+    (is (nil? (fence/parse-tool-call "<invoke>no name here</invoke>")))))
+
+(deftest the-reasoning-stream-survives-onto-the-response
+  ;; turns.reasoning_text was empty for every run ever recorded. Not because
+  ;; nothing reasoned — agent/loop writes :reasoning-text (:reasoning response)
+  ;; on every turn — but because the client folds the provider's reasoning into
+  ;; <think> framing on :content and then drops the key, so that write always
+  ;; stored nil. Querying the column to ask whether a model reasoned returned
+  ;; absence, which reads as "it did not".
+  ;;
+  ;; The fold stays: it is what lets one fence parser work across providers.
+  ;; The key is carried alongside it, which is additive.
+  (let [adapter (reify adapter/Adapter
+                  (id [_] :fake)
+                  (display-name [_] "Fake")
+                  (chat-url [_ _] "http://example.invalid/chat")
+                  (auth-headers [_ _] {})
+                  (chat-body [_ _ _] {})
+                  (prefill-support? [_ _] false)
+                  (error-message [_ _] nil)
+                  (usage-cap? [_ _ _] false)
+                  (parse-chat [_ _] {:content "1183"
+                                     :reasoning "91*10=910, 91*3=273"
+                                     :finish-reason "stop"}))]
+    (with-redefs [http/post (fn [& _] {:status 200 :body "{}"})]
+      (let [r (client/chat adapter {:model "m"} [{:role "user" :content "go"}])]
+        (is (= "<think>91*10=910, 91*3=273</think>\n1183" (:content r))
+            "the fold is unchanged — one parser still sees one string")
+        (is (= "91*10=910, 91*3=273" (:reasoning r))
+            "and the reasoning is still reachable on its own, for the column that stores it")))))

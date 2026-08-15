@@ -127,6 +127,12 @@
                            " :max-tokens or shorten the context.")}
               {:outcome :ok
                :response {:content merged
+                          ;; Carried as well as folded. agent/loop stores this
+                          ;; as turns.reasoning_text, and dropping it here left
+                          ;; that column empty for every run ever recorded —
+                          ;; which reads as "nothing reasoned" rather than as
+                          ;; "nobody kept it".
+                          :reasoning (:reasoning parsed)
                           :finish-reason (:finish-reason parsed)
                           :usage (:usage parsed)
                           :elapsed-ms elapsed}}))
