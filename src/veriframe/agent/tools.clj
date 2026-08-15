@@ -515,7 +515,23 @@
        " a theorem elaborate while proving nothing about the claim), the"
        " direction of every inequality, and whether a definition introduced in"
        " the snippet means what the claim says it means — a `def` that is"
-       " subtly the wrong object makes a true theorem about the wrong thing."))
+       " subtly the wrong object makes a true theorem about the wrong thing."
+       "\n\nTwo failures specifically, both of which have shipped as results"
+       " here:\n\n"
+       "1. THE CONCLUSION IS THE HYPOTHESES HANDED BACK. If the goal can be"
+       " discharged by supplying the hypotheses as the witness — `exact ⟨h1,"
+       " h2, …⟩` for an existential whose components are exactly what was"
+       " assumed — the theorem assumes what the claim says it establishes."
+       " One artifact assumed a list WAS a simple cycle and concluded that a"
+       " simple cycle exists. Answer FAIL: the work the claim describes is the"
+       " step that was assumed away.\n\n"
+       "2. THE CLAIM NAMES OBJECTS THE STATEMENT DOES NOT CONTAIN. Read the"
+       " claim's nouns and find each one in the theorem. A claim describing a"
+       " subdivided network of parallel unit arcs, matched against a statement"
+       " with no arcs and no capacities in it, is not that claim — it was a"
+       " Mathlib identity about list lengths wearing the claim's description."
+       " Answer FAIL when the statement is silent about the construction the"
+       " claim is about, however true the statement is."))
 
 (def ^:private template-faithfulness-note
   "verify_template cross-checks two encodings, which the tool used to treat as

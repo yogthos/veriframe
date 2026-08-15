@@ -4284,3 +4284,25 @@
                                     :lean "theorem other : True := trivial"}})
             (is (= 1 @engine))))))))
 
+(deftest the-lean-faithfulness-note-asks-whether-the-statement-has-content
+  ;; The note asked whether the STATEMENT is the claim, and not whether it says
+  ;; anything. gen-28 shipped a#818 on that gap: the claim described replacing
+  ;; each edge by D parallel unit arcs and preserving divergence, while the
+  ;; theorem mentioned no arcs at all and stated (Finset.range (k e)).card =
+  ;; k e — Finset.card_range — plus the fact that substituting one for the
+  ;; other leaves two sums equal. simp closed both. The judge answered PASS.
+  ;;
+  ;; a#826 is blunter: its hypotheses say l IS a simple cycle, its conclusion
+  ;; says one exists, and its proof is `exact ⟨l, hchain, hhead, hnod, hlen⟩`.
+  ;;
+  ;; Same family as the `classical` artifacts by the opposite door — there the
+  ;; proof was empty and the statement real, here the proof is real and the
+  ;; statement empty. Two questions catch both without asking a judge to decide
+  ;; vacuity in general.
+  (let [note @#'tools/lean-faithfulness-note]
+    (is (re-find #"(?i)hypothes" note))
+    (is (re-find #"(?i)conclusion" note)
+        "it must ask whether the conclusion is just the hypotheses handed back")
+    (is (re-find #"(?i)appears in|names.*statement|mentioned" note)
+        "and whether what the claim names is actually in the statement")))
+
