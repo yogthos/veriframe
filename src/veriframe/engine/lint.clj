@@ -230,6 +230,24 @@
             ;; sorry and admit compile with a warning, not an error, so without
             ;; this a snippet that proves nothing gets recorded as confirmed.
             ;; Observed in the Frankl run.
+            ;; An `example` has no name, so nothing can cite it. verify_lean
+            ;; banks whatever it proves, and seed-from-run! carries that code
+            ;; into later generations "so a branch can re-confirm an inherited
+            ;; lemma in one cheap turn instead of reconstructing the encoding"
+            ;; — which an anonymous declaration makes impossible. 25 confirmed
+            ;; artifacts across the campaign are examples: proved, banked, and
+            ;; uncitable. Checked only when there is no named declaration
+            ;; alongside, since a scratch example next to a real theorem is the
+            ;; author's business.
+            (when (and (re-find #"\bexample\b" stripped)
+                       (not (re-find #"\b(theorem|lemma|def|abbrev|instance|structure|class|inductive)\b"
+                                     stripped)))
+              (conj! ws (str "This is an `example`, which has no name — nothing can cite"
+                             " it, so a later proof (or a later run) cannot use what you"
+                             " proved except by proving it again. Give it a name:"
+                             " `theorem foo ...` or `lemma foo ...`. Results here are"
+                             " inherited by later runs, and an anonymous one is inherited"
+                             " as text nobody can apply.")))
             (when (re-find #"\b(sorry|admit)\b" stripped)
               (conj! ws (str "Snippet contains `sorry` or `admit` — placeholder tactics"
                              " that compile but do NOT prove anything (Lean only emits a"

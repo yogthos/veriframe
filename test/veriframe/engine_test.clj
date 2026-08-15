@@ -743,3 +743,37 @@ sidon(S) :- sums(S, Sums), sort(Sums, Sorted), length(Sums, N), length(Sorted, N
         (is (:ok r))
         (is (not (:closed? r)))))))
 
+;; --- an artifact has to be citable ------------------------------------------
+
+(deftest an-anonymous-example-is-refused
+  ;; verify_lean banks whatever it proves as a confirmed artifact, and
+  ;; seed-from-run! carries that code into later generations "so a branch can
+  ;; re-confirm an inherited lemma in one cheap turn instead of reconstructing
+  ;; the encoding". An `example` has no name, so no later proof can `exact` it,
+  ;; `apply` it, or cite it at all — the only way to use it is to prove it
+  ;; again, which is exactly what seeding exists to avoid.
+  ;;
+  ;; 25 confirmed Lean artifacts across the campaign are anonymous examples.
+  ;; gen-27 a#801 is one: a correct two-line proof of [a,c].Chain' r iff r a c,
+  ;; banked and uncitable.
+  (testing "an example is rejected, with the fix named"
+    (let [{:keys [ok warnings]} (lint/lint-lean "example (a : Nat) : a = a := rfl")]
+      (is (not ok))
+      (is (some #(re-find #"(?i)name" %) warnings))
+      (is (some #(re-find #"theorem|lemma" %) warnings)
+          "and says what to write instead")))
+
+  (testing "a named declaration passes"
+    (are [snippet] (:ok (lint/lint-lean snippet))
+      "theorem foo (a : Nat) : a = a := rfl"
+      "lemma bar (a : Nat) : a = a := rfl"
+      "def baz : Nat := 1"))
+
+  (testing "an example alongside a named declaration is fine"
+    ;; The named one is what gets cited; a scratch example beside it is the
+    ;; author's business.
+    (is (:ok (lint/lint-lean "theorem foo (a : Nat) : a = a := rfl\nexample : True := trivial"))))
+
+  (testing "the sorry check still fires, and first"
+    (is (not (:ok (lint/lint-lean "theorem foo : True := by sorry"))))))
+
