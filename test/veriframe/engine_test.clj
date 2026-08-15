@@ -402,13 +402,23 @@ sidon(S) :- sums(S, Sums), sort(Sums, Sorted), length(Sums, N), length(Sorted, N
   ;; Counting `sleep 45` specifically, not every sleep on the machine: any
   ;; unrelated process sleeping in the background (a shell watcher loop, say)
   ;; starting or ending between the two counts flakes a system-wide tally.
-  (let [before (:out (proc/run {:timeout-ms 5000} "sh" "-c" "pgrep -f 'sleep 45' | wc -l"))
+  ;;
+  ;; And counted by exec'ing pgrep DIRECTLY rather than through `sh -c "pgrep
+  ;; … | wc -l"`. The shell's own command line contains the pattern, so it
+  ;; matched itself: with nothing running at all that pipeline reports 1, and
+  ;; the figure moves with how sh forks. CI failed on before=2 after=1 — a
+  ;; count that went DOWN, which no leak can cause. pgrep excludes itself, so
+  ;; exec'd directly the only matches are real `sleep 45` processes and both
+  ;; counts are 0.
+  (let [count-sleeps #(let [r (proc/run {:timeout-ms 5000} "pgrep" "-f" "sleep 45")]
+                        (count (remove str/blank? (str/split-lines (str (:out r))))))
+        before (count-sleeps)
         t0 (System/currentTimeMillis)
         _ (dotimes [_ 3] (proc/run {:timeout-ms 500} "sleep" "45"))
         elapsed (- (System/currentTimeMillis) t0)]
     (Thread/sleep 1500)
-    (let [after (:out (proc/run {:timeout-ms 5000} "sh" "-c" "pgrep -f 'sleep 45' | wc -l"))]
-      (is (= (str/trim (str before)) (str/trim (str after)))
+    (let [after (count-sleeps)]
+      (is (= before after)
           (str "three killed `sleep 45` processes leaked; before=" before " after=" after))
       ;; Asserted explicitly because the count alone does not catch the original
       ;; bug: with the broken timed deref, proc/run blocked until each `sleep`
