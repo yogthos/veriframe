@@ -242,6 +242,15 @@
   (boolean (some #(advances-thesis? branch (:claim %))
                  (confirmed-artifacts branch))))
 
+(def verification-tools
+  "Tools that actually put a claim in front of an engine.
+
+  Used to clear the consecutive-search counter: a branch that has been
+  searching has to TRY something, and a failed attempt counts — it tells the
+  branch which step is hard, which another search does not."
+  #{"verify" "verify_smt" "verify_lean" "verify_octave" "verify_template"
+    "proof_start" "proof_step" "measure" "octave_eval"})
+
 (defn record-outcome
   "Apply a turn's outcome to the counters the gates read.
 

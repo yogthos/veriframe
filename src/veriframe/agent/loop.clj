@@ -337,6 +337,12 @@
                 result (tools/run-tool (assoc ctx :branch branch :turn turn
                                               :tool-name tool :args (:args parsed)))
                 branch (-> (:branch result)
+                           ;; Any attempt at an engine clears the search
+                           ;; counter, including one that fails — trying is
+                           ;; what the refusal asks for, not succeeding. One
+                           ;; place rather than inside each verify tool.
+                           (cond-> (contains? state/verification-tools tool)
+                             (dissoc :searches-since-attempt))
                            (state/record-outcome (assoc result :claim (get-in parsed [:args :claim])))
                            (state/add-turn {:turn turn :tool tool
                                             :category (:category result)

@@ -1969,16 +1969,51 @@
             (settle-claim! ctx (arg ctx :claim) :released nil)
             (unavailable branch "Lean" e))))))))
 
+(def ^:private max-searches-without-attempt
+  "Consecutive `lean_search` calls allowed before the branch has to try
+  something.
+
+  lean_search is :neutral — it neither counts against a branch nor advances
+  one — so searching is free and a branch can do it forever. gen-27 did: 62 of
+  its first 92 turns were searches against 3 verify_lean and 5 proof_start,
+  with consecutive runs of 11, 13 and 8 and no attempt in between.
+
+  The harness noticed seventeen times and was ignored seventeen times —
+  progress-stalled 0 met to 6 unmet, prologue-cap 0 to 11. arbiter/prefill-for
+  already drew the conclusion: gates that WITHHOLD change behaviour, gates that
+  SUGGEST do not. The no-good-match message suggests, and a branch reads
+  \"Mathlib may not have this, prove it directly\" and searches again with
+  different words.
+
+  Eight, which is generous against the observed streaks and leaves real
+  exploration alone: a branch that alternates searching and proving never
+  reaches it."
+  8)
+
 (defmethod run-tool "lean_search" [{:keys [branch config] :as ctx}]
   (if-let [m (missing ctx :query)]
     (malformed branch m)
-    (try
-      (let [q (arg ctx :query)
-            hits (lean-search/search (get-in config [:engines :lean]) q
-                                     (or (arg ctx :top_k) 10))]
-        (ok branch (lean-search/render hits q)))
-      (catch Throwable e
-        (unavailable branch "Mathlib search" e)))))
+    (if (>= (:searches-since-attempt branch 0) max-searches-without-attempt)
+      ;; Withheld, not advised. The count clears on any verification attempt,
+      ;; including one that fails — trying is the point, not succeeding.
+      (malformed branch
+                 (str "That is " (:searches-since-attempt branch 0)
+                      " searches in a row without attempting a proof, so this"
+                      " one is refused.\n\nIf Mathlib had the lemma under a"
+                      " name close to what you have been asking for, it would"
+                      " have come up by now. State the lemma yourself and"
+                      " prove it — `verify_lean` for a whole declaration, or"
+                      " `proof_start` to develop it step by step. A failed"
+                      " attempt clears this and is worth more than another"
+                      " search: it tells you which step is actually hard."))
+      (try
+        (let [q (arg ctx :query)
+              hits (lean-search/search (get-in config [:engines :lean]) q
+                                       (or (arg ctx :top_k) 10))]
+          (ok (update branch :searches-since-attempt (fnil inc 0))
+              (lean-search/render hits q)))
+        (catch Throwable e
+          (unavailable branch "Mathlib search" e))))))
 
 (defmethod run-tool "proof_start" [{:keys [branch] :as ctx}]
   (if-let [m (or (missing ctx :claim :theorem) (vague-claim ctx))]

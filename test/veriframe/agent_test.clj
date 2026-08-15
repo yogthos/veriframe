@@ -31,6 +31,7 @@
             [veriframe.agent.tools :as tools]
             [veriframe.agent.verdict :as verdict]
             [veriframe.engine.lean-pool :as lean-pool]
+            [veriframe.engine.lean-search :as lean-search]
             [veriframe.engine.lean-repl :as lean-repl]
             [veriframe.engine.octave :as octave]
             [veriframe.engine.smt :as smt]
@@ -4136,3 +4137,74 @@
                     (assoc :repopulate-due 7)
                     (assoc :gate-history [{:gate :repopulate :turn 7}]))]
       (is (false? (boolean ((:when g) {:branch acted :branch-count 1 :max-turns 40})))))))
+
+;; --- searching is not a substitute for proving ------------------------------
+
+(deftest searching-without-attempting-anything-is-eventually-refused
+  ;; vf-*, gen-27. lean_search is :neutral, so it neither counts against a
+  ;; branch nor advances it, and a branch can therefore search indefinitely.
+  ;; It does: 62 of that run's first 92 turns were searches, against 3
+  ;; verify_lean and 5 proof_start, with consecutive runs of 11, 13 and 8
+  ;; searches and no verification attempt in between.
+  ;;
+  ;; The harness noticed seventeen times and was ignored seventeen times —
+  ;; progress-stalled 0 met to 6 unmet, prologue-cap 0 to 11. Which is
+  ;; arbiter/prefill-for's finding again: gates that WITHHOLD change behaviour,
+  ;; gates that SUGGEST do not. The no-good-match message added earlier also
+  ;; only suggests, and a branch reads "Mathlib may not have this, prove it
+  ;; directly" and searches again with different words.
+  ;;
+  ;; So the search is refused. A verification attempt — successful or not —
+  ;; clears the count, so a branch alternating search and proof never sees it.
+  (let [search-turn (fn [branch]
+                      (with-redefs [lean-search/search (fn [& _] [])
+                                    lean-search/render (fn [& _] "no matches")]
+                        (tools/run-tool {:branch branch :turn 1
+                                         :tool-name "lean_search"
+                                         :args {:query "TransGen chain"}})))
+        run-n (fn [n]
+                (reduce (fn [b _] (:branch (search-turn b)))
+                        (state/new-branch {:id "B1" :problem "p"})
+                        (range n)))]
+
+    (testing "a few searches in a row are fine"
+      (let [r (search-turn (run-n 3))]
+        (is (= :neutral (:category r)))
+        (is (str/includes? (:result r) "no matches"))))
+
+    (testing "a long run of them without an attempt is refused"
+      (let [r (search-turn (run-n 8))]
+        (is (= :mechanics (:category r))
+            "nothing was claimed or tested, so this is not a verification failure")
+        (is (re-find #"(?i)without" (:result r)))
+        (is (re-find #"(?i)prove|verify_lean|proof_start" (:result r))
+            "and it says what clears the refusal")))
+
+    (testing "a verification attempt clears it, even a failing one"
+      ;; Driven through run-turn rather than run-tool: the counter is turn
+      ;; bookkeeping, like record-outcome and add-turn, and lives with them.
+      (with-db [c]
+        (let [rid (runs/start-run! c {:problem "p" :beam-width 1})
+              stalled (run-n 8)
+              call (json/write-str {:name "verify_lean"
+                                    :args {:claim "every supported edge is bounded by S"
+                                           :lean "theorem t : True := nope"}})]
+          (runs/open-branch! c rid {:branch-id "B1" :created-at-turn 0})
+          (is (= 8 (:searches-since-attempt stalled)) "the branch really is stalled")
+          (let [after (with-redefs [llm/chat (fn [& _]
+                                               {:content (str "```tool-call\n" call "\n```")
+                                                :finish-reason "stop"})
+                                    lean-repl/create-session (fn [& _] {:id "s"})
+                                    lean-repl/mathlib-env (fn [& _] nil)
+                                    lean-repl/alive? (fn [_] true)
+                                    lean-pool/checkout! (fn [& _] nil)
+                                    lean-repl/run-command
+                                    (fn [& _] {:ok false :sorries []
+                                               :errors [{:data "unknown identifier"}]})]
+                        (aloop/run-turn {:conn c :run-id rid :max-turns 40
+                                         :llm-adapter :a :llm-config {:max-tokens 16384}}
+                                        stalled 9))]
+            (is (nil? (:searches-since-attempt after))
+                "a failed attempt clears it — trying is what the refusal asks for")
+            (is (= :neutral (:category (search-turn after))))))))))
+

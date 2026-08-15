@@ -410,16 +410,23 @@ sidon(S) :- sums(S, Sums), sort(Sums, Sorted), length(Sums, N), length(Sorted, N
   ;; count that went DOWN, which no leak can cause. pgrep excludes itself, so
   ;; exec'd directly the only matches are real `sleep 45` processes and both
   ;; counts are 0.
-  (let [count-sleeps #(let [r (proc/run {:timeout-ms 5000} "pgrep" "-f" "sleep 45")]
+  ;; The duration is unique to this invocation, so two concurrent runs of the
+  ;; suite cannot see each other's sleeps. A machine-wide count of a fixed
+  ;; `sleep 45` reported before=2 after=1 once in CI and again locally — both
+  ;; times a straggler from another run, never a leak. (Pinning to our own pid
+  ;; would be tidier, but java.lang.ProcessHandle is not available here.)
+  (let [marker (str "45." (mod (System/currentTimeMillis) 100000))
+        count-sleeps #(let [r (proc/run {:timeout-ms 5000} "pgrep" "-f" (str "sleep " marker))]
                         (count (remove str/blank? (str/split-lines (str (:out r))))))
         before (count-sleeps)
         t0 (System/currentTimeMillis)
-        _ (dotimes [_ 3] (proc/run {:timeout-ms 500} "sleep" "45"))
+        _ (dotimes [_ 3] (proc/run {:timeout-ms 500} "sleep" marker))
         elapsed (- (System/currentTimeMillis) t0)]
     (Thread/sleep 1500)
     (let [after (count-sleeps)]
       (is (= before after)
-          (str "three killed `sleep 45` processes leaked; before=" before " after=" after))
+          (str "three killed `sleep " marker "` processes leaked;"
+               " before=" before " after=" after))
       ;; Asserted explicitly because the count alone does not catch the original
       ;; bug: with the broken timed deref, proc/run blocked until each `sleep`
       ;; ended by itself, so nothing leaked here and the check passed after
