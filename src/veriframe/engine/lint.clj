@@ -219,6 +219,28 @@
        (remove #(re-matches #"\s*import\s+\S.*" %))
        (str/join "\n")))
 
+(defn vacuous-lean-statement?
+  "Whether every declaration in the snippet concludes `True`.
+
+  `True` is provable by `trivial` and says nothing, so a declaration ending in
+  it substantiates no claim however honestly the proof runs. gen-30 a#832 was
+  banked CONFIRMED as `theorem probe_top_print : True := by trivial` beside a
+  `#print`, with a claim that described itself as \"a mechanical inspection …
+  not a theorem\".
+
+  The CONCLUSION, not the presence of the word: `(h : True)` as a hypothesis is
+  ordinary, and `True ∧ False ∨ 1 = 1` concludes something real. So this looks
+  only at the text between the last top-level `:` and the `:=`, which is where
+  a Lean conclusion lives."
+  [snippet]
+  (let [decls (->> (str/split-lines (strip-lean-comments (or snippet "")))
+                   (filter #(re-find #"\b(theorem|lemma|example)\b" %)))]
+    (and (seq decls)
+         (every? (fn [line]
+                   (when-let [m (re-find #":\s*True\s*:=" line)]
+                     (boolean m)))
+                 decls))))
+
 (defn lint-lean [snippet]
   (let [snippet (strip-lean-imports snippet)
         trimmed (str/trim (or snippet ""))]

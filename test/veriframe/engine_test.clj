@@ -887,3 +887,38 @@ sidon(S) :- sums(S, Sums), sort(Sums, Sorted), length(Sums, N), length(Sorted, N
         "everything inside comments is still nothing to check")
     (is (not (:ok (lint/lint-lean "theorem t : True := by sorry")))
         "and sorry is still refused")))
+
+(deftest a-statement-that-asserts-True-proves-nothing
+  ;; gen-30 a#832, banked CONFIRMED:
+  ;;
+  ;;   #print List.Chain'
+  ;;   theorem probe_top_print : True := by trivial
+  ;;
+  ;; with the claim "#print List.Chain' compiles and reveals List.Chain' is
+  ;; defined as List.IsChain; this is a mechanical inspection ... not a
+  ;; theorem". The branch said in the claim that it was not a theorem and the
+  ;; harness recorded it as an engine-confirmed result anyway.
+  ;;
+  ;; The fifth way this campaign has banked something worthless as confirmed,
+  ;; after `classical`, anonymous examples, vacuous statements and `sorry`.
+  ;; The inspection itself is legitimate and useful — that #print is how the
+  ;; branch learned Chain' is IsChain, which is what let it name the
+  ;; constructors in the lemma it proved next — so the snippet should still
+  ;; run. It just must not produce an artifact.
+  (testing "a conclusion of True is recognised"
+    (is (lint/vacuous-lean-statement? "theorem probe : True := by trivial"))
+    (is (lint/vacuous-lean-statement? "lemma p (n : Nat) : True := by trivial")
+        "binders do not make it say anything")
+    (is (lint/vacuous-lean-statement? "theorem p : True := trivial")
+        "term mode too"))
+
+  (testing "a real statement is not"
+    (is (not (lint/vacuous-lean-statement? "theorem t (x : Nat) : x = x := by rfl")))
+    (is (not (lint/vacuous-lean-statement? "theorem t : 1 = 1 := by rfl"))))
+
+  (testing "True appearing inside a real statement is not vacuous"
+    ;; The conclusion is what matters, not whether the word occurs.
+    (is (not (lint/vacuous-lean-statement?
+              "theorem t (h : True) : 1 = 1 := by rfl")))
+    (is (not (lint/vacuous-lean-statement?
+              "theorem t : (True ∧ False) ∨ 1 = 1 := by right; rfl")))))

@@ -178,7 +178,7 @@
                                  :engine-sessions registry
                                  :tool-name "verify_lean"
                                  :args {:claim "the bound holds for every edge"
-                                        :lean "theorem t : True := trivial"}})]
+                                        :lean "theorem t : 1 = 1 := rfl"}})]
           (is (nil? (:lean (:branch r)))
               "the branch really has lost the handle — that is the bug's shape")
           (is (= 1 (count @registry))
@@ -198,7 +198,7 @@
                          :engine-sessions registry
                          :tool-name "verify_lean"
                          :args {:claim "the bound holds for every edge"
-                                :lean "theorem t : True := trivial"}})
+                                :lean "theorem t : 1 = 1 := rfl"}})
         (is (= 1 (count @registry))
             "registration happens at creation, not at a successful return"))))
 
@@ -212,7 +212,7 @@
                                   {:branch (state/new-branch {:id "B1" :problem "p"})
                                    :turn 1 :tool-name "verify_lean"
                                    :args {:claim "the bound holds for every edge"
-                                          :lean "theorem t : True := trivial"}})))))))
+                                          :lean "theorem t : 1 = 1 := rfl"}})))))))
 
 ;; --- recovering from a dead session -----------------------------------------
 
@@ -238,7 +238,7 @@
                                         :lean {:id "existing"})
                          :turn 1 :tool-name "verify_lean"
                          :args {:claim "the bound holds on every edge"
-                                :lean "theorem t : True := trivial"}})
+                                :lean "theorem t : 1 = 1 := rfl"}})
         (is (= 0 @created) "a healthy session must not be thrown away"))))
 
   (testing "a dead session is discarded and a fresh one obtained"
@@ -253,7 +253,7 @@
                                                 :lean {:id "corpse"})
                                  :turn 1 :tool-name "verify_lean"
                                  :args {:claim "the bound holds on every edge"
-                                        :lean "theorem t : True := trivial"}})]
+                                        :lean "theorem t : 1 = 1 := rfl"}})]
           (is (= 1 @created) "the branch gets a working session rather than the corpse")
           (is (= :success (:category r)))
           (is (= "new" (:id (:lean (:branch r)))))))))
@@ -272,7 +272,7 @@
       (let [r (tools/run-tool {:branch (state/new-branch {:id "B1" :problem "p"})
                                :turn 1 :tool-name "verify_lean"
                                :args {:claim "the bound holds on every edge"
-                                      :lean "theorem t : True := trivial"}})]
+                                      :lean "theorem t : 1 = 1 := rfl"}})]
         (is (= :neutral (:category r))
             "a dead REPL is a fact about the process pool, not about the claim")
         (is (nil? (:failure r)) "and it does not enter the failure log")))))

@@ -1966,8 +1966,12 @@
       ;; cannot get its snippet past the elaborator has learned nothing about
       ;; whether the statement is true, and must not hold the claim shut
       ;; against a branch that can.
-      (let [{:keys [ok warnings]} (lint/lint-lean (arg ctx :lean))]
-      (if-not ok
+      ;; NOT {:keys [ok ...]}: that shadows the `ok` helper for this whole
+      ;; body, and every exit here happened to use `fail` or `unavailable`, so
+      ;; the trap sat unsprung until a branch needed to return a plain result.
+      ;; The failure is a Boolean-cannot-be-cast-to-IFn at runtime.
+      (let [{lint-ok :ok :keys [warnings]} (lint/lint-lean (arg ctx :lean))]
+      (if-not lint-ok
         ;; `sorry` compiles with a warning, so without the lint a snippet that
         ;; proves nothing would be recorded as confirmed. Observed in the
         ;; Frankl run in the original harness.
@@ -1997,6 +2001,29 @@
                              " `sorry` goal(s) open, so it proves nothing. Close them,"
                              " or use proof_start to develop the proof step by step.")
                         :failure {:claim claim :reason "the proof contained sorry"}))
+
+              ;; Elaborated fine and asserts nothing. `True` is closed by
+              ;; `trivial` and substantiates no claim, so there is nothing to
+              ;; bank — but the snippet is how a branch runs `#print` or
+              ;; `#check`, and that inspection is worth keeping: gen-30 B1.3
+              ;; learned Chain' is IsChain this way and used the constructor
+              ;; names in the lemma it proved next. So the output comes back
+              ;; and the claim is RELEASED rather than settled, leaving it open
+              ;; to a branch that can actually prove it.
+              (and (:ok r) (lint/vacuous-lean-statement? (arg ctx :lean)))
+              (do (settle-claim! ctx claim :released nil)
+                  (ok branch
+                      (str "Lean accepted it, and it asserts nothing: the"
+                           " declaration concludes `True`, which `trivial`"
+                           " closes for any input. Nothing was recorded"
+                           " against the claim.\n\n"
+                           (if-let [msgs (seq (:messages r))]
+                             (str "Output:\n"
+                                  (str/join "\n" (map #(str "  " (:data %)) msgs)))
+                             "The snippet produced no output.")
+                           "\n\nUse this for `#print` and `#check` freely. To"
+                           " settle the claim, state it as a theorem whose"
+                           " conclusion is the claim itself.")))
 
               (:ok r)
               (let [code (arg ctx :lean)

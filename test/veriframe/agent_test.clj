@@ -1217,7 +1217,7 @@
     (let [rid (runs/start-run! c {:problem "p"})
           claim "every stage-2-optimal flow has |k_e| at most S on every edge"]
       (artifacts/record! c rid {:branch-id "B1" :turn 3 :kind :lean :tier :confirmed
-                                :claim claim :code "theorem t : True := trivial"})
+                                :claim claim :code "theorem t : 1 = 1 := rfl"})
       (testing "review is never refused, however exactly the claim matches"
         (let [judged (atom 0)
               b (merge (state/new-branch {:id "B2" :problem "p"})
@@ -1413,7 +1413,7 @@
                         lean-repl/run-command (fn [& _] (swap! calls inc)
                                                 {:ok true :sorries []})
                         llm/chat (fn [& _] {:content "GAPS: none\nVERDICT: PASS"})]
-            (let [ra (run registry "B1" "verify_lean" {:lean "theorem t : True := trivial"})
+            (let [ra (run registry "B1" "verify_lean" {:lean "theorem t : 1 = 1 := rfl"})
                   rb (run registry "B2" "verify_lean" {:lean "theorem u : True := by trivial"})]
               (is (= :success (:category ra)))
               (is (= :success (:category rb)))
@@ -1467,7 +1467,7 @@
                             {:ok true :sorries []}))
                         llm/chat (fn [& _] {:content "GAPS: none\nVERDICT: PASS"})]
             (let [ra (run registry "B1" "verify_lean" {:lean "theorem t : True := foo"})
-                  rb (run registry "B2" "verify_lean" {:lean "theorem t : True := trivial"})]
+                  rb (run registry "B2" "verify_lean" {:lean "theorem t : 1 = 1 := rfl"})]
               (is (= :failure (:category ra)))
               (is (= :success (:category rb))
                   "B1's broken proof must not settle the claim against B2")
@@ -1491,7 +1491,7 @@
                         llm/chat (fn [& _] {:content "GAPS: none\nVERDICT: PASS"})]
             (run registry "B1" "verify_lean" {:lean "theorem t : True := openGoal"})
             (is (= :success (:category (run registry "B2" "verify_lean"
-                                            {:lean "theorem t : True := trivial"})))))))
+                                            {:lean "theorem t : 1 = 1 := rfl"})))))))
 
       (testing "an unfaithful encoding leaves the claim open for a correct one"
         ;; Keyed on which encoding the judge is looking at, not on call order:
@@ -3573,7 +3573,7 @@
                              llm/chat (fn [& _] (throw (ex-info "judge must not be called" {})))]
                  (tools/run-tool {:branch b :turn 1 :conn c :run-id rid
                                   :tool-name tool :args args})))]
-    (doseq [[tool args] [["verify_lean" {:claim "every element of S satisfies P" :lean "theorem t : True := trivial"}]
+    (doseq [[tool args] [["verify_lean" {:claim "every element of S satisfies P" :lean "theorem t : 1 = 1 := rfl"}]
                          ["octave_eval" {:code "x = 1;"}]]]
       (let [r (down tool args)]
         (is (= :neutral (:category r))
@@ -3688,7 +3688,7 @@
     (let [b (state/new-branch {:id "B1" :problem "p"})
           r (tools/run-tool {:branch b :turn 1 :tool-name "verify_lean"
                              :args {:claim "one coordinate scalarization"
-                                    :lean "theorem t : True := trivial"}})]
+                                    :lean "theorem t : 1 = 1 := rfl"}})]
       ;; :mechanics, not :failure, since vf-v6x. The refusal happens BEFORE
       ;; any engine runs, so the branch has no verdict either way and there is
       ;; nothing here to hold against its line of inquiry. The count is still
@@ -3931,7 +3931,7 @@
       (testing "a missing required argument"
         (are [tool args] (= :mechanics (:category (run tool args)))
           "verify_smt"    {:smtlib "(assert true)"}
-          "verify_lean"   {:lean "theorem t : True := trivial"}
+          "verify_lean"   {:lean "theorem t : 1 = 1 := rfl"}
           "verify_octave" {:expr "x == 1"}
           "audit"         {:claim "every element of S satisfies P"}
           "review"        {:claim "every element of S satisfies P"}
@@ -4453,3 +4453,34 @@
                   "Unknown identifier `omega_nat`"))]
       (is (re-find #"(?i)lean_search" h))
       (is (not (re-find #"(?i)not a misspelling" h))))))
+
+(deftest verify-lean-runs-an-inspection-but-banks-nothing-for-it
+  ;; gen-30 a#832. The branch used verify_lean to run `#print List.Chain'`,
+  ;; carrying `theorem probe_top_print : True := by trivial` so the snippet had
+  ;; a declaration in it, and the harness recorded an engine-CONFIRMED artifact
+  ;; for a claim whose own text says "not a theorem".
+  ;;
+  ;; The inspection is worth keeping — that #print is how the branch learned
+  ;; Chain' is IsChain, and it named the constructors in the lemma it proved
+  ;; next. So the snippet still runs and the output still comes back. What
+  ;; stops is the artifact, and the claim is released rather than settled, so
+  ;; a branch that can actually prove it is not locked out.
+  (let [run (fn [lean]
+              (with-redefs [lean-repl/create-session (fn [& _] {:id "s"})
+                            lean-repl/mathlib-env (fn [& _] nil)
+                            lean-repl/alive? (fn [_] true)
+                            lean-pool/checkout! (fn [& _] nil)
+                            lean-repl/run-command
+                            (fn [& _] {:ok true :sorries [] :errors []
+                                       :messages [{:data "List.Chain' = List.IsChain"}]})]
+                (tools/run-tool {:branch (state/new-branch {:id "B1" :problem "p"})
+                                 :turn 1 :tool-name "verify_lean"
+                                 :args {:claim "#print reveals Chain' is IsChain, a mechanical inspection"
+                                        :lean lean}})))]
+
+    (testing "a True-concluding snippet elaborates and returns its output"
+      (let [r (run "#print List.Chain'\ntheorem probe : True := by trivial")]
+        (is (nil? (:artifact r)) "nothing is banked")
+        (is (not= :success (:category r)) "and it is not recorded as a confirmation")
+        (is (re-find #"(?i)True" (:result r))
+            "the branch is told why: the statement says nothing")))))
