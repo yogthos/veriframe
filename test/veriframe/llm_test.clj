@@ -703,3 +703,45 @@
              (str "<tool-call>\n{\"name\": \"wrong\"}\n</tool-call>\n"
                   "```tool-call\n{\"name\": \"right\"}\n```"))]
       (is (= "right" (:name p))))))
+
+(deftest an-opener-and-closer-that-disagree-still-delimit-one-call
+  ;; gen-30 again, and the same failure as before wearing different clothes:
+  ;; 13 of 14 no-calls in a 60-turn window CONTAINED ```tool-call and were
+  ;; recorded as having made no call. The model opens with the documented
+  ;; fence and closes with </tool-call> — one delimiter from each of the two
+  ;; forms it knows. Neither pattern matched: the fence wants a closing ```,
+  ;; the tag wants an opening <tool-call>.
+  ;;
+  ;; One of these was 30,658 characters carrying a complete recursive
+  ;; extraction proof, well inside the token cap. It was thrown away for
+  ;; using the wrong bracket at the end.
+  (testing "fence open, tag close"
+    (let [p (fence/parse-tool-call
+             "```tool-call\n{\"name\": \"verify_lean\", \"args\": {\"claim\": \"c\"}}\n</tool-call>")]
+      (is (= "verify_lean" (:name p)))
+      (is (= {:claim "c"} (:args p)))))
+
+  (testing "tag open, fence close"
+    (let [p (fence/parse-tool-call
+             "<tool-call>\n{\"name\": \"lean_search\", \"args\": {\"query\": \"q\"}}\n```")]
+      (is (= "lean_search" (:name p)))))
+
+  (testing "the matching pairs still work"
+    (is (= "a" (:name (fence/parse-tool-call "```tool-call\n{\"name\": \"a\"}\n```"))))
+    (is (= "b" (:name (fence/parse-tool-call "<tool-call>{\"name\": \"b\"}</tool-call>")))))
+
+  (testing "the last call still wins when several appear"
+    (is (= "second"
+           (:name (fence/parse-tool-call
+                   (str "```tool-call\n{\"name\": \"first\"}\n```\n"
+                        "```tool-call\n{\"name\": \"second\"}\n</tool-call>"))))))
+
+  (testing "an opener with no closer falls through to the other rungs"
+    ;; Not special-cased: a response ending in a well-formed call is accepted
+    ;; by the unfenced rung whether or not a fence was opened, and flagged
+    ;; :unfenced? so it stays visible.
+    (let [p (fence/parse-tool-call "```tool-call\n{\"name\": \"x\"}")]
+      (is (= "x" (:name p)))
+      (is (:unfenced? p)))
+    (is (nil? (fence/parse-tool-call "```tool-call\nI will search for it"))
+        "and an opener over prose is still no call at all")))

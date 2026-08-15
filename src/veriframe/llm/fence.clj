@@ -29,13 +29,19 @@
   (:require [clojure.data.json :as json]
             [clojure.string :as str]))
 
-(def fence-re #"(?s)```tool-call\s*\r?\n(.*?)```")
-
-;; The same body in a tag rather than a fence. Unmistakable in intent — a model
-;; writing <tool-call> is calling a tool — so it is treated exactly like the
-;; documented fence, malformed bodies included: those earn a parse error, which
-;; is what lets a branch correct itself.
-(def ^:private tag-fence-re #"(?s)<tool-call>\s*(.*?)</tool-call>")
+;; Any opener paired with any closer.
+;;
+;; The model knows two spellings of the wrapper — the documented ```tool-call
+;; fence and <tool-call> tags — and mixes them: it opens with one and closes
+;; with the other. Requiring a matching pair cost gen-30 thirteen turns in a
+;; sixty-turn window, one of them 30,658 characters carrying a complete
+;; recursive extraction proof, thrown away for the wrong bracket at the end.
+;;
+;; Both spellings are unmistakable in intent, so the body between them is
+;; treated exactly like the documented fence's, malformed ones included: those
+;; earn a parse error, which is what lets a branch correct itself.
+(def fence-re
+  #"(?s)(?:```tool-call\s*\r?\n|<tool-call>\s*)(.*?)(?:```|</tool-call>)")
 
 ;; A general-purpose ```json fence, which a model also uses to show data. Only
 ;; counts when the body is the DOCUMENTED shape, checked in json-fence below.
@@ -91,13 +97,11 @@
 (defn extract-fences
   "Every tool-call fence body in the response, in order.
 
-  Both spellings of the deliberate wrapper — the ```tool-call fence and
-  <tool-call> tags — because a model that writes either is unambiguously
-  calling a tool, and only the punctuation differs."
+  Either spelling of the deliberate wrapper, and any pairing of them — see
+  fence-re. A model that writes one is unambiguously calling a tool, and only
+  the punctuation differs."
   [response]
-  (let [r (or response "")]
-    (mapv (comp str/trim second)
-          (sort-by first (concat (re-seq fence-re r) (re-seq tag-fence-re r))))))
+  (mapv (comp str/trim second) (re-seq fence-re (or response ""))))
 
 (defn- json-fence
   "A ```json fence whose body is the documented call shape, or nil.
