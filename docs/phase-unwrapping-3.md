@@ -1,8 +1,9 @@
-# Q-1: three more runs, and one lemma from an answer
+# Q-1: six runs, and two steps from an answer
 
 A follow-on to [phase-unwrapping-2.md](phase-unwrapping-2.md). Those four runs
-established the three-stage rule and proved it well defined. These three went
-after the open question it left: **is the rule computable in polynomial time?**
+established the three-stage rule and proved it well defined. These six —
+gen-22 through gen-27 — went after the open question it left: **is the rule
+computable in polynomial time?**
 
 **The rule.** Fix an order on the edges. On any instance with a nonempty
 feasible set of integer corrections:
@@ -137,7 +138,7 @@ Run outside the harness, against the runs' own claims:
   being `{−1,0,1}`; both work bounds hold with room.
 - **gen-24's counterexample**, as above.
 
-## gen-25 to gen-27: the correctness chain narrows to one lemma
+## gen-25 to gen-27: the correctness chain narrows to two steps
 
 | | gen-25 | gen-26 | gen-27 |
 | --- | --- | --- | --- |
