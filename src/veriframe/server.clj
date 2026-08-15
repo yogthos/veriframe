@@ -19,6 +19,7 @@
   takes effect on the next request. See veriframe.system."
   (:require [clojure.data.json :as json]
             [clojure.string :as str]
+            [clojure.tools.logging :as log]
             [veriframe.agent.gates :as gates]
             [veriframe.api.control :as control]
             [veriframe.api.openai :as openai]
@@ -28,6 +29,7 @@
             [veriframe.engine.lean-repl :as lean-repl]
             [veriframe.engine.octave :as octave]
             [veriframe.engine.proc :as proc]
+            [veriframe.llm.client :as llm-client]
             [veriframe.store.db :as db]
             [veriframe.system :as system]))
 
@@ -92,6 +94,26 @@
   (let [r (openai/chat-completion (ctx) (body-json req))]
     (json-response (or (:status r) 200) (:body r))))
 
+(defn- harness-models
+  "What the provider actually serves, for the UI's model picker.
+
+  Deliberately NOT /v1/models, which is the OpenAI-compatibility endpoint and
+  answers a different question — what this harness serves as a model — and
+  would start lying if it listed upstream's catalogue instead.
+
+  `current` is what a run gets when it names nothing. A provider with no
+  listing endpoint, or one that is unreachable, yields an empty list rather
+  than an error: the picker then offers only the configured default, which is
+  exactly today's behaviour and still a working form."
+  [_req]
+  (let [{:keys [model] :as llm} (:llm (system/config))
+        served (try (llm-client/list-models (system/adapter) llm)
+                    (catch Throwable e
+                      (log/warn "model listing failed:" (ex-message e))
+                      []))]
+    (json-response {:current model
+                    :models (vec (distinct (cons model served)))})))
+
 (defn- gate-table [_req]
   (json-response {:gates (gates/describe) :thresholds (gates/config)}))
 
@@ -115,6 +137,7 @@
    [:get "/v1/models" #'models]
    [:post "/v1/chat/completions" #'chat-completions]
    [:get "/v1/harness/gates" #'gate-table]
+   [:get "/v1/harness/models" #'harness-models]
    [:get "/v1/runs" (fn [req] (json-response (api-runs/list-runs (system/conn)
                                                                  (long-param req "limit"))))]
    ;; `(or (:status r) 200)`, the same shape resume uses: a handler that refuses

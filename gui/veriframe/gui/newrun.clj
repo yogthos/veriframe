@@ -34,7 +34,7 @@
 (defn request
   "Build {:body {...}} for POST /v1/runs, or {:error \"...\"} for a form the
   server should not be asked about."
-  [{:keys [problem max-turns beam-width seed-run]}]
+  [{:keys [problem max-turns beam-width seed-run model reasoning-effort]}]
   (let [turns (positive-long max-turns)
         width (positive-long beam-width)]
     (cond
@@ -45,12 +45,24 @@
       {:body (cond-> {:problem (str problem)}
                turns (assoc :max_turns turns)
                width (assoc :beam_width width)
-               (not (blank? seed-run)) (assoc :seed_run (str/trim (str seed-run))))})))
+               (not (blank? seed-run)) (assoc :seed_run (str/trim (str seed-run)))
+               ;; Not validated against a list. The set of served models is the
+               ;; provider's to change and a stale allow-list here would refuse
+               ;; a model that works; the server answers for a name it does not
+               ;; serve, which is the honest place for that error.
+               (not (blank? model)) (assoc :model (str/trim (str model)))
+               (not (blank? reasoning-effort))
+               (assoc :reasoning_effort (str/trim (str reasoning-effort))))})))
 
 (defn summary
   "One line describing a built body, for the confirmation the GUI shows."
   [body]
   (let [parts (cond-> []
+                ;; First, because it is the thing that makes two runs
+                ;; comparable or not.
+                (:model body) (conj (str (:model body)))
+                (:reasoning_effort body) (conj (str "thinking "
+                                                    (:reasoning_effort body)))
                 (:max_turns body) (conj (str (:max_turns body) " turns"))
                 (:beam_width body) (conj (str "beam " (:beam_width body)))
                 (:seed_run body) (conj (str "seeded from "

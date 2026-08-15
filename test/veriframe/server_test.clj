@@ -112,3 +112,39 @@
       (is (= 409 (:status ok)) "and an HTTP status beside it"))
     (is (= "aborting" (:status {:run_id "r" :status "aborting"}))
         "whereas the run's own :status lives inside the body and stays a string")))
+
+(deftest a-run-can-name-its-own-model-and-thinking-level
+  ;; Switching arms meant restarting the server, because the model came from
+  ;; HARNESS_MODEL at startup and start-run! read it off the global config. A
+  ;; restart kills whatever run is in flight — hours of provider spend — so
+  ;; comparing deepseek-v4-flash against deepseek-v4-pro was gated on the box
+  ;; being idle. It is per-run now, and recorded on the run row, so the arm is
+  ;; provenance rather than something to remember about the environment.
+  (let [base {:model "deepseek-v4-flash" :provider :deepseek :max-tokens 16384}]
+    (testing "nothing asked for leaves the configured arm alone"
+      (is (= base (control/run-llm-config base {:problem "p"}))))
+
+    (testing "the body's model wins"
+      (is (= "deepseek-v4-pro"
+             (:model (control/run-llm-config base {:model "deepseek-v4-pro"})))))
+
+    (testing "underscored keys work too, as everywhere else on this API"
+      ;; JSON bodies arrive underscored; the first call made against this API
+      ;; asked for beam_width 2 and silently got the config default of 5.
+      (is (= "high" (:reasoning-effort
+                     (control/run-llm-config base {:reasoning_effort "high"}))))
+      (is (= "deepseek-v4-pro"
+             (:model (control/run-llm-config base {"model" "deepseek-v4-pro"})))))
+
+    (testing "a blank model is not a model"
+      ;; An empty select in the UI posts "", and merging that would ask the
+      ;; provider to serve a model with no name.
+      (is (= "deepseek-v4-flash" (:model (control/run-llm-config base {:model ""}))))
+      (is (= "deepseek-v4-flash"
+             (:model (control/run-llm-config base {:model "   "})))))
+
+    (testing "everything else on the config survives"
+      (let [r (control/run-llm-config base {:model "deepseek-v4-pro"
+                                            :reasoning_effort "high"})]
+        (is (= :deepseek (:provider r)))
+        (is (= 16384 (:max-tokens r)))))))

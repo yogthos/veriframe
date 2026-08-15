@@ -543,3 +543,27 @@
     (is (= "verify_lean" (:name r)))
     (is (:unfenced? r))
     (is (:auto-repaired? r))))
+
+(deftest reasoning-effort-is-sent-only-when-asked-for
+  ;; deepseek-v4-pro thinks by default and deepseek-v4-flash does not, so
+  ;; "thinking is on" was a property of which model happened to be configured
+  ;; rather than something the run stated. reasoning_effort makes it explicit:
+  ;; the API honours "high" and treats "none" as thinking disabled — a probe
+  ;; with "none" came back with no reasoning_content and one completion token.
+  ;;
+  ;; Omitted from the body entirely when unset, because a provider that has
+  ;; never heard of the field rejects the request rather than ignoring it.
+  (let [a (registry/adapter-for :deepseek)
+        req {:messages [{:role "user" :content "go"}] :max-tokens 10}]
+    (testing "absent from the body when the config says nothing"
+      (is (not (contains? (adapter/chat-body a {:model "m"} req) :reasoning_effort))))
+
+    (testing "sent when the config asks for it"
+      (is (= "high" (:reasoning_effort
+                     (adapter/chat-body a {:model "m" :reasoning-effort "high"} req)))))
+
+    (testing "\"none\" is a real setting and not the same as unset"
+      ;; It is how thinking gets turned OFF, so dropping it as falsy-looking
+      ;; would silently leave thinking on for a run that asked for neither.
+      (is (= "none" (:reasoning_effort
+                     (adapter/chat-body a {:model "m" :reasoning-effort "none"} req)))))))

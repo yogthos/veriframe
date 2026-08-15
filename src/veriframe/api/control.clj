@@ -16,7 +16,8 @@
   exactly the one that will never reach another boundary — that is the RAX
   manager pattern, and it is why the stop path does not share machinery with
   the steer path."
-  (:require [clojure.tools.logging :as log]
+  (:require [clojure.string :as str]
+            [clojure.tools.logging :as log]
             [veriframe.agent.beam :as beam]
             [veriframe.agent.resume :as resume]
             [veriframe.llm.registry :as registry]
@@ -26,6 +27,38 @@
 ;; run-id -> {:future f :abort (atom false)}. A run outlives the request that
 ;; started it, so something has to hold it.
 (defonce active (atom {}))
+
+(defn run-llm-config
+  "The llm config this run should use, after the request's own overrides.
+
+  The model used to come only from HARNESS_MODEL at startup, so putting a run
+  on a different arm meant restarting the server — which kills whatever run is
+  in flight, hours of provider spend, plus another Mathlib import for the Lean
+  pool. Comparing arms was therefore gated on the box being idle, which is the
+  one thing it never is during a campaign.
+
+  Per-run instead. beam/run! already records (:model llm-config) on the run
+  row, so the arm becomes provenance on the result rather than something to
+  remember about the environment when reading it back months later.
+
+  `reasoning_effort` is passed to the provider verbatim. It matters because
+  whether a model thinks was otherwise a property of which one was configured:
+  deepseek-v4-pro thinks by default, deepseek-v4-flash does not, and neither
+  says so in the run record.
+
+  Blank is not a value — an unset select posts \"\" — so it leaves the
+  configured default standing rather than asking for a model with no name."
+  [llm-config body]
+  (let [pick (fn [& ks]
+               (let [v (some #(let [x (get body %)]
+                                (when-not (str/blank? (str x)) x))
+                             ks)]
+                 v))]
+    (cond-> llm-config
+      (pick :model :model "model") (assoc :model (pick :model "model"))
+      (pick :reasoning_effort :reasoning-effort "reasoning_effort")
+      (assoc :reasoning-effort
+             (pick :reasoning_effort :reasoning-effort "reasoning_effort")))))
 
 (defn start-run!
   "Kick off a run in the background and return its id immediately.
@@ -41,7 +74,7 @@
         beam-width (or (:beam_width body) (:beam-width body))
         seed-run (or (:seed_run body) (:seed-run body))
         quarantine (or (:quarantine body) (get body "quarantine"))]
-  (let [llm-config (:llm config)
+  (let [llm-config (run-llm-config (:llm config) body)
         adapter (registry/adapter-for (:provider llm-config))
         abort (atom false)
         promised (promise)
@@ -118,7 +151,9 @@
   (if-not (resume/resumable? conn run-id)
     {:status 409 :body {:error {:message (str "run " run-id " is not resumable")
                                 :run_id run-id}}}
-    (let [llm-config (:llm config)
+    ;; A resume may name an arm too — a run that crashed on one model can be
+    ;; picked up on another, and saying nothing keeps the original.
+    (let [llm-config (run-llm-config (:llm config) body)
           adapter (registry/adapter-for (:provider llm-config))
           abort (atom false)
           max-turns (or (:max_turns body) (:max-turns body))

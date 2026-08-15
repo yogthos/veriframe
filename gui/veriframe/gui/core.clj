@@ -58,7 +58,9 @@
            :notice nil                  ; transient feedback line
            :budget ""                   ; resume budget-extension entry
            :composing? false            ; the new-run form is open
-           :form {:problem "" :max-turns "" :beam-width "" :seed-run ""}
+           :form {:problem "" :max-turns "" :beam-width "" :seed-run ""
+                  :model "" :reasoning-effort ""}
+           :models []                   ; what the provider serves, for the picker
            :draft ""}))                 ; intervention input text
 
 (defonce poller (atom nil))
@@ -215,6 +217,16 @@
 
 (defn- form-field! [k v] (swap! state assoc-in [:form k] v))
 
+(defn- refresh-models!
+  "Fetch what the provider serves, for the model picker. Off the main thread,
+  and a failure leaves the list empty — the picker then offers only the server
+  default, which is the behaviour from before there was a picker."
+  []
+  (future
+    (let [r (api/models (:base-url @state))]
+      (when (:ok r)
+        (swap! state assoc :models (vec (get-in r [:body :models])))))))
+
 (defn- toggle-compose! []
   (let [composing? (:composing? (swap! state update :composing? not))]
     ;; `root` renders a different tree while the form is open, one with no
@@ -223,7 +235,11 @@
     ;; widget as a raw pointer it has no way to learn is dead, so it has to be
     ;; told. Closing the form mounts a fresh :gl-area whose on-realize
     ;; repopulates it.
-    (when composing? (glpane/unmount!)))
+    (when composing?
+      (glpane/unmount!)
+      ;; On open rather than at startup: the list is only needed by the form,
+      ;; and a provider that is slow to answer should not delay the window.
+      (refresh-models!)))
   (notice! nil))
 
 (defn- copy-current-problem!
@@ -239,6 +255,24 @@
           (notice! "loaded the current run's statement — edit it for the next generation"))
       (notice! "no run selected to copy from"))))
 
+(def ^:private efforts
+  "Cycled in this order. \"\" means the run says nothing and each model does
+  what it does by default — which for deepseek-v4-pro is to think and for
+  deepseek-v4-flash is not to. The other three are what the provider accepts;
+  \"none\" is how thinking gets turned off, and is not the same as saying
+  nothing."
+  ["" "high" "medium" "low" "none"])
+
+(defn- cycle-field!
+  "Advance a form field to the next value in `options`, wrapping. The GL
+  toolkit has no dropdown, and a free-text entry for a field with four legal
+  values invites a typo the server only reports after the run is refused."
+  [field options]
+  (let [cur (str (get-in @state [:form field] ""))
+        opts (vec options)
+        i (or (first (keep-indexed #(when (= cur (str %2)) %1) opts)) -1)]
+    (form-field! field (str (nth opts (mod (inc i) (count opts)))))))
+
 (defn- start-new-run! []
   (let [{:keys [base-url form]} @state
         {:keys [body error]} (newrun/request form)]
@@ -251,7 +285,7 @@
               (if (and (:ok r) id)
                 (do (swap! state assoc :composing? false
                            :form {:problem "" :max-turns "" :beam-width ""
-                                  :seed-run ""})
+                                  :seed-run "" :model "" :reasoning-effort ""})
                     ;; Attach before refreshing the list: the poller is what
                     ;; the user is waiting to see, and the list is cosmetic.
                     (connect-to! id)
@@ -282,6 +316,19 @@
        [:entry {:text (:seed-run form) :hexpand true
                 :placeholder "run id — carries its confirmed artifacts in"
                 :on-change #(form-field! :seed-run %)}]]
+      ;; The arm. Two runs are only comparable if this is recorded, and it now
+      ;; is — beam/run! writes the model onto the run row.
+      [:hbox {:spacing 8}
+       [:label {:label "model"}]
+       [:button {:label (let [m (:model form)]
+                          (if (str/blank? (str m)) "server default" (str m)))
+                 :tooltip "cycle the models this provider serves"
+                 :on-click #(cycle-field! :model (cons "" (:models @state)))}]
+       [:label {:label "thinking"}]
+       [:button {:label (let [e (:reasoning-effort form)]
+                          (if (str/blank? (str e)) "model default" (str e)))
+                 :tooltip "reasoning_effort — \"none\" turns thinking off, empty leaves the model's own default"
+                 :on-click #(cycle-field! :reasoning-effort efforts)}]]
       [:hbox {:spacing 8}
        [:button {:label "start run" :on-click start-new-run!}]
        [:button {:label "from current run" :tooltip "copy the selected run's statement and seed from it"

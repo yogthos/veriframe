@@ -11,7 +11,8 @@
   "Turning the new-run form into a POST body. Pure, because the interesting
   part is what happens to half-filled and mistyped fields — and a GTK entry
   hands you a string for everything, including the numbers."
-  (:require [clojure.test :refer [deftest testing is]]
+  (:require [clojure.string :as str]
+            [clojure.test :refer [deftest testing is]]
             [veriframe.gui.newrun :as newrun]))
 
 (deftest a-problem-statement-is-the-one-required-field
@@ -64,3 +65,30 @@
   (testing "a seed is worth saying out loud — it carries prior artifacts in"
     (is (= "beam 2 · seeded from 05ecb88a"
            (newrun/summary {:beam_width 2 :seed_run "05ecb88a-52d7-4d72-acaf"})))))
+
+(deftest the-model-and-thinking-level-are-part-of-the-form
+  ;; Putting a run on a different arm used to mean restarting the server with
+  ;; a different HARNESS_MODEL, which kills whatever run is in flight. Both
+  ;; are per-run now, so the form collects them.
+  (testing "left alone, neither reaches the wire"
+    (is (= {:problem "p"}
+           (:body (newrun/request {:problem "p" :model "" :reasoning-effort "  "})))))
+
+  (testing "a chosen model and effort go out under the API's names"
+    (is (= {:problem "p" :model "deepseek-v4-pro" :reasoning_effort "high"}
+           (:body (newrun/request {:problem "p" :model "deepseek-v4-pro"
+                                   :reasoning-effort "high"})))))
+
+  (testing "surrounding whitespace from a pasted model name is trimmed"
+    (is (= "deepseek-v4-pro"
+           (get-in (newrun/request {:problem "p" :model "  deepseek-v4-pro  "})
+                   [:body :model]))))
+
+  (testing "the summary names the arm, since that is what makes two runs comparable"
+    (is (str/includes? (newrun/summary {:problem "p" :model "deepseek-v4-pro"})
+                       "deepseek-v4-pro"))
+    (is (str/includes? (newrun/summary {:problem "p" :model "deepseek-v4-pro"
+                                        :reasoning_effort "high"})
+                       "high"))
+    (is (= "server defaults" (newrun/summary {:problem "p"}))
+        "and says nothing when nothing was chosen")))

@@ -84,6 +84,12 @@
                   :base-url    (or (env "HARNESS_BASE_URL") (:base-url defaults))
                   :api-key     (some-> (:key-env defaults) env)
                   :model       (or (env "HARNESS_MODEL") (:model defaults))
+                  ;; Sent only when set — see llm/adapter/openai. Left unset,
+                  ;; each model does whatever it does by default, which for
+                  ;; deepseek-v4-pro is to think and for deepseek-v4-flash is
+                  ;; not to. A run that cares should say so; POST /v1/runs
+                  ;; takes reasoning_effort per run and overrides this.
+                  :reasoning-effort (env "HARNESS_REASONING_EFFORT")
                   :max-tokens  (or (env-long "HARNESS_MAX_TOKENS") 16384)
                   :temperature 0.7
                   ;; Per-read inactivity bound (SO_RCVTIMEO on the socket).

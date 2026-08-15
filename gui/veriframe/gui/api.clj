@@ -52,6 +52,13 @@
 
 (defn list-runs [base] (GET base "/v1/runs"))
 
+(defn models
+  "{:current \"...\" :models [...]} — what the provider serves, for the picker.
+  Not /v1/models, which answers what this harness serves and is a different
+  question."
+  [base]
+  (GET base "/v1/harness/models"))
+
 (defn run-detail [base run-id] (GET base (str "/v1/runs/" run-id)))
 
 (defn journal-since

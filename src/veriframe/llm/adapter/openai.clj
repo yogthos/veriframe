@@ -71,7 +71,18 @@
                                {:role "assistant" :content prefill :prefix true})
                          messages)}
       max-tokens (assoc max-tokens-key max-tokens)
-      temperature (assoc :temperature temperature)))
+      temperature (assoc :temperature temperature)
+      ;; Only when set. Whether a model thinks was previously a property of
+      ;; which one happened to be configured — deepseek-v4-pro does by
+      ;; default, deepseek-v4-flash does not — rather than something a run
+      ;; stated. This makes it explicit and recorded.
+      ;;
+      ;; `some?` rather than truthiness: "none" is how thinking is turned OFF
+      ;; and must reach the provider, and a provider that has never heard of
+      ;; the field rejects the request rather than ignoring it, so unset has
+      ;; to mean absent.
+      (some? (:reasoning-effort config))
+      (assoc :reasoning_effort (:reasoning-effort config))))
 
   (prefill-support? [_ config] (supports-prefill? provider-id config))
 
