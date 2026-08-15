@@ -16,6 +16,7 @@
   model one, so it is worth spending the tests here."
   (:require [clojure.string :as str]
             [clojure.test :refer [deftest testing is are]]
+            [veriframe.engine.lean-search :as lean-search]
             [veriframe.engine.lint :as lint]
             [veriframe.engine.proc :as proc]
             [veriframe.engine.octave :as octave]
@@ -607,3 +608,53 @@ sidon(S) :- sums(S, Sums), sort(Sums, Sorted), length(Sums, N), length(Sorted, N
   (testing "open lines are untouched — those are legal against an existing env"
     (let [s "open Finset\ntheorem t : 1 = 1 := by rfl"]
       (is (= s (lint/strip-lean-imports s))))))
+
+;; --- Mathlib search ---------------------------------------------------------
+
+(deftest search-says-so-when-nothing-really-matches
+  ;; vf-f5c. Ranking kept any declaration sharing ONE token with the query, and
+  ;; render admitted failure only on a completely empty result set — which
+  ;; against 215k declarations essentially never happens. So every query came
+  ;; back looking like a hit.
+  ;;
+  ;; gen-25 spent its first 29 turns on 14 searches and 12 artifact fetches
+  ;; with zero verification attempts across three branches. The query "finite
+  ;; directed graph cycle balanced indegree outdegree equal subset" returned
+  ;; `Finite.subset` — 2 of 9 terms — rendered exactly like a real match. A
+  ;; branch cannot tell that from a hit, so it concludes the lemma exists and
+  ;; searches again with different words.
+  ;;
+  ;; The names stay visible: a near-miss is occasionally the right lead. What
+  ;; goes is the false confidence.
+  (testing "a weak best match is reported as a miss, with the near misses kept"
+    (let [out (lean-search/render [{:n "Finite.subset" :k "theorem" :score 1.9 :overlap 2}
+                                   {:n "eventually_subset_of_finite" :k "lemma"
+                                    :score 1.8 :overlap 2}]
+                                  "finite directed graph cycle balanced indegree outdegree equal subset")]
+      (is (not (str/includes? out "Mathlib matches for"))
+          "it must not present noise the way it presents a hit")
+      (is (re-find #"(?i)nothing in mathlib matched" out))
+      (is (re-find #"shares 2 of 9 terms" out)
+          "and says how weak the overlap actually is")
+      (is (str/includes? out "Finite.subset")
+          "the near misses are still shown")
+      (is (re-find #"(?i)prov(e|ing) it (directly|yourself)|may not have" out)
+          "and the branch is told the useful thing: stop searching, prove it")))
+
+  (testing "a strong match is still reported as a match"
+    (let [out (lean-search/render [{:n "Finset.sum_sub_distrib" :k "theorem"
+                                    :score 2.9 :overlap 3}]
+                                  "Finset sum sub")]
+      (is (str/includes? out "Mathlib matches"))
+      (is (str/includes? out "Finset.sum_sub_distrib"))))
+
+  (testing "an empty result set keeps its own advice"
+    (is (re-find #"(?i)vocabulary" (lean-search/render [] "zzz"))))
+
+  (testing "relevance is a fraction of the QUERY, not an absolute count"
+    ;; Two shared tokens is strong for a two-word query and weak for an
+    ;; eight-word one; an absolute floor gets one of those wrong.
+    (is (lean-search/relevant? {:overlap 2} 2))
+    (is (not (lean-search/relevant? {:overlap 2} 8)))
+    (is (lean-search/relevant? {:overlap 1} 1))))
+

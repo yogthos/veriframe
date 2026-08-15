@@ -152,16 +152,65 @@
                               (when (pos? overlap)
                                 ;; Prefer a name that is mostly the query over
                                 ;; a long one that happens to contain it.
-                                {:n nm :k kind
+                                ;; `:overlap` is carried so `render` can tell a
+                                ;; real hit from a name that shares a common
+                                ;; word — the ranking alone cannot, since the
+                                ;; best of a bad field still sorts first.
+                                {:n nm :k kind :overlap overlap
                                  :score (- overlap (* 0.05 (count nt)))}))))))
                 (sort-by :score >)
                 (take k)
                 vec)))))))
 
-(defn render [hits query]
-  (if (empty? hits)
-    (str "No Mathlib declaration matched `" query "`. Try the mathematical"
-         " vocabulary rather than a description — Mathlib names are built from"
-         " the concepts, e.g. `add_comm`, `sqrt_le_sqrt`, `sum_pow`.")
-    (str "Mathlib matches for `" query "`:\n"
-         (str/join "\n" (for [h hits] (str "  " (:k h) " " (:n h)))))))
+(def ^:private relevance-floor
+  "Fraction of the QUERY's tokens a name must share to count as a match.
+
+  A fraction, not an absolute count: two shared tokens is strong for a two-word
+  query and meaningless for an eight-word one, and an absolute floor gets one
+  of those wrong."
+  0.4)
+
+(defn relevant?
+  "Whether a hit shares enough of the query to be worth calling a match."
+  [hit query-token-count]
+  (and (pos? (:overlap hit 0))
+       (pos? query-token-count)
+       (>= (/ (double (:overlap hit 0)) query-token-count) relevance-floor)))
+
+(defn render
+  "The search result as the branch reads it.
+
+  The ranking keeps anything sharing a single token with the query, because a
+  near-miss is occasionally the right lead. That made every query look like a
+  hit: against 215k declarations there is always SOMETHING sharing a word, so
+  the honest answer never appeared. gen-25 opened with 14 searches, 12 artifact
+  fetches and zero verification attempts across three branches, hunting a lemma
+  whose closest match — `Finite.subset`, for a query about balanced in- and
+  out-degree — shared two words out of eight.
+
+  So the names still show, and the confidence does not. A branch that is told
+  Mathlib probably lacks this can go and prove it; a branch handed a plausible
+  list searches again."
+  [hits query]
+  (let [qn (count (tokens query))
+        strong (filter #(relevant? % qn) hits)]
+    (cond
+      (empty? hits)
+      (str "No Mathlib declaration matched `" query "`. Try the mathematical"
+           " vocabulary rather than a description — Mathlib names are built from"
+           " the concepts, e.g. `add_comm`, `sqrt_le_sqrt`, `sum_pow`.")
+
+      (empty? strong)
+      (str "Nothing in Mathlib matched `" query "` well. The closest names are:\n"
+           (str/join "\n" (for [h (take 5 hits)]
+                            (str "  " (:k h) " " (:n h)
+                                 "  (shares " (:overlap h 0) " of " qn " terms)")))
+           "\n\nThese are name overlaps, not necessarily the lemma you want."
+           " Mathlib may not have this result — searching again with different"
+           " wording usually will not find it either. Proving it directly is"
+           " normally the shorter path, and a lemma you state yourself is one"
+           " you can then use.")
+
+      :else
+      (str "Mathlib matches for `" query "`:\n"
+           (str/join "\n" (for [h strong] (str "  " (:k h) " " (:n h))))))))
