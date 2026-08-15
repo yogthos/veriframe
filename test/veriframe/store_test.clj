@@ -116,6 +116,64 @@
                (get-in d [:run :max_branches]))
             "and the ceiling that actually bounds it")))))
 
+(deftest a-quarantined-claim-does-not-cross-into-the-next-run
+  ;; vf-4tw. A Lean reply with no goal list was read as a closed proof, so
+  ;; three artifacts were confirmed on the tactic `classical`, which closes
+  ;; nothing: gen-24's two proofs of lemma (B) and gen-25's TARGET 1. The
+  ;; engine bug is fixed, but those rows are still marked confirmed, and
+  ;; seeding would carry them into the next run as inherited CONFIRMED lemmas.
+  ;;
+  ;; Prose in the problem statement cannot undo that. The ledger is generated
+  ;; from this table every turn and says CONFIRMED; a paragraph saying
+  ;; otherwise is a contradiction the branch has to adjudicate, and the
+  ;; harness should not be handing out contradictions. So the row simply does
+  ;; not cross.
+  ;;
+  ;; Keyed on claim text, not id: ids are per-run, and the whole point is to
+  ;; stop a claim propagating across the boundary where ids change.
+  (with-db [c]
+    (let [g1 (runs/start-run! c {:problem "one"})
+          g2 (runs/start-run! c {:problem "two"})]
+      (journal/record-artifact! c g1 {:branch-id "B1" :turn 9 :kind :lean :tier :slow
+                                      :claim "a finite DAG admits a rank function"
+                                      :code "theorem b : True := by\n  classical"
+                                      :claim-status :confirmed})
+      (journal/record-artifact! c g1 {:branch-id "B2" :turn 4 :kind :smt :tier :fast
+                                      :claim "the coefficient bound holds"
+                                      :code "(assert true)"
+                                      :claim-status :confirmed})
+      (let [n (artifacts/seed-from-run!
+               c g2 g1 {:quarantine ["a finite DAG admits a rank function"]})
+            claims (set (map :claim (artifacts/recent c g2 20)))]
+        (is (= 1 n) "the quarantined claim is not counted as seeded")
+        (is (not (contains? claims "a finite DAG admits a rank function"))
+            "and it is not in the pool the ledger reads")
+        (is (contains? claims "the coefficient bound holds")
+            "everything else still crosses"))))
+
+  (testing "quarantine matches on normalised text, not exact bytes"
+    ;; The same lemma crosses generations reworded; an exact-match quarantine
+    ;; would let it back in on a change of capitalisation or punctuation.
+    (with-db [c]
+      (let [g1 (runs/start-run! c {:problem "one"})
+            g2 (runs/start-run! c {:problem "two"})]
+        (journal/record-artifact! c g1 {:branch-id "B1" :turn 9 :kind :lean :tier :slow
+                                        :claim "A finite DAG admits a rank function."
+                                        :code "x" :claim-status :confirmed})
+        (artifacts/seed-from-run!
+         c g2 g1 {:quarantine ["a finite dag admits a rank function"]})
+        (is (empty? (artifacts/recent c g2 20))))))
+
+  (testing "no quarantine behaves exactly as before"
+    (with-db [c]
+      (let [g1 (runs/start-run! c {:problem "one"})
+            g2 (runs/start-run! c {:problem "two"})]
+        (journal/record-artifact! c g1 {:branch-id "B1" :turn 1 :kind :smt :tier :fast
+                                        :claim "kept" :code "x" :claim-status :confirmed})
+        (is (= 1 (artifacts/seed-from-run! c g2 g1)))
+        (is (= 1 (artifacts/seed-from-run! c (runs/start-run! c {:problem "three"})
+                                           g1 nil)))))))
+
 (deftest a-seeded-run-reports-that-sharing-is-on
   ;; beam/run! forces :share-artifacts? true for any run started with a
   ;; seed-run, in memory, overriding config. Nothing recorded it, so /health

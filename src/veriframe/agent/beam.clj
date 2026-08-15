@@ -661,7 +661,7 @@
   land a `done` wins and the rest are abandoned, since paying for four more
   provider calls after the answer exists is pure waste."
   [{:keys [conn config llm-adapter llm-config problem max-turns beam-width
-           abort on-start seed-run] :as opts}]
+           abort on-start seed-run quarantine] :as opts}]
   (let [max-turns (or max-turns (get-in config [:run :max-turns]) 40)
         width (or beam-width (get-in config [:run :beam-width]) 5)
         ;; Seeding forces sharing on for this run regardless of the config
@@ -677,7 +677,10 @@
                                       :prompt-digest (branch-loop/prompt-digest)})
         ;; Seeded before any branch opens, so the first context block a
         ;; branch ever sees can already carry inherited lemmas.
-        _ (when seed-run (artifacts/seed-from-run! conn run-id seed-run))
+        ;; `quarantine` drops named claims from the inheritance: a row still
+        ;; marked confirmed that the harness has since learned was not.
+        _ (when seed-run (artifacts/seed-from-run! conn run-id seed-run
+                                                   {:quarantine quarantine}))
         ;; Every session ever opened, including forked children, so the
         ;; supervisor can tear them all down regardless of how the run ended.
         ;; The stop path must not depend on the agent's state — the RAX

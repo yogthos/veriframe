@@ -46,6 +46,15 @@
                      ["INSERT INTO shared_artifacts_fts (rowid, claim) VALUES (?, ?)"
                       id (str claim)]))))
 
+(defn- normalize-claim
+  "Spelling-level normalisation only — case and punctuation — matching
+  claims/normalize and consensus/normalize-claim. Two phrasings that group
+  together there must group together here."
+  [claim]
+  (-> (str/lower-case (or claim ""))
+      (str/replace #"[^a-z0-9]+" " ")
+      str/trim))
+
 (defn seed-from-run!
   "Copy `source-run-id`'s engine-confirmed artifacts into `run-id`'s shared
   log, for cross-run campaigns: a new run continues from a prior one's
@@ -57,9 +66,23 @@
   block and no live branch's own-branch exclusion hides a seed. Only
   confirmed claim-statuses cross; refuted and existential stay behind. The
   done gate still requires in-run re-verification, so nothing inherited can
-  ship on faith. Returns the number of artifacts seeded."
-  [conn run-id source-run-id]
-  (let [own (db/fetch conn
+  ship on faith. Returns the number of artifacts seeded.
+
+  `:quarantine` is a list of claim texts that must NOT cross, for a row marked
+  confirmed that the harness has since learned was not. vf-4tw confirmed three
+  artifacts on a Lean reply carrying no goal list, and those rows are still
+  marked confirmed; seeding would carry them forward as inherited CONFIRMED
+  lemmas. Prose in a problem statement cannot undo that — the ledger is
+  generated from this table every turn and says CONFIRMED, so a paragraph
+  saying otherwise is a contradiction the branch has to adjudicate, and the
+  harness should not be handing out contradictions.
+
+  Matched on normalised text rather than id, because ids are per-run and the
+  boundary where they change is exactly the boundary this has to hold at."
+  ([conn run-id source-run-id] (seed-from-run! conn run-id source-run-id nil))
+  ([conn run-id source-run-id {:keys [quarantine]}]
+  (let [blocked (into #{} (map normalize-claim) quarantine)
+        own (db/fetch conn
                       ["SELECT branch_id, kind, tier, claim, code FROM artifacts
                         WHERE run_id = ? AND claim_status = 'confirmed' ORDER BY id"
                        source-run-id])
@@ -76,6 +99,7 @@
         ;; Own first, so where a run re-proved something it inherited, its own
         ;; provenance is the one that crosses.
         rows (->> (concat own inherited)
+                  (remove #(contains? blocked (normalize-claim (:claim %))))
                   (reduce (fn [acc r]
                             (if (contains? (:seen acc) (:claim r))
                               acc
@@ -97,8 +121,9 @@
                             :claim (:claim r)
                             :code (:code r)}))
     (journal/note! conn run-id :run-seeded
-                   {:data {:source source-run-id :artifacts (count rows)}})
-    (count rows)))
+                   {:data {:source source-run-id :artifacts (count rows)
+                           :quarantined (count blocked)}})
+    (count rows))))
 
 (defn- fts-query
   "Turn free text into an FTS5 OR query.

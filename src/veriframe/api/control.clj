@@ -39,7 +39,8 @@
   (let [problem (or (:problem body) (get body "problem"))
         max-turns (or (:max_turns body) (:max-turns body))
         beam-width (or (:beam_width body) (:beam-width body))
-        seed-run (or (:seed_run body) (:seed-run body))]
+        seed-run (or (:seed_run body) (:seed-run body))
+        quarantine (or (:quarantine body) (get body "quarantine"))]
   (let [llm-config (:llm config)
         adapter (registry/adapter-for (:provider llm-config))
         abort (atom false)
@@ -52,6 +53,7 @@
                                     :max-turns max-turns
                                     :beam-width beam-width
                                     :seed-run seed-run
+                                    :quarantine quarantine
                                     :abort abort
                                     :on-start #(deliver promised %)})]
                   (swap! active dissoc (:run-id r))
