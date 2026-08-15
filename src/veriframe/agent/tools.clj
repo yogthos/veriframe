@@ -1892,6 +1892,44 @@
          " discharging — `omega`, `simp` or an explicit `exact absurd …` on"
          " the contradictory hypothesis.")]])
 
+(defn- name-segments
+  "The underscore-separated pieces of a Lean name, namespace dropped.
+
+  `List.isChain_of_mem_splitByLoop` yields
+  #{\"isChain\" \"of\" \"mem\" \"splitByLoop\"}. The namespace goes because a
+  whole invented family shares it and it says nothing; camelCase is NOT split
+  further, because `splitByLoop` is the unit a branch invented and reporting
+  `split` back at it would name something Mathlib really does have."
+  [nm]
+  (->> (str/split (str (last (str/split (str nm) #"\."))) #"_")
+       (remove str/blank?)
+       set))
+
+(defn- invented-stem
+  "A word shared by three or more of the unknown names, or nil.
+
+  Three, not two: `foo` and `foo_append` are a plausible pair of real lemmas
+  misremembered, while six names built from one stem is a branch that has
+  designed an API and then asked Lean for it. Common Lean particles are
+  excluded or every family would share `of` and `mem`."
+  [text]
+  (let [names (map second (re-seq #"[Uu]nknown (?:constant|identifier) `([^`]+)`" (str text)))]
+    (when (<= 3 (count names))
+      (let [particles #{"of" "mem" "eq" "ne" "le" "lt" "iff" "not" "list" "to" "is"
+                        "the" "and" "or" "in" "at" "by" "self" "get" "map" "set"
+                        "cons" "nil" "append" "length" "head" "tail"}
+            ;; Counted case-insensitively but reported as written, so the
+            ;; branch sees the identifier it typed.
+            freq (->> (mapcat name-segments names)
+                      (remove #(particles (str/lower-case %)))
+                      (group-by str/lower-case))]
+        (some->> freq
+                 (filter #(<= 3 (count (val %))))
+                 (sort-by (comp - count val))
+                 first
+                 val
+                 first)))))
+
 (defn lean-hint
   "What the harness can say about a Lean error beyond quoting it, or nil.
 
@@ -1900,7 +1938,20 @@
   apart and will spend turns on advice the harness made up."
   [text]
   (let [t (str text)]
-    (some (fn [[re hint]] (when (re-find re t) hint)) lean-hints)))
+    (if-let [stem (invented-stem t)]
+      ;; Checked before the table, because the unknown-constant entry there is
+      ;; right for ONE bad name and actively wrong for a family: it sends the
+      ;; branch to lean_search for the correct spelling of something that has
+      ;; no correct spelling. gen-30 B1.4 asked for six `splitByLoop` lemmas at
+      ;; once and was told to go looking for them.
+      (str "Several of those names share `" stem "`, which means this is not a"
+           " misspelling — nothing in Mathlib is called that under any"
+           " spelling, and you have designed an API and then asked for it."
+           " Searching for the right name will not find one.\n\nEither build"
+           " what you need from lemmas that do exist — `lean_search` one"
+           " concept at a time, not the family — or state and prove the"
+           " missing piece yourself as its own claim and cite it.")
+      (some (fn [[re hint]] (when (re-find re t) hint)) lean-hints))))
 
 (defn- lean-error-text [errors]
   (str/join "\n" (map #(str "  " (str/replace (str (:data %)) "\n" "\n  ")) errors)))

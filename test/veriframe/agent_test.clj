@@ -4413,3 +4413,43 @@
             r (step tainted "trivial" closed)]
         (is (nil? (:artifact r))
             "the assembled proof still contains sorry, whatever the last tactic was")))))
+
+(deftest a-family-of-unknown-names-is-an-invented-api-not-a-misspelling
+  ;; gen-30 B1.4 asked Lean for six names at once:
+  ;;
+  ;;   Unknown constant `List.splitByLoop`
+  ;;   Unknown constant `List.splitByLoop_append`
+  ;;   Unknown constant `List.isChain_getLast_head_splitByLoop`
+  ;;   … three more, all splitByLoop
+  ;;
+  ;; and was told "it is a lookup, not a proof problem: lean_search finds the
+  ;; real name, and the one you want is often spelled differently". That advice
+  ;; is right for ONE unknown name and wrong here — nothing in Mathlib is
+  ;; called splitByLoop under any spelling, because the branch invented the
+  ;; API. Sending it to search for the right spelling of a lemma that does not
+  ;; exist is the wasted-search loop the search counter already had to be
+  ;; taught to interrupt.
+  (testing "one unknown name is still a lookup"
+    (let [h (tools/lean-hint "Unknown constant `List.foo_bar`")]
+      (is (re-find #"(?i)lean_search" h))
+      (is (not (re-find #"(?i)not a misspelling" h)))))
+
+  (testing "several sharing a stem is an invented API, and says so"
+    (let [h (tools/lean-hint
+             (str "Unknown constant `List.splitByLoop`\n"
+                  "Unknown constant `List.splitByLoop_append`\n"
+                  "Unknown constant `List.isChain_of_mem_splitByLoop`\n"
+                  "Unknown constant `List.flatten_splitByLoop`"))]
+      (is (re-find #"(?i)not a misspelling|nothing in Mathlib" h)
+          "the branch is told the family is not real")
+      (is (re-find #"splitByLoop" h)
+          "and which stem gave it away")))
+
+  (testing "several unrelated unknown names stay a lookup"
+    ;; Three genuine misspellings are three lookups, not an invented API.
+    (let [h (tools/lean-hint
+             (str "Unknown constant `List.chain_tail`\n"
+                  "Unknown constant `Finset.card_bij`\n"
+                  "Unknown identifier `omega_nat`"))]
+      (is (re-find #"(?i)lean_search" h))
+      (is (not (re-find #"(?i)not a misspelling" h))))))
