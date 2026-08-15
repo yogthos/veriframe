@@ -652,7 +652,17 @@
         ;; they are collected off the branches at the end.
         (doseq [s @sessions]
           (try (prolog/dispose! s) (catch Throwable _ nil)))
-        (dispose-lean! @live-branches)))))
+        (dispose-lean! @live-branches)
+        ;; And everything a tool opened, including sessions whose branch value
+        ;; was discarded before it could carry them here. dispose! is a no-op
+        ;; on an already-dead session, so the overlap with the sweep above is
+        ;; free.
+        (doseq [{:keys [kind session]} (some-> (:engine-sessions ctx) deref)]
+          (try (case kind
+                 :lean (lean-repl/dispose! session)
+                 :octave (octave/dispose! session)
+                 nil)
+               (catch Throwable _ nil)))))))
 
 (defn run!
   "Run a beam to completion.
@@ -686,10 +696,17 @@
         ;; The stop path must not depend on the agent's state — the RAX
         ;; manager could always halt the Lisp task no matter what it believed.
         sessions (atom [])
+        ;; Same reason as `sessions` above, for the engines whose sessions a
+        ;; TOOL opens rather than the scheduler. Collecting those off the
+        ;; branches at the end assumed every branch value survives, and three
+        ;; paths discard one: the tool-level catch, the turn deadline, and a
+        ;; turn that throws. See tools/register-session! (vf-cfp).
+        engine-sessions (atom [])
         ctx {:conn conn :run-id run-id :config config :problem problem
              :llm-adapter llm-adapter :llm-config llm-config
              :max-turns max-turns :beam? (> width 1) :beam-width width
              :sessions sessions
+             :engine-sessions engine-sessions
              :abort abort
              ;; One claim registry per run: two branches reaching the same
              ;; claim share one slow verification instead of racing it.

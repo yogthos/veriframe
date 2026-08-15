@@ -16,8 +16,11 @@
   caller's own session rather than surfacing as an error. None of that needs a
   Mathlib import, so these run offline in milliseconds."
   (:require [clojure.test :refer [deftest is testing]]
+            [veriframe.agent.state :as state]
+            [veriframe.agent.tools :as tools]
             [veriframe.engine.lean-pool :as pool]
-            [veriframe.engine.lean-repl :as lean-repl]))
+            [veriframe.engine.lean-repl :as lean-repl]
+            [veriframe.llm.client :as llm]))
 
 ;; A stand-in for a session. The pool only ever asks lean-repl/alive? about it,
 ;; so a map with the same shape is enough.
@@ -135,4 +138,79 @@
                                           (swap! killed conj pid))]
         (lean-repl/dispose! {:alive (atom true) :proc nil})
         (is (= [4 2] @killed))))))
+
+;; --- session ownership ------------------------------------------------------
+
+(deftest a-session-is-registered-where-teardown-can-always-find-it
+  ;; vf-cfp, actual root cause. A Lean session lived ONLY in the branch map,
+  ;; attached by lean-session! returning [session updated-branch]. Every path
+  ;; that falls back to a pre-session branch value therefore drops the handle
+  ;; permanently, and there are three:
+  ;;
+  ;;   1. the tool-level catch — `(catch Throwable e (unavailable branch …))`
+  ;;      sits OUTSIDE the let that shadows `branch`, so it returns the branch
+  ;;      without :lean. Five call sites, two Lean and three Octave.
+  ;;   2. the turn deadline — a turn past 900000ms is abandoned and the beam
+  ;;      keeps `b`, the branch as it was BEFORE the turn.
+  ;;   3. a turn that throws — `(assoc b :status :abandoned …)`, same `b`.
+  ;;
+  ;; Path 2 is the likely dominant one: a Mathlib import is ~378000ms and
+  ;; "scales with what else is running", so a provider call plus an import plus
+  ;; a command can pass the deadline while several branches first touch Lean at
+  ;; once. Every leaked repl found on this machine had about nine seconds of
+  ;; CPU — the import, and nothing after.
+  ;;
+  ;; beam.clj already states the principle three lines above the leak, for
+  ;; Prolog: "the stop path must not depend on the agent's state — the RAX
+  ;; manager could always halt the Lisp task no matter what it believed."
+  ;; Prolog sessions go in a run-scoped atom swept unconditionally. Lean and
+  ;; Octave now do too, so a lost branch value costs a turn and not a process.
+  (testing "the session is registered even when the tool then throws"
+    (let [registry (atom [])
+          disposed (atom 0)]
+      (with-redefs [lean-repl/create-session (fn [& _] {:id "s"})
+                    lean-repl/mathlib-env (fn [& _] nil)
+                    pool/checkout! (fn [& _] nil)
+                    lean-repl/run-command (fn [& _] (throw (ex-info "REPL died" {})))
+                    lean-repl/dispose! (fn [_] (swap! disposed inc))]
+        (let [r (tools/run-tool {:branch (state/new-branch {:id "B1" :problem "p"})
+                                 :turn 1
+                                 :engine-sessions registry
+                                 :tool-name "verify_lean"
+                                 :args {:claim "the bound holds for every edge"
+                                        :lean "theorem t : True := trivial"}})]
+          (is (nil? (:lean (:branch r)))
+              "the branch really has lost the handle — that is the bug's shape")
+          (is (= 1 (count @registry))
+              "but the registry kept it, so teardown can still reach it")
+          (is (= :lean (:kind (first @registry))))))))
+
+  (testing "a session created on a turn the beam later discards is still reachable"
+    ;; The deadline path in miniature: the branch value is thrown away entirely.
+    (let [registry (atom [])]
+      (with-redefs [lean-repl/create-session (fn [& _] {:id "s"})
+                    lean-repl/mathlib-env (fn [& _] nil)
+                    pool/checkout! (fn [& _] nil)
+                    lean-repl/run-command (fn [& _] {:ok true :sorries []})
+                    llm/chat (fn [& _] {:content "GAPS: none\nVERDICT: PASS"})]
+        (tools/run-tool {:branch (state/new-branch {:id "B1" :problem "p"})
+                         :turn 1
+                         :engine-sessions registry
+                         :tool-name "verify_lean"
+                         :args {:claim "the bound holds for every edge"
+                                :lean "theorem t : True := trivial"}})
+        (is (= 1 (count @registry))
+            "registration happens at creation, not at a successful return"))))
+
+  (testing "no registry means the tools behave exactly as before"
+    (with-redefs [lean-repl/create-session (fn [& _] {:id "s"})
+                  lean-repl/mathlib-env (fn [& _] nil)
+                  pool/checkout! (fn [& _] nil)
+                  lean-repl/run-command (fn [& _] {:ok true :sorries []})
+                  llm/chat (fn [& _] {:content "GAPS: none\nVERDICT: PASS"})]
+      (is (= :success (:category (tools/run-tool
+                                  {:branch (state/new-branch {:id "B1" :problem "p"})
+                                   :turn 1 :tool-name "verify_lean"
+                                   :args {:claim "the bound holds for every edge"
+                                          :lean "theorem t : True := trivial"}})))))))
 

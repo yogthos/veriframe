@@ -1738,6 +1738,31 @@
 ;; back one that is already at the Mathlib environment. The fallback of building
 ;; one here stays, so an empty or failed pool costs latency and not the tool.
 
+(defn- register-session!
+  "Record a freshly created engine session where run teardown can always find
+  it, whatever happens to the branch map afterwards.
+
+  vf-cfp. A session used to live ONLY in the branch, attached by returning
+  [session updated-branch], so every path that falls back to a pre-session
+  branch value dropped the handle for good. Three do: the tool-level `catch`,
+  which sits outside the `let` that shadows `branch` and so returns the branch
+  without the session; the beam's turn deadline, which keeps the branch as it
+  was BEFORE the turn; and a turn that throws, which does the same.
+
+  Nineteen Lean repls had accumulated this way, 2.1GB, the oldest up a day and
+  a half, each with about nine seconds of CPU — a Mathlib import and nothing
+  after, which is what a session created on a turn that then blew its deadline
+  looks like.
+
+  beam.clj states the rule three lines above where Prolog sessions are
+  registered: the stop path must not depend on the agent's state. This puts
+  Lean and Octave on the same footing, so a lost branch value costs a turn
+  rather than a process."
+  [ctx kind s]
+  (when-let [reg (:engine-sessions ctx)]
+    (swap! reg conj {:kind kind :session s}))
+  s)
+
 (defn- lean-session!
   "The branch's Lean session: a warmed one if the pool has it, otherwise a fresh
   import. Returns [session branch].
@@ -1745,12 +1770,13 @@
   Waits briefly on a slot whose import is still running rather than starting a
   second import alongside it — two concurrent imports are slower than one, so
   racing the pool would be worse than either warming or not warming."
-  [{:keys [branch config]}]
+  [{:keys [branch config] :as ctx}]
   (if-let [s (:lean branch)]
     [s branch]
     (let [s (or (lean-pool/checkout! (get-in config [:warmup :checkout-wait-ms] 60000))
                 (doto (lean-repl/create-session (get-in config [:engines :lean]))
                   (lean-repl/mathlib-env)))]
+      (register-session! ctx :lean s)
       [s (assoc branch :lean s)])))
 
 (def ^:private lean-hints
@@ -2119,10 +2145,11 @@
 
 (defn- octave-session!
   "The branch's Octave workspace, created on first use. Returns [session branch]."
-  [{:keys [branch config]}]
+  [{:keys [branch config] :as ctx}]
   (if-let [s (:octave branch)]
     [s branch]
     (let [s (octave/create-session (get-in config [:engines :octave]))]
+      (register-session! ctx :octave s)
       [s (assoc branch :octave s)])))
 
 (defmethod run-tool "octave_eval" [{:keys [branch] :as ctx}]
