@@ -174,6 +174,19 @@
            " from Q bound\" but \"if an integer vector has sum-of-squares at"
            " most Q, every coordinate is at most D whenever D^2 >= Q\"."))))
 
+(defn- normalize-code [c] (str/trim (str/replace (str c) #"\s+" " ")))
+
+(defn- identical-encoding
+  "A confirmed artifact from the same engine whose code is this call's code, or
+  nil. Whitespace-insensitive; nothing else is normalised, because anything
+  looser would stop being a certainty."
+  [{:keys [conn run-id branch] :as ctx} engine]
+  (let [mine (normalize-code (or (arg ctx :lean) (arg ctx :smtlib) (arg ctx :expr)))]
+    (when-not (str/blank? mine)
+      (first (filter #(and (= engine (str (:kind %)))
+                           (= mine (normalize-code (:code %))))
+                     (artifacts/recent conn run-id 200))))))
+
 ;; Defined below, with the other judge-backed checks; the same-claim question
 ;; has to be asked from here, before a claim is taken.
 (declare judge)
@@ -227,8 +240,17 @@
                           "verify_lean" "lean" "verify_octave" "octave"}
                          tool-name)]
    (when (and conn run-id (not (str/blank? claim)))
-    (when-let [cand (first (filter #(= engine (str (:kind %)))
-                                   (artifacts/similar conn run-id claim 3)))]
+    (if-let [same-code (identical-encoding ctx engine)]
+      ;; Settled without a judge. The claim is prose and two artifacts carrying
+      ;; the same theorem can be worded differently enough for a careful judge
+      ;; to call them distinct: gen-27 a#809 and a#810 are byte-identical code
+      ;; on one branch, refused as different because one mentioned decidable
+      ;; equality in a different clause. Identical code is the same result
+      ;; whatever the sentence around it says, and checking it first cannot
+      ;; false-positive.
+      same-code
+      (when-let [cand (first (filter #(= engine (str (:kind %)))
+                                     (artifacts/similar conn run-id claim 3)))]
       (let [p (str "Two statements from a mathematics run. Decide whether they"
                    " state the SAME fact.\n\n"
                    "ALREADY PROVED:\n" (:claim cand) "\n\n"
@@ -244,7 +266,7 @@
                    " (injectivity and surjectivity of the same map are"
                    " DIFFERENT facts). When in doubt, answer FAIL.")]
         (when (verdict/passed? (judge ctx :same-claim p))
-          cand))))))
+          cand)))))))
 
 (defn- claim-dedup
   "Serve another branch's verification of the same claim instead of spending

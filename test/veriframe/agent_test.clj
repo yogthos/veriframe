@@ -1283,7 +1283,12 @@
                           :claim (str "For any integers B >= 1, E >= 1, define Qmax = E*B*B,"
                                       " LR = 2*B, K = LR + 1, H = K*Qmax + LR + 1. Then"
                                       " LR < K and K*Qmax + LR < H.")
-                          :code "(assert true)"})
+                          ;; Deliberately a DIFFERENT encoding from the call
+                          ;; below: this test is about the semantic path, and
+                          ;; identical code is settled earlier without a judge.
+                          ;; The real pair it cites, a#687 and a#689, likewise
+                          ;; differed in encoding while stating one lemma.
+                          :code "(declare-const B Int)(assert (> B 0))"})
       (let [engine (atom 0)
             judged (atom [])
             b (state/new-branch {:id "B2" :problem "p"})
@@ -4207,4 +4212,75 @@
             (is (nil? (:searches-since-attempt after))
                 "a failed attempt clears it — trying is what the refusal asks for")
             (is (= :neutral (:category (search-turn after))))))))))
+
+(deftest identical-proof-code-is-a-duplicate-whatever-the-claim-says
+  ;; already-proved asks a judge whether two CLAIMS state the same fact, and a
+  ;; claim is prose. gen-27 a#809 and a#810 are the same branch, byte-identical
+  ;; code, both confirmed — the judge refused to call them the same because
+  ;; "the first statement applies the decidable-equality hypothesis to both (1)
+  ;; and (2), while the second applies it only to (2)". A careful reading of
+  ;; the wording, and wrong about the mathematics.
+  ;;
+  ;; That is the fail-closed bias working as designed — unsure means let it
+  ;; verify, so a miss costs a duplicate rather than a wrong credit. But
+  ;; identical code needs no judgement at all, and checking it first cannot
+  ;; false-positive: the same code proves the same theorem.
+  (with-db [c]
+    (let [rid (runs/start-run! c {:problem "p"})
+          code "theorem split {α : Type*} (l : List α) : True := trivial"]
+      (artifacts/record! c rid {:branch-id "B3.2" :turn 40 :kind :lean :tier :fast
+                                :claim (str "For a type with decidable equality:"
+                                            " membership in a list gives a split")
+                                :code code})
+      (testing "the same code is refused without asking a judge"
+        (let [engine (atom 0) judged (atom 0)]
+          (with-redefs [lean-repl/create-session (fn [& _] {:id "s"})
+                        lean-repl/mathlib-env (fn [& _] nil)
+                        lean-repl/alive? (fn [_] true)
+                        lean-pool/checkout! (fn [& _] nil)
+                        lean-repl/run-command (fn [& _] (swap! engine inc)
+                                                {:ok true :sorries []})
+                        llm/chat (fn [& _] (swap! judged inc)
+                                   {:content "VERDICT: FAIL"})]
+            (let [r (tools/run-tool
+                     {:branch (state/new-branch {:id "B4" :problem "p"})
+                      :turn 1 :conn c :run-id rid :claims (claims/new-registry)
+                      :tool-name "verify_lean"
+                      :args {:claim "Basic list split lemmas, worded differently"
+                             :lean code}})]
+              (is (= 0 @engine) "Lean is not asked to prove it a second time")
+              (is (= 0 @judged) "and no judge call is spent deciding something this plain")
+              (is (= :mechanics (:category r)))
+              (is (str/includes? (:result r) "B3.2") "provenance names the source")))))
+
+      (testing "whitespace differences do not make it a new proof"
+        (with-redefs [lean-repl/create-session (fn [& _] {:id "s"})
+                      lean-repl/mathlib-env (fn [& _] nil)
+                      lean-repl/alive? (fn [_] true)
+                      lean-pool/checkout! (fn [& _] nil)
+                      lean-repl/run-command (fn [& _] {:ok true :sorries []})
+                      llm/chat (fn [& _] {:content "VERDICT: FAIL"})]
+          (is (= :mechanics
+                 (:category (tools/run-tool
+                             {:branch (state/new-branch {:id "B5" :problem "p"})
+                              :turn 1 :conn c :run-id rid :claims (claims/new-registry)
+                              :tool-name "verify_lean"
+                              :args {:claim "same thing again"
+                                     :lean (str "  " code "\n")}}))))))
+
+      (testing "different code still goes to the engine"
+        (let [engine (atom 0)]
+          (with-redefs [lean-repl/create-session (fn [& _] {:id "s"})
+                        lean-repl/mathlib-env (fn [& _] nil)
+                        lean-repl/alive? (fn [_] true)
+                        lean-pool/checkout! (fn [& _] nil)
+                        lean-repl/run-command (fn [& _] (swap! engine inc)
+                                                {:ok true :sorries []})
+                        llm/chat (fn [& _] {:content "GAPS: none\nVERDICT: PASS"})]
+            (tools/run-tool {:branch (state/new-branch {:id "B6" :problem "p"})
+                             :turn 1 :conn c :run-id rid :claims (claims/new-registry)
+                             :tool-name "verify_lean"
+                             :args {:claim "a genuinely different lemma about chains"
+                                    :lean "theorem other : True := trivial"}})
+            (is (= 1 @engine))))))))
 
