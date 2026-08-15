@@ -206,15 +206,45 @@
 
 (defn apply-tactic
   "One tactic against a proof state. Returns the new state and its goals; an
-  empty goal list means the proof is closed."
+  AFFIRMATIVELY empty goal list means the proof is closed.
+
+  Affirmatively, because `send-command` returns the REPL's JSON verbatim and a
+  reply carrying no `goals` key at all gave `(empty? nil)` — true — so the
+  proof was declared closed. A missing field was read as \"no goals remain\".
+
+  Three artifacts were confirmed that way on the single tactic `classical`,
+  which adds a decidability instance and closes nothing: gen-24 a#758 and a#759
+  — lemma (B), reported as proved twice independently — and gen-25 a#780,
+  TARGET 1, the last gap in the correctness chain. Both runs seeded forward, so
+  the void lemmas propagated as inherited CONFIRMED results.
+
+  This is the same distinction `errors` already draws for warnings, where
+  treating them alike \"is how `sorry` gets recorded as verified\". Absence is
+  not assent: a reply the harness cannot read is a failed request, not a
+  finished proof."
   [session tactic proof-state]
   (let [r (send-command session {:tactic tactic :proofState proof-state})]
     (if-not (:ok r)
       r
-      (let [errs (errors (:messages r))]
-        {:ok (empty? errs)
-         :proof-state (:proofState r)
-         :goals (vec (:goals r))
-         :closed? (and (empty? errs) (empty? (:goals r)))
-         :messages (:messages r)
-         :errors (vec errs)}))))
+      (let [errs (errors (:messages r))
+            ;; `contains?` rather than a nil check, so an explicit `[]` is told
+            ;; apart from an absent key. That difference is the whole bug.
+            reported? (contains? r :goals)]
+        (if-not reported?
+          {:ok false
+           :proof-state (:proofState r)
+           :goals []
+           :closed? false
+           :messages (:messages r)
+           :errors (conj (vec errs)
+                         {:severity "error"
+                          :data (str "The Lean REPL replied without a goal list, so"
+                                     " the harness cannot tell whether the tactic"
+                                     " closed the proof. Treating it as unproved."
+                                     " Reply keys: " (pr-str (vec (keys r))))})}
+          {:ok (empty? errs)
+           :proof-state (:proofState r)
+           :goals (vec (:goals r))
+           :closed? (and (empty? errs) (empty? (:goals r)))
+           :messages (:messages r)
+           :errors (vec errs)})))))

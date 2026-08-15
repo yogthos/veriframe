@@ -16,6 +16,7 @@
   model one, so it is worth spending the tests here."
   (:require [clojure.string :as str]
             [clojure.test :refer [deftest testing is are]]
+            [veriframe.engine.lean-repl :as lean-repl]
             [veriframe.engine.lean-search :as lean-search]
             [veriframe.engine.lint :as lint]
             [veriframe.engine.proc :as proc]
@@ -657,4 +658,54 @@ sidon(S) :- sums(S, Sums), sort(Sums, Sorted), length(Sums, N), length(Sorted, N
     (is (lean-search/relevant? {:overlap 2} 2))
     (is (not (lean-search/relevant? {:overlap 2} 8)))
     (is (lean-search/relevant? {:overlap 1} 1))))
+
+;; --- Lean proof state -------------------------------------------------------
+
+(deftest a-reply-without-goals-is-not-a-closed-proof
+  ;; vf-4tw. closed? was (and (empty? errs) (empty? (:goals r))), and
+  ;; send-command returns the REPL's JSON verbatim — so a reply carrying no
+  ;; `goals` key at all gave (empty? nil), which is true, and the proof was
+  ;; declared CLOSED. A missing field was read as an affirmative "no goals
+  ;; remain".
+  ;;
+  ;; Three artifacts were confirmed this way on the single tactic `classical`,
+  ;; which adds a decidability instance and closes nothing: gen-24 a#758 and
+  ;; a#759 — lemma (B), reported as proved twice independently — and gen-25
+  ;; a#780, TARGET 1, the last gap in the correctness chain. Both runs seeded
+  ;; forward, so the void results propagated as inherited CONFIRMED lemmas.
+  ;;
+  ;; This file already draws the same distinction for warnings: treating them
+  ;; like errors "is how `sorry` gets recorded as verified". Absence is not
+  ;; assent.
+  (let [reply (fn [m] (with-redefs [lean-repl/send-command (fn [& _] (assoc m :ok true))]
+                        (lean-repl/apply-tactic {:id "s"} "classical" 1)))]
+
+    (testing "no goals key at all — the harness cannot tell, so it must not claim"
+      (let [r (reply {:proofState 2})]
+        (is (not (:closed? r))
+            "a proof is closed only when the REPL says the goal list is empty")
+        (is (not (:ok r)) "and the turn does not read as a success")))
+
+    (testing "an affirmatively empty goal list IS closed"
+      (let [r (reply {:proofState 2 :goals []})]
+        (is (:closed? r))
+        (is (:ok r))))
+
+    (testing "goals remaining is neither closed nor failed"
+      (let [r (reply {:proofState 2 :goals ["⊢ True"]})]
+        (is (not (:closed? r)))
+        (is (:ok r))
+        (is (= ["⊢ True"] (:goals r)))))
+
+    (testing "an error is a failed tactic even if goals are absent"
+      (let [r (reply {:proofState 2
+                      :messages [{:severity "error" :data "unknown tactic"}]})]
+        (is (not (:closed? r)))
+        (is (not (:ok r)))))
+
+    (testing "a warning is not an error, and does not close anything either"
+      (let [r (reply {:proofState 2 :goals ["⊢ True"]
+                      :messages [{:severity "warning" :data "declaration uses sorry"}]})]
+        (is (:ok r))
+        (is (not (:closed? r)))))))
 
