@@ -25,7 +25,8 @@
   The width is not treated as justified. The original never measured five
   branches against one branch at five times the turn budget, and
   `veriframe.bench.beam` is the comparison."
-  (:require [clojure.string :as str]
+  (:require [clojure.data.json :as json]
+            [clojure.string :as str]
             [clojure.tools.logging :as log]
             [veriframe.agent.claims :as claims]
             [veriframe.agent.critic :as critic]
@@ -383,6 +384,23 @@
                         (assoc % :status :culled :inactive-reason "culled by a human")
                         %)
                      bs)))
+
+         "retract"
+         ;; Applied here rather than at submit time so it lands on a turn
+         ;; boundary like every other directive — a branch mid-turn is holding
+         ;; a ledger it read before the change, and rewriting under it would
+         ;; make the two disagree for exactly one turn.
+         (let [payload (try (json/read-str (str (:payload d)) :key-fn keyword)
+                            (catch Throwable _ nil))
+               aid (or (:artifact_id payload) (:artifact-id payload))]
+           (if (and aid (artifacts/retract! conn run-id aid
+                                            (or (:reason payload) "retracted by a human")))
+             (interventions/resolve! conn run-id (:id d) :applied nil turn)
+             (interventions/resolve! conn run-id (:id d) :rejected
+                                     (str "no confirmed artifact " (pr-str aid)
+                                          " in this run")
+                                     turn))
+           bs)
 
          ("message" "review")
          (do (interventions/resolve! conn run-id (:id d) :applied nil turn)

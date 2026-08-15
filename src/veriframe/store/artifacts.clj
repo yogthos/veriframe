@@ -46,6 +46,48 @@
                      ["INSERT INTO shared_artifacts_fts (rowid, claim) VALUES (?, ?)"
                       id (str claim)]))))
 
+(defn retract!
+  "Undo a confirmation that turned out not to be one. Returns true if a row
+  changed, false if there was nothing there.
+
+  The campaign has banked worthless artifacts as CONFIRMED four separate ways:
+  three whose entire proof body was `classical`, two vacuous theorems, and
+  gen-30 a#829, closed with `sorry`. Each hole was fixed where it was found,
+  but a row already written stayed written, and a live run rereads the ledger
+  every turn — so a run could spend hours building on a lemma the harness had
+  already learned was void.
+
+  seed-from-run!'s quarantine argues why prose cannot do this job: the ledger
+  is generated from the table every turn and says CONFIRMED, so a paragraph
+  saying otherwise is a contradiction the branch has to adjudicate. That is
+  just as true inside a run as across the seeding boundary.
+
+  Both tables, because they feed different readers: `artifacts` is the run's
+  own ledger and what a later generation inherits, `shared_artifacts` is the
+  block siblings read. The row is marked rather than deleted — a retracted
+  result is a thing that happened, and the reason belongs in the record."
+  [conn run-id artifact-id reason]
+  (db/with-writer
+    (let [n (db/execute! conn
+                         ["UPDATE artifacts SET claim_status = 'retracted'
+                           WHERE run_id = ? AND id = ? AND claim_status = 'confirmed'"
+                          run-id artifact-id])
+          claim (:claim (first (db/fetch conn ["SELECT claim FROM artifacts
+                                                WHERE run_id = ? AND id = ?"
+                                               run-id artifact-id])))]
+      (if (and claim (pos? (if (number? n) n 0)))
+        (do
+          ;; Matched on claim text: the shared row is a copy with its own id,
+          ;; and the boundary where ids stop lining up is exactly this one.
+          (doseq [r (db/fetch conn ["SELECT id FROM shared_artifacts
+                                     WHERE run_id = ? AND claim = ?" run-id claim])]
+            (db/execute! conn ["DELETE FROM shared_artifacts_fts WHERE rowid = ?" (:id r)])
+            (db/execute! conn ["DELETE FROM shared_artifacts WHERE id = ?" (:id r)]))
+          (journal/note! conn run-id :artifact-retracted
+                         {:data {:artifact-id artifact-id :claim claim :reason reason}})
+          true)
+        false))))
+
 (defn- normalize-claim
   "Spelling-level normalisation only — case and punctuation — matching
   claims/normalize and consensus/normalize-claim. Two phrasings that group

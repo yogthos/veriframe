@@ -31,6 +31,7 @@
    "review" "Tell a branch to cross-check and ship what it has."
    "cull" "Stop a branch. Refused if it is the last one running."
    "fork" "Open a sibling branch on a stated thesis."
+   "retract" "Un-confirm an artifact that was not what it claimed. Payload: {\"artifact_id\": N, \"reason\": \"...\"}."
    "extend" "Raise the run's turn cap."
    "pause" "Stop scheduling new turns; in-flight turns finish."
    "resume" "Resume scheduling."})

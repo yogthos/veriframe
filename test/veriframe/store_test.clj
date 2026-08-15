@@ -631,3 +631,57 @@
       (let [r (runs/get-run c rid)]
         (is (= "running" (:status r)))
         (is (nil? (:ended_at r)) "a running run has not ended")))))
+
+(deftest a-confirmed-artifact-can-be-retracted
+  ;; The campaign has now banked "confirmed" artifacts that were nothing four
+  ;; separate ways: three proofs whose whole body was `classical`, two vacuous
+  ;; theorems, and gen-30 a#829, closed with `sorry`. Each hole got fixed, but
+  ;; there was no way to undo a row already written, and a live run rereads the
+  ;; ledger every turn.
+  ;;
+  ;; seed-from-run!'s quarantine says why prose cannot do this job: "the ledger
+  ;; is generated from this table every turn and says CONFIRMED, so a paragraph
+  ;; saying otherwise is a contradiction the branch has to adjudicate". That
+  ;; applies within a run, not only across the seeding boundary.
+  (with-db [c]
+    (let [rid (runs/start-run! c {:problem "p" :beam-width 1})
+          _ (runs/open-branch! c rid {:branch-id "B1" :created-at-turn 0})
+          _ (journal/record-artifact!
+             c rid {:branch-id "B1" :turn 1 :kind :lean
+                    :claim "a real lemma" :code "theorem t : True := by trivial"
+                    :claim-status :confirmed :tier :slow})
+          _ (journal/record-artifact!
+             c rid {:branch-id "B1" :turn 2 :kind :lean
+                    :claim "closed with sorry" :code "theorem u : True := by sorry"
+                    :claim-status :confirmed :tier :slow})
+          bad-id (:id (first (filter #(= "closed with sorry" (:claim %))
+                                     (journal/artifacts c rid))))]
+      (artifacts/record! c rid {:branch-id "B1" :turn 2 :kind :lean :tier :slow
+                                :claim "closed with sorry"
+                                :code "theorem u : True := by sorry"})
+
+      (testing "it starts out established, which is the problem"
+        (is (= 2 (count (journal/confirmed-artifacts c rid "B1")))))
+
+      (testing "retracting takes it out of the run's settled state"
+        (is (true? (artifacts/retract! c rid bad-id "closed with sorry")))
+        (let [left (journal/confirmed-artifacts c rid "B1")]
+          (is (= 1 (count left)))
+          (is (= "a real lemma" (:claim (first left))) "and leaves the honest one alone")))
+
+      (testing "and out of the cross-branch block siblings read"
+        (is (empty? (filter #(= "closed with sorry" (:claim %))
+                            (artifacts/recent c rid 50)))))
+
+      (testing "and out of what a later generation inherits"
+        (let [next-rid (runs/start-run! c {:problem "p2" :beam-width 1})]
+          (artifacts/seed-from-run! c next-rid rid)
+          (is (= ["a real lemma"] (mapv :claim (artifacts/recent c next-rid 50))))))
+
+      (testing "retracting something that is not there says so rather than lying"
+        (is (false? (artifacts/retract! c rid 99999 "no such row"))))
+
+      (testing "the retraction is on the record"
+        ;; A result that silently disappears is its own kind of unreliable.
+        (is (some #(= "artifact-retracted" (str (:kind %)))
+                  (journal/events-since c rid 0 200)))))))
