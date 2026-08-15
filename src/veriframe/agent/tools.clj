@@ -1771,7 +1771,11 @@
   second import alongside it — two concurrent imports are slower than one, so
   racing the pool would be worse than either warming or not warming."
   [{:keys [branch config] :as ctx}]
-  (if-let [s (:lean branch)]
+  ;; `alive?`, not merely present. A session that died was handed back on every
+  ;; later call, so the branch could never obtain a working one and every Lean
+  ;; call failed with "the session is dead" — gen-26 B3 was culled on exactly
+  ;; that, three consecutive failures of which two were the outage.
+  (if-let [s (when (lean-repl/alive? (:lean branch)) (:lean branch))]
     [s branch]
     (let [s (or (lean-pool/checkout! (get-in config [:warmup :checkout-wait-ms] 60000))
                 (doto (lean-repl/create-session (get-in config [:engines :lean]))
@@ -1887,9 +1891,15 @@
                 r (lean-repl/run-command s (arg ctx :lean))]
             (cond
               (:error r)
+              ;; An outage, not a failed verification. `unavailable` already
+              ;; argues this for the thrown-exception path — "gen-18 B3 was
+              ;; culled after six consecutive failures... one of the six was
+              ;; Lean is unavailable, a fact about the process pool" — and a
+              ;; REPL that dies mid-request returns the error instead of
+              ;; throwing, which is the commoner path. gen-26 B3 was culled the
+              ;; same way, two generations later.
               (do (settle-claim! ctx claim :released nil)
-                  (fail branch (str "The Lean REPL failed: " (:error r))
-                        :failure {:claim claim :reason (:error r)}))
+                  (unavailable branch "Lean" (ex-info (str (:error r)) {})))
 
               (seq (:sorries r))
               (do (settle-claim! ctx claim :released nil)
@@ -2015,7 +2025,8 @@
           r (lean-repl/apply-tactic s (arg ctx :tactic) (:state p))]
       (cond
         (:error r)
-        (fail branch (str "The Lean REPL failed: " (:error r)))
+        ;; Same reasoning as verify_lean: a dead REPL is the pool's fault.
+        (unavailable branch "Lean" (ex-info (str (:error r)) {}))
 
         (not (:ok r))
         ;; The state is NOT advanced on a failed tactic, so the branch can try
@@ -2146,7 +2157,8 @@
 (defn- octave-session!
   "The branch's Octave workspace, created on first use. Returns [session branch]."
   [{:keys [branch config] :as ctx}]
-  (if-let [s (:octave branch)]
+  ;; Same as lean-session!: a dead workspace must not be handed back forever.
+  (if-let [s (when (octave/alive? (:octave branch)) (:octave branch))]
     [s branch]
     (let [s (octave/create-session (get-in config [:engines :octave]))]
       (register-session! ctx :octave s)

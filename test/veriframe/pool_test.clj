@@ -214,3 +214,66 @@
                                    :args {:claim "the bound holds for every edge"
                                           :lean "theorem t : True := trivial"}})))))))
 
+;; --- recovering from a dead session -----------------------------------------
+
+(deftest a-dead-session-is-replaced-not-handed-back
+  ;; A branch whose Lean session died was handed the corpse on every later
+  ;; call, because lean-session! checked only whether :lean was PRESENT, never
+  ;; whether it was alive. Every subsequent Lean call then failed with "the
+  ;; session is dead" — and those were charged :failure, so the branch was
+  ;; culled for an outage it could not recover from.
+  ;;
+  ;; gen-26 B3: t28 a genuine Lean error, t30 "REPL I/O failed", t32 "session
+  ;; is dead", culled after three consecutive failures. It never called Lean
+  ;; again, because every call would have used the same dead session.
+  (testing "a live session is reused"
+    (let [created (atom 0)]
+      (with-redefs [lean-repl/create-session (fn [& _] (swap! created inc) {:id "new"})
+                    lean-repl/mathlib-env (fn [& _] nil)
+                    lean-repl/alive? (fn [_] true)
+                    pool/checkout! (fn [& _] nil)
+                    lean-repl/run-command (fn [& _] {:ok true :sorries []})
+                    llm/chat (fn [& _] {:content "GAPS: none\nVERDICT: PASS"})]
+        (tools/run-tool {:branch (assoc (state/new-branch {:id "B1" :problem "p"})
+                                        :lean {:id "existing"})
+                         :turn 1 :tool-name "verify_lean"
+                         :args {:claim "the bound holds on every edge"
+                                :lean "theorem t : True := trivial"}})
+        (is (= 0 @created) "a healthy session must not be thrown away"))))
+
+  (testing "a dead session is discarded and a fresh one obtained"
+    (let [created (atom 0)]
+      (with-redefs [lean-repl/create-session (fn [& _] (swap! created inc) {:id "new"})
+                    lean-repl/mathlib-env (fn [& _] nil)
+                    lean-repl/alive? (fn [s] (not= "corpse" (:id s)))
+                    pool/checkout! (fn [& _] nil)
+                    lean-repl/run-command (fn [& _] {:ok true :sorries []})
+                    llm/chat (fn [& _] {:content "GAPS: none\nVERDICT: PASS"})]
+        (let [r (tools/run-tool {:branch (assoc (state/new-branch {:id "B1" :problem "p"})
+                                                :lean {:id "corpse"})
+                                 :turn 1 :tool-name "verify_lean"
+                                 :args {:claim "the bound holds on every edge"
+                                        :lean "theorem t : True := trivial"}})]
+          (is (= 1 @created) "the branch gets a working session rather than the corpse")
+          (is (= :success (:category r)))
+          (is (= "new" (:id (:lean (:branch r)))))))))
+
+  (testing "an engine outage is not charged to the branch"
+    ;; unavailable already says why, and says it about this exact incident two
+    ;; generations earlier: "gen-18 B3 was culled after six consecutive
+    ;; failures... One of the six was `Lean is unavailable`, a fact about the
+    ;; process pool." That reasoning was applied to the thrown-exception path
+    ;; and not to the returned-error path, which is the common one.
+    (with-redefs [lean-repl/create-session (fn [& _] {:id "s"})
+                  lean-repl/mathlib-env (fn [& _] nil)
+                  lean-repl/alive? (fn [_] true)
+                  pool/checkout! (fn [& _] nil)
+                  lean-repl/run-command (fn [& _] {:error "Lean REPL I/O failed"})]
+      (let [r (tools/run-tool {:branch (state/new-branch {:id "B1" :problem "p"})
+                               :turn 1 :tool-name "verify_lean"
+                               :args {:claim "the bound holds on every edge"
+                                      :lean "theorem t : True := trivial"}})]
+        (is (= :neutral (:category r))
+            "a dead REPL is a fact about the process pool, not about the claim")
+        (is (nil? (:failure r)) "and it does not enter the failure log")))))
+
