@@ -846,3 +846,44 @@ sidon(S) :- sums(S, Sums), sort(Sums, Sorted), length(Sums, N), length(Sorted, N
       (let [r (reply {:proofState 2 :goals []})]
         (is (empty? (:sorries r)))
         (is (:closed? r))))))
+
+(deftest a-comment-that-merely-mentions-a-keyword-is-not-a-buried-declaration
+  ;; gen-30 B1.3 wrote a complete, correct theorem with this comment above it:
+  ;;
+  ;;   -- guarded probes; a failed #check aborts only its own example, but
+  ;;      these are separate text regions so I will use short examples instead.
+  ;;
+  ;; The lint counts declaration tokens before and after stripping comments and
+  ;; warns when the count drops, so the word "example" in ordinary prose read
+  ;; as a declaration hidden in a comment. The snippet was REJECTED and Lean
+  ;; never ran — "nothing was run" is the message — costing the turn outright.
+  ;; 12 turns across seven runs died this way.
+  ;;
+  ;; The real failure it guards is a declaration commented out by accident, and
+  ;; that has a shape: a keyword followed by a name and a colon, or `example`
+  ;; followed by a binder. Prose does not.
+  (testing "prose mentioning a keyword does not block a real theorem"
+    (let [snippet (str "theorem probe (x : Nat) : True := by\n"
+                       "  -- a failed #check aborts only its own example, so I will\n"
+                       "  -- use short examples instead; this theorem says nothing.\n"
+                       "  trivial")]
+      (is (:ok (lint/lint-lean snippet))
+          (str "warnings: " (pr-str (:warnings (lint/lint-lean snippet)))))))
+
+  (testing "an actually commented-out declaration is still caught"
+    (let [snippet (str "-- theorem hidden (x : Nat) : x = x := by rfl\n"
+                       "theorem real (x : Nat) : x = x := by rfl")]
+      (is (not (:ok (lint/lint-lean snippet))))
+      (is (str/includes? (str/join " " (:warnings (lint/lint-lean snippet)))
+                         "line comment"))))
+
+  (testing "a commented-out example is caught by its binder"
+    (let [snippet (str "/- example (a : Nat) : a = a := rfl -/\n"
+                       "theorem real (x : Nat) : x = x := by rfl")]
+      (is (not (:ok (lint/lint-lean snippet))))))
+
+  (testing "the checks that matter are untouched"
+    (is (not (:ok (lint/lint-lean "-- theorem t : True := by trivial")))
+        "everything inside comments is still nothing to check")
+    (is (not (:ok (lint/lint-lean "theorem t : True := by sorry")))
+        "and sorry is still refused")))

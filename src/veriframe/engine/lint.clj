@@ -182,6 +182,24 @@
 (def ^:private lean-decl-tokens
   ["theorem" "example" "lemma" "def" "abbrev" "instance"])
 
+(defn- decl-shaped-re
+  "A pattern matching `tok` used as a DECLARATION, not merely mentioned.
+
+  Counting bare tokens made any prose in a comment look like a buried
+  declaration. gen-30 B1.3 lost a complete, correct theorem to the comment
+  \"a failed #check aborts only its own example\" — `example` in a sentence —
+  and the snippet was rejected without Lean running at all. Twelve turns
+  across seven runs died that way.
+
+  A Lean declaration has a shape: a keyword, then a name, then binders or a
+  colon. `example` is the exception, being anonymous, so it is recognised by
+  the binder or colon alone. Prose has neither — \"this theorem says nothing\"
+  never reaches a colon, and \"its own example,\" is followed by punctuation."
+  [tok]
+  (if (= tok "example")
+    (re-pattern (str "\\b" tok "\\b\\s*[({\\[:]"))
+    (re-pattern (str "\\b" tok "\\b\\s+[A-Za-z_][A-Za-z0-9_'!?.]*[^\\n]*:"))))
+
 (defn strip-lean-imports
   "Drop `import` lines from a Lean snippet.
 
@@ -209,7 +227,7 @@
       (let [stripped (strip-lean-comments snippet)
             ws (transient [])]
         (doseq [tok lean-decl-tokens]
-          (let [re (re-pattern (str "\\b" tok "\\b"))
+          (let [re (decl-shaped-re tok)
                 before (count-matches re snippet)
                 after (count-matches re stripped)]
             (when (> before after)
