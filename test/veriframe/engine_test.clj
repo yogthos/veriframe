@@ -14,7 +14,8 @@
   express a problem, Prolog and Z3 have to reach the same answer. This is the
   last phase where a disagreement is unambiguously a harness bug rather than a
   model one, so it is worth spending the tests here."
-  (:require [clojure.string :as str]
+  (:require [clojure.java.io :as io]
+            [clojure.string :as str]
             [clojure.test :refer [deftest testing is are]]
             [veriframe.engine.lean-repl :as lean-repl]
             [veriframe.engine.lean-search :as lean-search]
@@ -711,6 +712,84 @@ sidon(S) :- sums(S, Sums), sort(Sums, Sorted), length(Sums, N), length(Sorted, N
       (is (> (idf "acyclic") (idf "transgen")))
       (is (> (idf "zzz-unseen") (idf "acyclic"))
           "a token absent from Mathlib is maximally discriminating"))))
+
+(defn- stub-index!
+  "A throwaway premise index, so search can be exercised without Mathlib.
+  `lines` are index lines in either the new `<kind> <name> :: <statement>`
+  format or the old bare `<kind> <name>` one — the ranker must take both."
+  [lines]
+  (let [f (io/file (System/getProperty "java.io.tmpdir")
+                   (str "vf-mathlib-stub-" (System/nanoTime) ".txt"))]
+    (spit f (str/join "\n" lines))
+    (str f)))
+
+(deftest premise-index-carries-the-statement
+  ;; vf-v2p. The index was 215,781 lines of "<kind> <name>" because the
+  ;; extraction regex stopped at the first space, colon or bracket — and 43%
+  ;; of Mathlib declarations continue past their first line, so for nearly
+  ;; half the library the statement was unreachable. Every query was scored
+  ;; against what a name happens to spell: lean_search returned nothing on
+  ;; 56-59% of this campaign's calls, and gen-30 asked Lean for six
+  ;; nonexistent `splitByLoop` lemmas in a single snippet, because a branch
+  ;; that cannot find a lemma concludes none exists and invents one.
+  ;;
+  ;; The index now carries "<kind> <name> :: <statement>" from
+  ;; tools/mathlib-index.awk. A stale bare-name cache must still search —
+  ;; a branch should not lose its turn to an index from an older build.
+  (let [cfg {:mathlib-index
+             (stub-index!
+              ["theorem continuous_add :: (f g : X -> Y) (hf : Continuous f) (hg : Continuous g) : Continuous (f + g)"
+               "theorem comp_preserves :: (f : Y -> Z) (g : X -> Y) (hf : Continuous f) : Continuous (f.comp g)"
+               "def Finset.card :: (s : Finset α) : Nat"
+               "def Nat.rec"
+               "theorem mem_map :: (x : α) (c : Chain α) (f : α -> β) : x ∈ c -> f x ∈ Chain.map c f"
+               ;; Filler so idf stays positive: with five real lines above, a
+               ;; token in three of them has df+1 = n and scores log(1) = 0.
+               "def Group.mul :: (a b : G) : G"
+               "def Ring.pow :: (a : R) (n : Nat) : R"
+               "theorem sub_zero :: (a : G) : a - 0 = a"])}]
+    (testing "a statement term reaches a declaration whose name never spells it"
+      ;; `comp_preserves` is the whole argument for statements: no query about
+      ;; continuity reaches that name, but its statement says Continuous.
+      (let [hits (lean-search/search cfg "continuous")]
+        (is (some #(= "comp_preserves" (:n %)) hits)
+            "a term only in the statement still finds the declaration")
+        (is (seq (filter :s hits))
+            "and the statement travels with the hit")))
+    (testing "a name match outranks a statement-only match"
+      ;; Names are curated, statements are full of structural noise. Both
+      ;; lines contain `continuous`, so idf cannot separate them — only the
+      ;; field weighting can.
+      (let [hits (lean-search/search cfg "continuous")]
+        (is (= "continuous_add" (:n (first hits)))
+            "the name match must sort first")))
+    (testing "old bare-name lines still search"
+      (let [hits (lean-search/search cfg "Nat.rec")]
+        (is (= "Nat.rec" (:n (first hits))))
+        (is (nil? (:s (first hits)))
+            "no statement is invented for a stale-format line")))
+    (testing "render shows the statement, which is the entire benefit"
+      ;; A branch seeing the statement can decide whether it wants the lemma
+      ;; without spending a turn on an artifact fetch.
+      (let [out (lean-search/render (lean-search/search cfg "continuous") "continuous")]
+        (is (str/includes? out "Continuous (f + g)")
+            "the statement is right there next to the name")))
+    (testing "nothing matching keeps its own advice"
+      (is (= [] (lean-search/search cfg "qzzz wzzz")))
+      (is (re-find #"(?i)vocabulary"
+                   (lean-search/render (lean-search/search cfg "qzzz wzzz")
+                                       "qzzz wzzz"))))
+    (testing "a weak match still says Mathlib may not have it"
+      ;; Two invented terms dominate the query's information, so the one
+      ;; shared token is a near miss, not a hit — and the branch must be told
+      ;; the honest thing rather than handed false confidence.
+      (let [hits (lean-search/search cfg "continuous qzzz wzzz")]
+        (is (seq hits) "the near miss is still found")
+        (is (not (some lean-search/relevant? hits)))
+        (is (re-find #"(?i)nothing in mathlib matched"
+                     (lean-search/render hits "continuous qzzz wzzz")))
+        (is (re-find #"(?i)may not have"
+                     (lean-search/render hits "continuous qzzz wzzz")))))))
 
 ;; --- Lean proof state -------------------------------------------------------
 
