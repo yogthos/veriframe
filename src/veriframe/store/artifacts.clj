@@ -303,23 +303,37 @@
 
   Ids are handles, not decoration — `a#12` is what `fetch_artifact` takes, so
   the encodings stay out of the block and cost a turn only when wanted."
-  [{:keys [established ruled-out inherited]}]
-  (when (or (seq established) (seq ruled-out) (seq inherited))
+  [{:keys [established ruled-out sketches inherited]}]
+  (when (or (seq established) (seq ruled-out) (seq sketches) (seq inherited))
     (str message/ledger-open "\n"
-         "## What this run has settled\n\n"
+         ;; NOT "what this run has settled": a sketch is precisely what it has
+         ;; not settled, and a heading is what a model skimming reads. The
+         ;; five worthless-but-confirmed artifacts this campaign has banked
+         ;; were each a case of unverified content being taken for verified,
+         ;; so the top line has to cover plans without endorsing them.
+         "## What this run has settled, and what it has only planned\n\n"
          (when (seq established)
            (str "### Established — engine-verified in this run\n"
                 (str/join "\n" (map (partial ledger-line "a#") (dedupe-claims established))) "\n\n"))
          (when (seq ruled-out)
            (str "### Ruled out — engine-REFUTED, do not re-attempt these\n"
                 (str/join "\n" (map (partial ledger-line "a#") (dedupe-claims ruled-out))) "\n\n"))
+         ;; Plans, kept out of both settled halves and under their own `p#`
+         ;; prefix: a sketch elaborates and its citations exist, but every
+         ;; `sorry` in it is a step still open, and a model skimming this
+         ;; block must not mistake a plan for something an engine checked.
+         ;; The same id space as `a#` (the artifacts table) — the prefix
+         ;; exists so the STATUS is on the handle.
+         (when (seq sketches)
+           (str "### Sketches — UNVERIFIED PLANS, not results; every step is still open\n"
+                (str/join "\n" (map (partial ledger-line "p#") (dedupe-claims sketches))) "\n\n"))
          ;; Last: inherited results are true but were established elsewhere,
          ;; and the done gate still requires in-run verification, so they are
          ;; a starting point rather than something to ship on.
          (when (seq inherited)
            (str "### Inherited — confirmed by the run this one was seeded from\n"
                 (str/join "\n" (map (partial ledger-line "s#") (dedupe-claims inherited))) "\n\n"))
-         "Fetch any encoding with `fetch_artifact` and its id, e.g. `a#12` or `s#7`.\n"
+         "Fetch any encoding with `fetch_artifact` and its id, e.g. `a#12`, `s#7` or `p#3`.\n"
          message/ledger-close)))
 
 (defn prefer-in-run

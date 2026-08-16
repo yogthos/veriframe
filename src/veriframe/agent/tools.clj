@@ -2085,6 +2085,92 @@
             (settle-claim! ctx (arg ctx :claim) :released nil)
             (unavailable branch "Lean" e))))))))
 
+(defmethod run-tool "sketch" [{:keys [branch] :as ctx}]
+  ;; Draft-Sketch-Prove (Jiang et al., NeurIPS 2022): the draft is worth
+  ;; banking only because it is Lean rather than prose. A skeleton with
+  ;; `sorry` steps is machine-checkable without being proved — the elaborator
+  ;; rejects an invented lemma as an unknown constant, and every `sorry` is a
+  ;; real goal with a type — so the same run-command verify_lean uses decides
+  ;; here too, with the polarity flipped: elaborates WITH sorries is a plan,
+  ;; elaborates without them is a proof that belongs in verify_lean, and
+  ;; elaboration failure is a fact about the citations.
+  ;;
+  ;; Every exit releases the claim. A sketch settles nothing, and holding the
+  ;; claim shut against a branch that can actually prove it would trade a
+  ;; verification for a plan.
+  (if-let [m (missing ctx :claim :lean)]
+    (malformed branch m)
+    ;; NOT {:keys [ok ...]} — that shadows the `ok` helper for this whole
+    ;; body; verify_lean documents the trap (a Boolean-cannot-be-cast-to-IFn
+    ;; at runtime, only on the path that needs the helper).
+    (let [{lint-ok :ok :keys [warnings]}
+          (lint/lint-lean (arg ctx :lean) {:allow-sorry? true})]
+      (if-not lint-ok
+        (do (settle-claim! ctx (arg ctx :claim) :released nil)
+            (fail branch (str "Lean lint rejected the sketch — nothing was run:\n  • "
+                              (str/join "\n  • " warnings))))
+        (try
+          (let [[s branch] (lean-session! ctx)
+                claim (arg ctx :claim)
+                code (arg ctx :lean)
+                r (lean-repl/run-command s code)]
+            (cond
+              (:error r)
+              ;; An outage, not a failed plan — the same reasoning as
+              ;; verify_lean's identical branch: an engine outage is a fact
+              ;; about the process pool, not about this branch's approach.
+              (do (settle-claim! ctx claim :released nil)
+                  (unavailable branch "Lean" (ex-info (str (:error r)) {})))
+
+              (not (:ok r))
+              ;; The invented-citation path, and the whole reason the sketch
+              ;; is Lean rather than prose: `unknown constant` is the
+              ;; elaborator refusing a name, and no proof fixes a citation
+              ;; that does not exist. Same release verify_lean gives a
+              ;; rejection — a failed plan says nothing about the claim.
+              (let [etext (lean-error-text (:errors r))]
+                (settle-claim! ctx claim :released nil)
+                (fail branch (str "The skeleton does not elaborate — its structure or"
+                                  " citations were rejected:\n" etext
+                                  "\n\nA sketch has to cite real lemmas; this check is"
+                                  " what makes it a plan rather than prose."
+                                  (when-let [h (lean-hint etext)]
+                                    (str "\n\n" h)))))
+
+              (empty? (:sorries r))
+              (do (settle-claim! ctx claim :released nil)
+                  (fail branch
+                        (str "This elaborated with no `sorry` left open, so it is a"
+                             " finished PROOF, not a sketch. Send exactly this code to"
+                             " `verify_lean` with the same claim, and it can be recorded"
+                             " as confirmed.")))
+
+              :else
+              (let [sorries (:sorries r)]
+                (settle-claim! ctx claim :released nil)
+                ;; `ok`, not :success — a plan is not progress toward a
+                ;; verified result, and the cull and stall guards must not
+                ;; read it as one. :claim-status :sketch is inert: the ledger
+                ;; renders it in its own unverified section, seed-from-run!
+                ;; selects only 'confirmed', and the done gate's coverage
+                ;; reads confirmed/empirical.
+                (ok branch
+                    (str "The skeleton elaborates with " (count sorries)
+                         " step(s) still open, so the decomposition is sound and"
+                         " every citation exists. Recorded as a PLAN, not a result.\n\n"
+                         "Open goals:\n"
+                         (str/join "\n" (map-indexed (fn [i sg]
+                                                       (str (inc i) ". " (:goal sg)))
+                                                     sorries))
+                         "\n\nClose each goal to turn the plan into evidence —"
+                         " `proof_start` on the statement, or `verify_lean` once the"
+                         " whole proof is ready.")
+                    :artifact {:kind :lean :claim claim :code code
+                               :claim-status :sketch :tier :fast}))))
+          (catch Throwable e
+            (settle-claim! ctx (arg ctx :claim) :released nil)
+            (unavailable branch "Lean" e)))))))
+
 (def ^:private max-searches-without-attempt
   "Consecutive `lean_search` calls allowed before the branch has to try
   something.
@@ -2269,10 +2355,13 @@
     (let [raw (str/trim (str (arg ctx :id)))
           ;; `a#` is this run's own artifacts, `s#` the shared pool a seed was
           ;; copied into — two tables, two id spaces. A bare number means the
-          ;; branch's own, which is the common case.
+          ;; branch's own, which is the common case. `p#` is also this run's
+          ;; own artifacts — the ledger's handle for a SKETCH, same table,
+          ;; different status, so the prefix survives the round trip.
           shared? (str/starts-with? raw "s#")
-          own? (str/starts-with? raw "a#")
-          id (parse-long (str/replace raw #"^[as]#" ""))
+          own? (or (str/starts-with? raw "a#") (str/starts-with? raw "p#"))
+          sketch? (str/starts-with? raw "p#")
+          id (parse-long (str/replace raw #"^[aps]#" ""))
           ;; An explicit prefix is honoured exactly. A BARE number tries this
           ;; run's own artifacts and then falls back to the shared pool:
           ;; observed live, the ledger renders `s#649`, the model passes
@@ -2296,7 +2385,7 @@
                           " it inherited. A run cannot reach another run's"
                           " artifacts."))
         (ok branch
-            (str (if from-shared? "s#" "a#") (:id a)
+            (str (if from-shared? "s#" (if sketch? "p#" "a#")) (:id a)
                  " [" (:branch_id a) " " (:kind a) "/" (:tier a) "]"
                  ;; The status travels with the encoding or a refutation reads
                  ;; as an established result — the failure mode that makes

@@ -1089,7 +1089,7 @@
   (is (= #{"add_rule" "retract_rule" "verify" "verify_smt" "verify_template"
            "thesis" "branch_theses" "review" "audit" "done" "give_up"
            "verify_lean" "lean_search" "proof_start" "proof_step"
-           "proof_state" "proof_abandon"
+           "proof_state" "proof_abandon" "sketch"
            "octave_eval" "verify_octave" "measure" "fetch_artifact" "fetch_turn"}
          (set (tools/tool-names))))
   (is (some? (get-method tools/run-tool :default))
@@ -1525,6 +1525,126 @@
               (is (= :failure (:category rb)))
               (is (= 1 @calls) "the refutation carries over instead of being re-run")
               (is (str/includes? (:result rb) "B1")))))))))
+
+;; --- sketch -----------------------------------------------------------------
+
+(deftest a-sketch-banks-a-plan-not-a-result
+  ;; Draft-Sketch-Prove (Jiang et al., NeurIPS 2022): the draft is worth a
+  ;; turn only because it is Lean rather than prose. Elaboration is what
+  ;; checks the citations — an invented lemma dies as `unknown constant` —
+  ;; and each `sorry` is a real goal with a type, so the decomposition is
+  ;; machine-checked without being proved. Banked as a PLAN: :neutral via
+  ;; `ok`, never :success, because a plan is not progress toward a verified
+  ;; result and the cull and stall guards must not read it as one.
+  (with-db [c]
+    (let [rid (runs/start-run! c {:problem "p"})
+          claim "the union bound splits the cost into per-edge terms"
+          b (state/new-branch {:id "B1" :problem "p"})]
+      (with-redefs [lean-repl/create-session (fn [& _] {:id "s"})
+                    lean-repl/mathlib-env (fn [& _] nil)
+                    lean-pool/checkout! (fn [& _] {:id "s"})
+                    lean-repl/run-command
+                    (fn [& _] {:ok true
+                               :sorries [{:goal "∀ e, cost e ≤ bound e"}
+                                         {:goal "∑ e ∈ edges, cost e ≤ S"}]})]
+        (let [r (tools/run-tool {:branch b :turn 1 :conn c :run-id rid
+                                 :tool-name "sketch" :config {}
+                                 :args {:claim claim
+                                        :lean "theorem split : t := by sorry"}})]
+          (is (not= :success (:category r)) "a plan is not a verified result")
+          (is (= :neutral (:category r)))
+          (is (= :sketch (get-in r [:artifact :claim-status])))
+          (is (= :lean (get-in r [:artifact :kind])))
+          (is (str/includes? (:result r) "2 step"))
+          (is (str/includes? (:result r) "1. ∀ e, cost e ≤ bound e")
+              "each open goal, numbered")
+          (is (str/includes? (:result r) "2. ∑ e ∈ edges, cost e ≤ S")))))))
+
+(deftest a-finished-proof-is-not-a-sketch
+  ;; Same check, opposite polarity: elaborates with no sorries is a PROOF,
+  ;; and sending it through sketch would bank it as a plan when it is worth
+  ;; strictly more — a confirmation verify_lean can record.
+  (with-db [c]
+    (let [rid (runs/start-run! c {:problem "p"})
+          b (state/new-branch {:id "B1" :problem "p"})]
+      (with-redefs [lean-repl/create-session (fn [& _] {:id "s"})
+                    lean-repl/mathlib-env (fn [& _] nil)
+                    lean-pool/checkout! (fn [& _] {:id "s"})
+                    lean-repl/run-command (fn [& _] {:ok true :sorries []})]
+        (let [r (tools/run-tool {:branch b :turn 1 :conn c :run-id rid
+                                 :tool-name "sketch" :config {}
+                                 :args {:claim "one equals one"
+                                        :lean "theorem t : 1 = 1 := rfl"}})]
+          (is (= :failure (:category r)))
+          (is (str/includes? (:result r) "verify_lean")
+              "the branch is told where a finished proof belongs")
+          (is (nil? (:artifact r)) "nothing was banked"))))))
+
+(deftest an-invented-citation-kills-the-sketch-at-elaboration
+  ;; The reason the sketch is Lean rather than prose: the elaborator checks
+  ;; the citations. `unknown constant` is not a proof problem — no proof
+  ;; fixes a citation that does not exist — and the branch must see the
+  ;; engine's own text plus the hint, not a generic refusal.
+  (with-db [c]
+    (let [rid (runs/start-run! c {:problem "p"})
+          b (state/new-branch {:id "B1" :problem "p"})]
+      (with-redefs [lean-repl/create-session (fn [& _] {:id "s"})
+                    lean-repl/mathlib-env (fn [& _] nil)
+                    lean-pool/checkout! (fn [& _] {:id "s"})
+                    lean-repl/run-command
+                    (fn [& _] {:ok false :sorries []
+                               :errors [{:data "unknown constant 'List.splitByLoop'"}]})]
+        (let [r (tools/run-tool {:branch b :turn 1 :conn c :run-id rid
+                                 :tool-name "sketch" :config {}
+                                 :args {:claim "loops split chains"
+                                        :lean "theorem s : c := List.splitByLoop c"}})]
+          (is (= :failure (:category r)))
+          (is (str/includes? (:result r) "List.splitByLoop")
+              "the elaborator's own text reaches the branch")
+          (is (str/includes? (:result r) "does not exist in this environment")
+              "the unknown-constant hint rides along")
+          (is (nil? (:artifact r))))))))
+
+(deftest a-sketch-never-settles-a-claim
+  ;; The registry rule: only a verdict ABOUT THE CLAIM settles it, and a
+  ;; sketch is not one — it is a plan to try. Every sketch exit releases,
+  ;; including the success: a branch that sketched must not hold the claim
+  ;; shut against a branch that can actually prove it.
+  (with-db [c]
+    (let [rid (runs/start-run! c {:problem "p"})
+          claim "the greedy exchange argument terminates"
+          mk (fn [id] (state/new-branch {:id id :problem "p"}))
+          run (fn [registry id result]
+                (with-redefs [lean-repl/create-session (fn [& _] {:id "s"})
+                              lean-repl/mathlib-env (fn [& _] nil)
+                              lean-pool/checkout! (fn [& _] {:id "s"})
+                              lean-repl/run-command (fn [& _] result)]
+                  (tools/run-tool {:branch (mk id) :turn 1 :conn c :run-id rid
+                                   :claims registry :tool-name "sketch" :config {}
+                                   :args {:claim claim :lean "theorem g : t := by sorry"}})))]
+      (doseq [result [{:ok true :sorries [{:goal "g"}]}
+                      {:ok false :sorries [] :errors [{:data "unknown constant 'x'"}]}]]
+        (let [registry (claims/new-registry)]
+          (claims/try-claim! registry "B1" claim)
+          (run registry "B1" result)
+          (is (= :claimed (claims/try-claim! registry "B2" claim))
+              "the claim is open to the next branch, whatever the sketch did"))))))
+
+(deftest done-with-only-a-sketch-is-refused
+  ;; A sketch elaborates and cites real lemmas, which is exactly what makes
+  ;; it look like evidence. The done gate reads confirmed artifacts only, so
+  ;; a branch holding nothing but a plan has verified nothing — pinned
+  ;; because :sketch is a new status one refactor away from the confirmed
+  ;; list.
+  (let [b (branch-with :artifacts [{:claim "the greedy exchange terminates"
+                                    :claim-status :sketch :kind :lean
+                                    :tier :fast :turn 1}]
+                       :last-audit {:passed true :proposed-answer "a"
+                                    :established "a" :relaxation? false})]
+    (let [r (tools/run-tool {:branch b :turn 1 :tool-name "done"
+                             :args {:answer "the greedy exchange terminates"}})]
+      (is (= :failure (:category r)))
+      (is (str/includes? (:result r) "no confirmed artifact")))))
 
 (deftest shared-artifact-log-round-trips
   ;; The failure log's twin: what an engine CONFIRMED, with provenance inline.

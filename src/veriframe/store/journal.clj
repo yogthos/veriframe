@@ -177,11 +177,16 @@
   (let [rows (db/fetch conn
                        ["SELECT id, branch_id, turn, kind, tier, claim, claim_status
                          FROM artifacts
-                         WHERE run_id = ? AND claim_status IN ('confirmed', 'refuted')
+                         WHERE run_id = ?
+                           AND claim_status IN ('confirmed', 'refuted', 'sketch')
                          ORDER BY id" run-id])
         by-status (group-by :claim_status rows)]
     {:established (vec (get by-status "confirmed" []))
      :ruled-out (vec (get by-status "refuted" []))
+     ;; Plans, not results: a sketch elaborates and cites real lemmas but
+     ;; proves nothing, so it rides in its own list under its own prefix
+     ;; rather than joining either half of what the run has SETTLED.
+     :sketches (vec (get by-status "sketch" []))
      ;; Seeded rows only. A live branch's shared artifacts are already in
      ;; `artifacts` above, so including them here would double-count.
      :inherited (vec (db/fetch conn

@@ -372,6 +372,64 @@
           (is (< (.indexOf block "found here") (.indexOf block "weighted sum"))
               "this run's own results lead"))))))
 
+(deftest a-sketch-does-not-cross-generations
+  ;; seed-from-run! selects claim_status = 'confirmed', and this pin is what
+  ;; keeps a future edit from widening that to "anything engine-accepted". A
+  ;; sketch IS engine-accepted in the narrow sense that it elaborates, which
+  ;; is exactly why it must not cross: the next run would open with a plan
+  ;; sitting in the pool its ledger calls CONFIRMED, and a branch reading
+  ;; "inherited" would build on steps nobody ever proved. The quarantine
+  ;; machinery exists for confirmed rows that should not have been; this is
+  ;; the cheaper case — never let the row in at all.
+  (with-db [c]
+    (let [g1 (runs/start-run! c {:problem "one"})
+          g2 (runs/start-run! c {:problem "two"})]
+      (journal/record-artifact! c g1 {:branch-id "B1" :turn 3 :kind :lean :tier :fast
+                                      :claim "the union bound splits the cost"
+                                      :code "theorem split : t := by sorry"
+                                      :claim-status :sketch})
+      (journal/record-artifact! c g1 {:branch-id "B2" :turn 5 :kind :lean :tier :slow
+                                      :claim "each per-edge term is bounded"
+                                      :code "theorem edge : t := by rfl"
+                                      :claim-status :confirmed})
+      (let [n (artifacts/seed-from-run! c g2 g1)
+            claims (set (map :claim (artifacts/recent c g2 20)))]
+        (is (= 1 n) "only the confirmation is counted as seeded")
+        (is (not (contains? claims "the union bound splits the cost"))
+            "the plan stays behind with the run that planned it")
+        (is (contains? claims "each per-edge term is bounded"))))))
+
+(deftest the-ledger-renders-sketches-as-plans-not-results
+  ;; The ledger's whole design rule is "sections, never one list with a status
+  ;; column" — a refutation formatted like a confirmation is worse than not
+  ;; sharing it. A sketch is the same hazard one step removed: it elaborates,
+  ;; its citations exist, and every `sorry` in it is a step still open. So it
+  ;; gets its own section under `p#`, worded so a model skimming the block
+  ;; cannot mistake it for something an engine checked, and it must stay out
+  ;; of both settled halves.
+  (with-db [c]
+    (let [rid (runs/start-run! c {:problem "p"})
+          art (fn [bid status claim]
+                (journal/record-artifact!
+                 c rid {:branch-id bid :turn 1 :kind :lean :tier :fast
+                        :claim claim :code (str "theorem t_" claim)
+                        :claim-status status}))]
+      (art "B1" :confirmed "each per-edge term is bounded")
+      (art "B2" :sketch "the union bound splits the cost")
+      (let [led (journal/ledger c rid)]
+        (is (= ["the union bound splits the cost"] (mapv :claim (:sketches led))))
+        (is (= [] (mapv :claim (:ruled-out led))))
+        (is (= ["each per-edge term is bounded"] (mapv :claim (:established led)))
+            "the plan did not leak into the settled halves")
+        (let [block (artifacts/render-ledger led)]
+          (is (re-find #"(?i)unverified" block)
+              "the section says so on its face")
+          (is (re-find #"p#" block) "plans carry their own handle")
+          (is (re-find #"(?i)still open" block))
+          (is (< (.indexOf block "each per-edge term is bounded")
+                  (.indexOf block "the union bound splits the cost"))
+              "established leads; the plan follows, never the reverse"))))))
+
 (deftest fetch-artifact-resolves-both-id-spaces
   ;; a#N indexes artifacts, s#N indexes shared_artifacts. One tool, two
   ;; tables, so the prefix has to disambiguate — otherwise a branch fetching
@@ -685,3 +743,28 @@
         ;; A result that silently disappears is its own kind of unreliable.
         (is (some #(= "artifact-retracted" (str (:kind %)))
                   (journal/events-since c rid 0 200)))))))
+
+(deftest the-ledger-block-does-not-call-a-plan-settled
+  ;; The block's heading was "What this run has settled" and the sketch
+  ;; section was added underneath it. A sketch is precisely what the run has
+  ;; NOT settled, and this campaign has banked worthless-but-confirmed
+  ;; artifacts five separate ways — classical, anonymous examples, vacuous
+  ;; statements, sorry, and a True-concluding inspection — every one of them a
+  ;; case of something unverified being read as verified. A model skimming
+  ;; headings is exactly the reader that failure mode needs.
+  (let [block (artifacts/render-ledger
+               {:established [{:id 1 :branch_id "B1" :turn 2 :kind "lean"
+                               :tier "slow" :claim "a proved lemma"}]
+                :sketches [{:id 3 :branch_id "B1" :turn 4 :kind "lean"
+                            :tier "fast" :claim "an approach, nothing proved"}]})]
+    (testing "the plan is present and under its own prefix"
+      (is (clojure.string/includes? block "p#3"))
+      (is (clojure.string/includes? block "an approach, nothing proved")))
+    (testing "and the block does not describe it as settled"
+      (is (not (re-find #"(?i)^##\s+What this run has settled\s*$"
+                        (or (first (filter #(clojure.string/starts-with? % "## ")
+                                           (clojure.string/split-lines block)))
+                            "")))
+          "the top heading has to cover plans too, or it misdescribes them"))
+    (testing "the sketch section still says plainly that nothing in it is verified"
+      (is (re-find #"(?i)UNVERIFIED|not results" block)))))

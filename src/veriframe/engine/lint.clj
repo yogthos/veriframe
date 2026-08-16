@@ -241,59 +241,74 @@
                      (boolean m)))
                  decls))))
 
-(defn lint-lean [snippet]
-  (let [snippet (strip-lean-imports snippet)
-        trimmed (str/trim (or snippet ""))]
-    (if (str/blank? trimmed)
-      (result ["Lean snippet is empty."])
-      (let [stripped (strip-lean-comments snippet)
-            ws (transient [])]
-        (doseq [tok lean-decl-tokens]
-          (let [re (decl-shaped-re tok)
-                before (count-matches re snippet)
-                after (count-matches re stripped)]
-            (when (> before after)
-              (conj! ws (str (- before after) " `" tok
-                             "` declaration(s) appear inside a `--` line comment or"
-                             " `/-...-/` block and will be ignored by Lean. Put each"
-                             " declaration on its own line.")))))
+(defn lint-lean
+  "Lint a Lean declaration before it reaches the engine.
 
-        (if (str/blank? (str/trim stripped))
-          (conj! ws "All Lean content was inside comments; nothing to check.")
-          (do
-            (when-not (re-find #"\b(theorem|example|lemma|def|abbrev|instance|structure|class|inductive)\b"
-                               stripped)
-              (conj! ws (str "Lean snippet has no `theorem` / `example` / `lemma` / `def`"
-                             " declaration after stripping comments. verify_lean expects a"
-                             " complete declaration; for individual tactics use"
-                             " `proof_step`.")))
-            ;; sorry and admit compile with a warning, not an error, so without
-            ;; this a snippet that proves nothing gets recorded as confirmed.
-            ;; Observed in the Frankl run.
-            ;; An `example` has no name, so nothing can cite it. verify_lean
-            ;; banks whatever it proves, and seed-from-run! carries that code
-            ;; into later generations "so a branch can re-confirm an inherited
-            ;; lemma in one cheap turn instead of reconstructing the encoding"
-            ;; — which an anonymous declaration makes impossible. 25 confirmed
-            ;; artifacts across the campaign are examples: proved, banked, and
-            ;; uncitable. Checked only when there is no named declaration
-            ;; alongside, since a scratch example next to a real theorem is the
-            ;; author's business.
-            (when (and (re-find #"\bexample\b" stripped)
-                       (not (re-find #"\b(theorem|lemma|def|abbrev|instance|structure|class|inductive)\b"
-                                     stripped)))
-              (conj! ws (str "This is an `example`, which has no name — nothing can cite"
-                             " it, so a later proof (or a later run) cannot use what you"
-                             " proved except by proving it again. Give it a name:"
-                             " `theorem foo ...` or `lemma foo ...`. Results here are"
-                             " inherited by later runs, and an anonymous one is inherited"
-                             " as text nobody can apply.")))
-            (when (re-find #"\b(sorry|admit)\b" stripped)
-              (conj! ws (str "Snippet contains `sorry` or `admit` — placeholder tactics"
-                             " that compile but do NOT prove anything (Lean only emits a"
-                             " warning). Replace them with real tactics, or split the work:"
-                             " `lean_define` adds the goal as an axiom you can use"
-                             " elsewhere, and `proof_start` develops the closed proof step"
-                             " by step.")))))
+  `sorry`/`admit` block by default because they compile with a warning,
+  not an error — without the check a snippet that proves nothing is
+  recorded as confirmed (observed in the Frankl run). `{:allow-sorry? true}`
+  is sketch mode: same checks, opposite polarity on that one line, because
+  a Draft-Sketch-Prove skeleton is required to HAVE them. Everything else —
+  empty snippet, buried declarations, anonymous `example` — still fires,
+  since a skeleton with no declaration in it is not a plan either."
+  ([snippet] (lint-lean snippet nil))
+  ([snippet {:keys [allow-sorry?]}]
+   (let [snippet (strip-lean-imports snippet)
+         trimmed (str/trim (or snippet ""))]
+     (if (str/blank? trimmed)
+       (result ["Lean snippet is empty."])
+       (let [stripped (strip-lean-comments snippet)
+             ws (transient [])]
+         (doseq [tok lean-decl-tokens]
+           (let [re (decl-shaped-re tok)
+                 before (count-matches re snippet)
+                 after (count-matches re stripped)]
+             (when (> before after)
+               (conj! ws (str (- before after) " `" tok
+                              "` declaration(s) appear inside a `--` line comment or"
+                              " `/-...-/` block and will be ignored by Lean. Put each"
+                              " declaration on its own line.")))))
 
-        (result (persistent! ws))))))
+         (if (str/blank? (str/trim stripped))
+           (conj! ws "All Lean content was inside comments; nothing to check.")
+           (do
+             (when-not (re-find #"\b(theorem|example|lemma|def|abbrev|instance|structure|class|inductive)\b"
+                                stripped)
+               (conj! ws (str "Lean snippet has no `theorem` / `example` / `lemma` / `def`"
+                              " declaration after stripping comments. verify_lean expects a"
+                              " complete declaration; for individual tactics use"
+                              " `proof_step`.")))
+             ;; sorry and admit compile with a warning, not an error, so without
+             ;; this a snippet that proves nothing gets recorded as confirmed.
+             ;; Observed in the Frankl run. In sketch mode the check is
+             ;; inverted rather than dropped: the tool that calls it WANTS the
+             ;; sorries, and the empty-sorry case is handled by the engine
+             ;; result instead.
+             ;; An `example` has no name, so nothing can cite it. verify_lean
+             ;; banks whatever it proves, and seed-from-run! carries that code
+             ;; into later generations "so a branch can re-confirm an inherited
+             ;; lemma in one cheap turn instead of reconstructing the encoding"
+             ;; — which an anonymous declaration makes impossible. 25 confirmed
+             ;; artifacts across the campaign are examples: proved, banked, and
+             ;; uncitable. Checked only when there is no named declaration
+             ;; alongside, since a scratch example next to a real theorem is the
+             ;; author's business.
+             (when (and (re-find #"\bexample\b" stripped)
+                        (not (re-find #"\b(theorem|lemma|def|abbrev|instance|structure|class|inductive)\b"
+                                      stripped)))
+               (conj! ws (str "This is an `example`, which has no name — nothing can cite"
+                              " it, so a later proof (or a later run) cannot use what you"
+                              " proved except by proving it again. Give it a name:"
+                              " `theorem foo ...` or `lemma foo ...`. Results here are"
+                              " inherited by later runs, and an anonymous one is inherited"
+                              " as text nobody can apply.")))
+             (when (and (not allow-sorry?)
+                        (re-find #"\b(sorry|admit)\b" stripped))
+               (conj! ws (str "Snippet contains `sorry` or `admit` — placeholder tactics"
+                              " that compile but do NOT prove anything (Lean only emits a"
+                              " warning). Replace them with real tactics, or split the work:"
+                              " `lean_define` adds the goal as an axiom you can use"
+                              " elsewhere, and `proof_start` develops the closed proof step"
+                              " by step.")))))
+
+         (result (persistent! ws)))))))

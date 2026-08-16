@@ -74,6 +74,25 @@
     (is (not (:ok (lint/lint-lean "simp\nring")))))
   (testing "a real declaration passes"
     (is (:ok (lint/lint-lean "theorem t : 1 = 1 := by rfl")))))
+(deftest lean-lint-with-sorry-allowed
+  ;; Draft-Sketch-Prove: a sketch is a Lean skeleton whose unproved steps are
+  ;; `sorry`, so the sorry check has to be switchable without losing the rest.
+  ;; Same check, opposite polarity — verify_lean wants no sorries, sketch wants
+  ;; them. Every other lint stays on in both modes: a sketch whose whole
+  ;; theorem sits in a `--` comment, or which has no declaration at all, is not
+  ;; a sketch but an empty string with ambitions.
+  (let [opts {:allow-sorry? true}]
+    (testing "sorry no longer blocks, and admit is the same escape"
+      (is (:ok (lint/lint-lean "theorem t : 1 = 1 := by sorry" opts)))
+      (is (:ok (lint/lint-lean "theorem t : 1 = 1 := by admit" opts))))
+    (testing "every other check still fires"
+      (are [ok? s] (= ok? (:ok (lint/lint-lean s opts)))
+        false ""
+        false "-- theorem t : 1 = 1 := by sorry"
+        false "simp\nsorry"
+        false "example : 1 = 1 := by sorry"))
+    (testing "the default arity is untouched — one-argument calls still reject sorry"
+      (is (not (:ok (lint/lint-lean "theorem t : 1 = 1 := by sorry")))))))
 
 ;; --- Z3 ---------------------------------------------------------------------
 

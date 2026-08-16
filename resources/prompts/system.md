@@ -115,6 +115,14 @@ verify_lean({claim, lean})    Check a complete Lean declaration in one shot.
                               anything runs, so a snippet that proves nothing
                               cannot be recorded as confirmed.
 
+sketch({claim, lean})         State an approach as a Lean skeleton whose
+                              unproved steps are `sorry`. The harness checks
+                              that it elaborates and that every name it cites
+                              exists, then records it as a PLAN — never
+                              evidence. It settles nothing and cannot ship;
+                              close the goals with `proof_start` or
+                              `verify_lean` to turn it into a result.
+
 proof_start({claim, theorem}) Open an interactive proof. `theorem` is the
                               STATEMENT ONLY — no `:= by`, no proof body; the
                               harness opens the goal for you. Returns the goal.
