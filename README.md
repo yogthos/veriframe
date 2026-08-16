@@ -1,8 +1,9 @@
 # veriframe
 
-An OpenAI-compatible HTTP server that wraps a model in a claim-first verification
-loop, written in [Jolt](https://github.com/jolt-lang/jolt) (Clojure on Chez
-Scheme). Four engines back it:
+Veriframe is a machine for grinding out verified combinatorial lemmas and refusing
+to let unverified ones through. It provides an OpenAI-compatible HTTP server that
+wraps a model in a claim-first verification loop, written in [Jolt](https://github.com/jolt-lang/jolt)
+(Clojure on Chez Scheme). Four engines back it:
 
 - **SWI-Prolog** with `library(clpfd)` for relational and finite-domain problems.
 - **Z3** for arithmetic and theory-rich constraints.
