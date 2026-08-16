@@ -190,6 +190,60 @@ confirmation cannot see a branch verifying its own tooling.
 succeeds with its variables unbound. Both land in an `existential` bucket that
 cannot substantiate a concrete answer.
 
+## What this borrows, and from where
+
+The design is not invented from scratch. Where the literature has already
+settled a question, the harness follows it, and where the harness differs it is
+for a stated reason.
+
+**Draft-Sketch-Prove** — [Jiang et al., NeurIPS 2022](https://arxiv.org/abs/2210.12283).
+An informal proof is mapped to a *formal sketch*: a skeleton whose unproved
+steps are left open, with the gaps discharged separately. It moved a prover
+from 20.9% to 39.3% on competition problems. This is the shape of the `sketch`
+tool: a plan is Lean code with `sorry`s, not prose, because a skeleton is
+machine-checkable without being proved — the elaborator checks the citations,
+and each open goal is a real subgoal with a type.
+
+The obvious objection is that a model which already reasons does not need an
+explicit drafting stage. That has been measured:
+[Reviving DSP in the Era of Reasoning Models](https://arxiv.org/pdf/2506.11487)
+finds the draft stage still contributes, so explicit structure is complementary
+to chain-of-thought rather than replaced by it.
+
+**Hilbert** — [Varambally et al., MATH-AI @ NeurIPS 2025](https://arxiv.org/pdf/2509.22819).
+Reasoner, prover, verifier and a semantic retriever, where relevant premises are
+retrieved *before* drafting rather than checked afterwards. That ordering is why
+premise retrieval is treated here as an input to planning and not as a
+validation step.
+
+**LEGO-Prover** — [Wang et al., ICLR 2024](https://arxiv.org/abs/2310.00656).
+A growing library of verified lemmas, retrieved and reused across problems. This
+is what `seed_run` and the artifact pool already do, transitively: each
+generation inherits the confirmed results of the last, and re-verification is
+still required before anything ships on them.
+
+**Thor** — [Jiang et al., NeurIPS 2022](https://arxiv.org/pdf/2205.10893) —
+and [Magnushammer](https://arxiv.org/pdf/2303.04488). Language models are good
+at the high-level steps and hammers are good at premise selection; splitting the
+work that way took PISA from 39% to 57% and solved 8.2% of problems neither
+component could solve alone. See also
+[Premise Selection for a Lean Hammer](https://arxiv.org/pdf/2506.07477).
+
+**What the literature calls our recurring bug.** Autoformalization work names
+three failure modes this harness has hit repeatedly: *scope laundering*, where a
+model reasons informally and presents the result as if an engine had produced
+it; *implicit constraint blindness*; and *subgoal mischaracterization*, where a
+plan's subgoal is not a subset of the real one, so the rest of the plan does not
+follow. The claim-first discipline, the faithfulness review and the separate
+namespace for unverified plans all exist because of the first of those.
+
+**Where the evidence thins out.**
+[Research-frontier work](https://arxiv.org/pdf/2607.07779) is clear that
+competition results do not transfer straight to open problems: incorrect
+intermediate steps cascade, and human redirection is still needed. Most of the
+numbers above are miniF2F and PISA, which are not what this harness is pointed
+at.
+
 ## Durable runs
 
 Everything is appended to SQLite as it happens rather than assembled at the end,
