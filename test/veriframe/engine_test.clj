@@ -780,16 +780,16 @@ sidon(S) :- sums(S, Sums), sort(Sums, Sorted), length(Sums, N), length(Sorted, N
                    (lean-search/render (lean-search/search cfg "qzzz wzzz")
                                        "qzzz wzzz"))))
     (testing "a weak match still says Mathlib may not have it"
-      ;; Two invented terms dominate the query's information, so the one
+      ;; Three invented terms dominate the query's information, so the one
       ;; shared token is a near miss, not a hit — and the branch must be told
       ;; the honest thing rather than handed false confidence.
-      (let [hits (lean-search/search cfg "continuous qzzz wzzz")]
+      (let [hits (lean-search/search cfg "continuous qzzz wzzz ezzz")]
         (is (seq hits) "the near miss is still found")
         (is (not (some lean-search/relevant? hits)))
         (is (re-find #"(?i)nothing in mathlib matched"
-                     (lean-search/render hits "continuous qzzz wzzz")))
+                     (lean-search/render hits "continuous qzzz wzzz ezzz")))
         (is (re-find #"(?i)may not have"
-                     (lean-search/render hits "continuous qzzz wzzz")))))))
+                     (lean-search/render hits "continuous qzzz wzzz ezzz")))))))
 
 ;; --- Lean proof state -------------------------------------------------------
 

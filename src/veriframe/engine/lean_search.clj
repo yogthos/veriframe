@@ -219,11 +219,12 @@
   in binders full of structural noise (`Type`, `inst`, `α`, `hf`, `→`) that
   shares spelling with an enormous fraction of the library without sharing
   any meaning with the query. So a statement hit is evidence, but weaker
-  evidence than a name hit, and 4:1 is the ratio that held up on the
-  campaign replay (see relevance-floor below for the numbers): low enough
-  that a name match beats a statement match on idf-equal terms, high enough
-  that a declaration whose statement says `Continuous` surfaces for a
-  continuity query its name never spells."
+  evidence: a statement must out-match a name fourfold in idf before it
+  outranks it, which keeps a curated name ahead of an accidental statement
+  hit (pinned by the name-vs-statement ordering test) while still letting a
+  declaration whose statement says `Continuous` surface for a continuity
+  query its name never spells. The campaign replay behind the
+  relevance-floor numbers ran with exactly this weight."
   0.25)
 
 (defn search
@@ -241,9 +242,29 @@
          qidf (reduce + 0.0 (map #(idf dfm dn %) qt))]
      (if (empty? qt)
        []
-       (let [pattern (str/join "|" qt)
-             {:keys [out exit]} (proc/run {:timeout-ms 30000}
-                                          "grep" "-ihE" pattern (index-file cfg))]
+        ;; grep narrows with only the TOP-IDF half of the query's tokens.
+        ;; With statements in the index a common token (`sum`, `set`, `at`)
+        ;; matches tens of thousands of lines, and ranking 80k statements
+        ;; in-process took 15s on this campaign's own queries. A line that
+        ;; matches only the query's LOWEST-idf tokens is capped at their idf
+        ;; sum, well under the relevance floor, so it can neither rank nor
+        ;; count — not fetching it costs nothing. Scoring still considers
+        ;; every query token, including any grep did not use.
+        ;;
+        ;; The fallback matters: a query carrying two invented tokens (the
+        ;; branch's own coinage) matches nothing at all on its rare half, and
+        ;; returning [] there would hide the near misses the miss-render
+        ;; exists to show. Fall through to the full pattern so the closest
+        ;; declarations still surface.
+        (let [grep* (fn [p] (proc/run {:timeout-ms 30000}
+                                      "grep" "-ihE" p (index-file cfg)))
+              top-pattern (->> (sort-by #(idf dfm dn %) > qt)
+                               (take (max 2 (long (Math/ceil (/ (count qt) 2)))))
+                               (str/join "|"))
+              first-run (grep* top-pattern)
+              {:keys [out exit]} (if (zero? (or (:exit first-run) 1))
+                                   first-run
+                                   (grep* (str/join "|" qt)))]
          (if-not (zero? (or exit 1))
            []
            (->> (str/split-lines (or out ""))
@@ -295,7 +316,7 @@
                 vec)))))))
 
 (def ^:private relevance-floor
-  "Share of the query's INFORMATION a name must match to count as a hit.
+  "Share of the query's INFORMATION a declaration must match to count as a hit.
 
   Information rather than token count. Counting tokens equally made a match on
   `iff` worth a match on `transgen`, and in the 215,781-declaration index `iff`
@@ -303,12 +324,26 @@
   much they narrow anything. gen-27 asked for \"Relation.TransGen iff exists
   list Chain'\" and got `mem_closure_iff_exists_list`: three shared tokens,
   every one a Mathlib name-particle, clearing a token-count floor while missing
-  the whole point of the query.
+  the whole point of the query. Raising a token-count floor would not have
+  helped — it suppresses genuine short matches at the same rate. The fix is to
+  stop pretending the tokens are worth the same.
 
-  Raising a token-count floor would not have helped — it suppresses genuine
-  short matches at the same rate. The fix is to stop pretending the tokens are
-  worth the same."
-  0.4)
+  0.2, re-measured for the statement-bearing index. The old 0.4 was tuned
+  when idf-frac counted NAME matches against a names-only corpus; with
+  statements in play the df of common mathematical tokens is diluted by every
+  statement that mentions them, and the same quality of match now covers less
+  of the query's idf mass. Replaying this campaign's own 1,048 recorded
+  lean_search calls: at 0.4 the old floor suppressed 280 queries the old
+  corpus had answered while rescuing 139 it had missed — a net loss. At 0.2
+  the same replay shows 294 of 306 previously-missed queries surfacing
+  candidates (the Chain'/TransGen family: gen-27's exact query now returns
+  `not_acc_iff_exists_descending_chain`), 662 of 715 previously-answered
+  queries still answered, and the 53 that fall are sampled and found to be
+  results Mathlib does not have — Erdős–Selfridge covering systems,
+  min-cost flow — where the old hit was a name-particle accident the floor
+  exists to catch. The honest-miss render fired on 6.6% of calls against
+  29.5% before."
+  0.2)
 
 (defn relevant?
   "Whether a hit matched enough of the query's information to be called a hit."
