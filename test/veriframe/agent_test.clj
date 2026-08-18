@@ -1827,7 +1827,35 @@
     (is (nil? (:last-failed-claim (state/record-outcome b {:category :success
                                                            :claim "something else"})))
         "but a success clears it — the gate must never withhold an approach the
-         branch has already got past, which is what a stale value would do")))
+         branch has already got past, which is what a stale value would do"))
+
+  (testing "a Lean failure never selects a claim to withhold"
+    ;; Lean has no refuting outcome — it rejects PROOFS, never claims, which is
+    ;; why verify_lean deliberately declines to record :refuted for a snippet
+    ;; Lean throws out. The same reasoning has to reach the counter: an unknown
+    ;; constant or an unsolved goal is evidence about the proof, not about
+    ;; whether the statement is true.
+    ;;
+    ;; gen-31 B1 was the only branch attempting the run's target. It failed
+    ;; verify_lean on a wrong lemma name, and the reframe withheld TARGET 1
+    ;; step 4 — the whole purpose of the run — from it.
+    (doseq [tool ["verify_lean" "proof_start" "proof_step"]]
+      (let [b (state/record-outcome (branch-with)
+                                    {:category :failure :tool tool
+                                     :claim "a simple cycle's arc set is balanced"})]
+        (is (nil? (:last-failed-claim b))
+            (str tool " rejects proofs, not claims, so it withholds nothing"))))
+    (testing "the branch is still redirected — it re-enters explore and must re-plan"
+      (let [b (-> (state/enter-build (branch-with) 3)
+                  (state/begin-reframe 10 nil "verify_lean"))]
+        (is (= :explore (:phase b)))
+        (is (state/reframe-active? b 11 (gates/threshold :reframe-grace))
+            "and keeps the reprieve while it does")))
+    (testing "an engine that CAN refute still selects one"
+      (let [b (state/record-outcome (branch-with)
+                                    {:category :failure :tool "verify"
+                                     :claim "the greedy exchange terminates"})]
+        (is (= "the greedy exchange terminates" (:last-failed-claim b)))))))
 
 (deftest a-reframe-withholds-the-approach-that-keeps-failing
   ;; vf-49o + vf-9wx. The harness's most reliable finding is that gates which

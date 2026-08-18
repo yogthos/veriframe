@@ -448,8 +448,24 @@
       ;; has not been told to abandon anything. Left alone on a claimless
       ;; failure rather than cleared, because the last claim that DID fail is
       ;; still the better answer to "what is this branch grinding".
-      (and (= :failure category) (seq (str claim)))
-      (assoc :last-failed-claim claim :last-failed-tool tool)
+      ;; Not for Lean. Lean has no refuting outcome — it rejects PROOFS, never
+      ;; claims — which is why verify_lean deliberately declines to record
+      ;; :refuted for a snippet Lean throws out. The same reasoning has to
+      ;; reach this counter: an unknown constant or an unsolved goal is
+      ;; evidence about the proof, not about whether the statement is true, and
+      ;; withholding the claim on it tells a branch to abandon something it was
+      ;; right about. gen-31 B1 was the only branch attempting the run's target
+      ;; and lost it to a mistyped lemma name.
+      ;;
+      ;; A Lean branch is still redirected: begin-reframe re-enters :explore on
+      ;; a Lean failure, so verification stays shut until a NEW sketch
+      ;; elaborates. That is the right response to a proof that will not go
+      ;; through — try a different proof — and it needs no claim to withhold.
+      ;; The tool is still recorded, because that is what chooses the phase.
+      (and (= :failure category) (seq (str claim))
+           (not (contains? lean-verification-tools tool)))
+      (assoc :last-failed-claim claim)
+      (= :failure category) (assoc :last-failed-tool tool)
       ;; Cleared by a success, so the gate can never withhold something the
       ;; branch has already got past. Without this, a branch that failed on A,
       ;; succeeded, and then failed twice on CLAIMLESS calls (octave_eval is
