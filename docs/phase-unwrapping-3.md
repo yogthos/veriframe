@@ -240,7 +240,7 @@ sign-aligned circulation, which contradicts the per-edge cancellation
 arithmetic of `a#718`/`a#723` (gen-22). Then lemma (A) is closed and the
 correctness chain has no unverified arrow left in it.
 
-### gen-28's headline result was void, and the slow tier passed it
+### gen-28's headline result was void — caught at once, recorded three generations late
 
 `a#818` was the run's answer — "the verified contribution is a single partial
 lemma, the forward map of an arc-subdivision construction... proved universally
@@ -265,6 +265,18 @@ constructions, zero discrepancy) are why it read as solid: they tested the
 *real* construction and they pass. They establish that the mathematics is
 true. They do not make this artifact prove it, and having them attached made
 the artifact look better-evidenced than a bare Lean result rather than worse.
+
+**The detection worked; the bookkeeping did not.** gen-30's own formulation
+already carried this diagnosis, in sharper terms than the re-derivation above,
+and told that run it had not inherited either `a#818` or the assumed-extraction
+lemma. What never happened is the follow-through: the artifact row stayed
+`claim_status = 'confirmed'` for three generations, and this document said
+nothing. So the result looked live to anything that read the table rather than
+that one run's prompt — and since seeding copies exactly the rows marked
+confirmed, a generation launched without that hand-written quarantine list
+would have inherited it. Retracting the row is what makes the finding survive
+the person who made it. The lesson is not that the review missed something; it
+is that a finding recorded only in the next run's prompt expires with that run.
 
 The forward map is therefore still open, and `vf-0my` still needs it.
 
