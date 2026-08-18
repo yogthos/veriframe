@@ -389,12 +389,18 @@
                                                 (get-in branch [:proof :claim])))))
                            (state/add-turn {:turn turn :tool tool
                                             :category (:category result)
-                                            ;; Kept only for failures, and only
-                                            ;; so repeating-failure? can see a
-                                            ;; loop. Not a second copy of the
-                                            ;; journal: the turns table holds
-                                            ;; the authoritative result.
-                                            :error (when (= :failure (:category result))
+                                            ;; Kept for failures AND malformed
+                                            ;; calls, only so repeating-failure?
+                                            ;; can see a loop. Not a second copy
+                                            ;; of the journal: the turns table
+                                            ;; holds the authoritative result.
+                                            ;; Mechanics included because a
+                                            ;; branch re-issuing an identical
+                                            ;; bad call is looping just as hard
+                                            ;; as one re-issuing a failing
+                                            ;; verification (gen-31 B3).
+                                            :error (when (#{:failure :mechanics}
+                                                          (:category result))
                                                      (str (:result result)))}))
                 ;; 29 of gen-20's 57 failures were four identical (tool,
                 ;; message) pairs, and the harness answered the fifth exactly

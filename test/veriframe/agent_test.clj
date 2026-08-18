@@ -1771,6 +1771,24 @@
     (is (= :active (:status (#'beam/cull-or-keep {:turn 10} at-stuck 2 [])))
         "and the branch is not yet cullable when it does")))
 
+(deftest a-repeated-mechanics-failure-is-a-loop-too
+  ;; gen-31 B3 called lean_search five times and was answered "Missing required
+  ;; argument(s): query" five identical times, because a parser bug dropped its
+  ;; arguments. The escalation that exists for exactly this — "this exact call
+  ;; has now failed this exact way more than once" — could not see it, because
+  ;; it matched only :failure and a malformed call is :mechanics. The harness
+  ;; answered the fifth the way it answered the first, which is the sentence in
+  ;; repeating-failure?'s own docstring about gen-20.
+  (let [b (-> (branch-with)
+              (state/add-turn {:turn 1 :tool "lean_search" :category :mechanics
+                               :error "Missing required argument(s): query."})
+              (state/add-turn {:turn 2 :tool "lean_search" :category :mechanics
+                               :error "Missing required argument(s): query."}))]
+    (is (state/repeating-failure? b "lean_search" "Missing required argument(s): query.")
+        "two identical malformed calls are a loop, whatever category they carry")
+    (is (not (state/repeating-failure? b "lean_search" "Missing required argument(s): top_k."))
+        "a different error is an honest retry, not a loop")))
+
 (deftest record-outcome-remembers-the-claim-that-failed
   ;; What the reframe withholds. Only failures set it: a branch that fails on
   ;; A and then succeeds on B has not been told to abandon anything.

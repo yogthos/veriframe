@@ -499,8 +499,15 @@
   the same failure — one failure is a mistake, two identical ones are a loop."
   [branch tool error]
   (let [turns (:turns branch)
+        ;; :mechanics as well as :failure. A branch repeating an identical
+        ;; malformed call is looping in exactly the sense this function was
+        ;; written for, and matching only :failure made the harness answer the
+        ;; fifth the way it answered the first — gen-31 B3 was told "Missing
+        ;; required argument(s): query" five times while a parser bug ate the
+        ;; argument it had supplied. Categories that reached an engine and
+        ;; those that never left the harness both loop the same way.
         same? (fn [t] (and t
-                           (= :failure (:category t))
+                           (#{:failure :mechanics} (:category t))
                            (= tool (:tool t))
                            (= error (:error t))))]
     (boolean (and (>= (count turns) 2)
