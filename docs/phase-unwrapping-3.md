@@ -1,8 +1,8 @@
-# Q-1: six runs, and two steps from an answer
+# Q-1: nine runs, and one step from lemma (A)
 
 A follow-on to [phase-unwrapping-2.md](phase-unwrapping-2.md). Those four runs
-established the three-stage rule and proved it well defined. These six —
-gen-22 through gen-27 — went after the open question it left: **is the rule
+established the three-stage rule and proved it well defined. These nine —
+gen-22 through gen-30 — went after the open question it left: **is the rule
 computable in polynomial time?**
 
 **The rule.** Fix an order on the edges. On any instance with a nonempty
@@ -211,3 +211,79 @@ progress, and a branch beaten by TARGET 1 should say which step beat it.
 3. **The `log S` subroutine, or hardness.** This is the whole of the arbitrary
    -instance question, and gen-24 established the negative boundary that makes
    it unavoidable.
+
+## gen-28 to gen-30: one step left, and a sixth void artifact
+
+| | gen-28 | gen-29 | gen-30 |
+| --- | --- | --- | --- |
+| run | `b661192d` | `dc869f5d` | `ca7570d5` |
+| turns | 229 | 72 (aborted) | 352 (stopped by hand) |
+| confirmed | 10, now **9** | 1 | 3 |
+| refuted / retracted | 0 / **1** | 0 / 0 | 1 / 2 |
+| branches (culled) | 8 (5) | 3 (0) | 8 (7) |
+
+**gen-30 is the one that moved the question.** `a#836` proves TARGET 1 step 3:
+for any type, any relation, and any closed `Chain'` walk of length at least 2,
+there is a closed `Chain'` walk that is `Nodup` apart from its repeated
+endpoint, embedded in the original as `l = p ++ c ++ q`. This is the
+first-repeat extraction the campaign had been circling since gen-27, done by
+`by_cases` on whether `l.dropLast` is `Nodup`, splitting at the repeat, and
+recursing on the shorter walk with `termination_by l.length`. No `DecidableEq`
+or `Fintype` on the vertex type; classical is used only for `by_cases` inside
+the proof. Read as a body and verified here. `a#831` and `a#833`, prefix and
+suffix `Chain'` preservation, are what it stands on.
+
+**So TARGET 1 needs exactly one thing: a simple cycle's arc set is balanced** —
+equal oriented in- and out-degree at every vertex. That feeds `a#777`
+(`balanced_support_gives_sign_circulation`, gen-24), which yields the
+sign-aligned circulation, which contradicts the per-edge cancellation
+arithmetic of `a#718`/`a#723` (gen-22). Then lemma (A) is closed and the
+correctness chain has no unverified arrow left in it.
+
+### gen-28's headline result was void, and the slow tier passed it
+
+`a#818` was the run's answer — "the verified contribution is a single partial
+lemma, the forward map of an arc-subdivision construction... proved universally
+in Lean 4/Mathlib". It is retracted. The statement quantifies over `E`, `V`,
+`D`, `tail`, `head`, `k` and concludes two things: that
+`(Finset.range (k e)).card = k e`, and that a divergence expression written
+with `(Finset.range (k e)).card` equals the same expression written with
+`k e`. The second follows from the first by rewriting. **No subdivided arc
+type, no unit capacities, and no per-block structure appear anywhere in the
+statement.** Its whole content is `Finset.card_range` applied under a sum.
+
+Checked rather than asserted: delete `D` and `hk : k e ≤ D` and the theorem
+still elaborates — `ok true, errors [], sorries 0`. A theorem about replacing
+each edge by `D` parallel arcs that remains true with `D` removed is not about
+subdivision.
+
+This is the **sixth** artifact this campaign has banked as confirmed whose
+prose outran its evidence, and the first to clear the **slow** tier — the
+defence this document elsewhere calls the answer to exactly this failure. The
+two Octave cross-checks (`a#822`, `a#823`, 200 random graphs each, two
+constructions, zero discrepancy) are why it read as solid: they tested the
+*real* construction and they pass. They establish that the mathematics is
+true. They do not make this artifact prove it, and having them attached made
+the artifact look better-evidenced than a bare Lean result rather than worse.
+
+The forward map is therefore still open, and `vf-0my` still needs it.
+
+### The drift is now measurable
+
+gen-28 also banked `a#814`, `a#817` and `a#820` — nondecreasing marginal costs
+for the stage-2 quadratic, for the integer weighted-L1, and for the real
+weighted-L1. "Nondecreasing marginal costs" is listed under **Proved** above,
+from gen-22 to gen-24. A third of the run's confirmed output re-establishes a
+settled result in three spellings.
+
+That is the same drift named after gen-24, gen-26 and gen-27, and it is the
+fourth run to show it. gen-29 is the degenerate case: 72 turns, aborted, one
+list lemma stating that `Chain'` survives dropping the head.
+
+Every mechanism built since — the sketch tool, the explore/build phase gate,
+beam diversity on sketches, retrieval before drafting, and the forced reframe
+that withholds an approach instead of culling for it — is aimed at this. None
+of them has yet run on a Q-1 generation: `sketch` artifacts number **zero**
+across gen-28, gen-29 and gen-30, because the tool landed after gen-30
+finished. gen-31 is the first generation that will have them, and the drift
+rate is the thing to watch.
