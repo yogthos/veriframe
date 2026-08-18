@@ -1681,9 +1681,25 @@
     (is (not (state/explore-cap-expired? (state/enter-build b 3) 5 20))
         "only the explore phase is capped")))
 
+(deftest explore-phase-leaves-the-non-lean-engines-open
+  ;; vf-2vi. The only way out of explore is to bank a sketch, and `sketch` is
+  ;; LEAN ONLY — it lints its argument as Lean and needs it to elaborate with
+  ;; open sorries. Withholding Prolog, Z3 and Octave during explore therefore
+  ;; asks a non-Lean problem for a move it cannot make: the branch is refused,
+  ;; told to sketch, cannot, and burns the whole explore budget before the cap
+  ;; releases it. Nine of the fifteen bench problems are prolog/smt only,
+  ;; including knights-3, whose own note calls it the floor that catches
+  ;; regressions.
+  (let [b (state/new-branch {:id "B1" :problem "p"})]
+    (doseq [tool ["verify" "verify_smt" "verify_template" "verify_octave"
+                  "measure" "octave_eval"]]
+      (is (nil? (tools/phase-refusal {:branch b :tool-name tool}))
+          (str tool " has no Lean sketch to stand in for it, so explore"
+               " must not withhold it")))))
+
 (deftest explore-phase-refuses-verification-tools
   (let [b (state/new-branch {:id "B1" :problem "p"})]
-    (doseq [tool (sort state/verification-tools)]
+    (doseq [tool (sort state/lean-verification-tools)]
       (let [r (tools/phase-refusal {:branch b :tool-name tool})]
         (is (some? r) (str tool " is refused in explore"))
         (is (= :mechanics (:category r))
@@ -1915,7 +1931,7 @@
   (let [explore (state/new-branch {:id "B1" :problem "p"})
         build (state/enter-build explore 3)]
     (is (true? (:policy-refusal? (tools/phase-refusal {:branch explore
-                                                       :tool-name "verify"}))))
+                                                       :tool-name "verify_lean"}))))
     (is (true? (:policy-refusal? (tools/phase-refusal {:branch build
                                                        :tool-name "sketch"}))))))
 
@@ -2305,7 +2321,9 @@
    :idf-frac 0.9 :score 3.0 :overlap 5})
 
 (defn- refusal-ctx [b & {:as overrides}]
-  (merge {:branch b :tool-name "verify"
+  ;; verify_lean, not verify: explore withholds only the Lean tools a sketch
+  ;; can stand in for (vf-2vi), so a Prolog call would not be refused at all.
+  (merge {:branch b :tool-name "verify_lean"
           :args {:claim "if the square of a natural number is even then the number is even"}
           :config {:engines {:lean {}}}}
          overrides))
@@ -2368,7 +2386,7 @@
   (let [b (state/new-branch {:id "B1" :problem "p"})
         called (atom 0)]
     (with-redefs [lean-search/search (fn [_ _ _] (swap! called inc) [premise-hit])]
-      (let [r (tools/phase-refusal {:branch b :tool-name "verify"
+      (let [r (tools/phase-refusal {:branch b :tool-name "verify_lean"
                                     :args {:claim "c"}})]
         (is (= 0 @called) "no engine config, no index to ask")
         (is (some? r))

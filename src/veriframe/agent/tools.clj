@@ -523,8 +523,12 @@
   a declined call from a malformed fence and the reason string stays true."
   [{:keys [branch tool-name] :as ctx}]
   (let [refusal (cond
+                  ;; lean-verification-tools, NOT verification-tools: the way
+                  ;; out of explore is a Lean sketch, so withholding Prolog,
+                  ;; Z3 or Octave would demand a move a non-Lean problem
+                  ;; cannot make (vf-2vi).
                   (and (= :explore (:phase branch))
-                       (contains? state/verification-tools tool-name))
+                       (contains? state/lean-verification-tools tool-name))
                   ;; vf-3wg: the branch has just stated, precisely, what it
                   ;; wants to prove — the highest-signal moment in the run to
                   ;; hand it premises. The refusal carries them when retrieval
@@ -532,12 +536,14 @@
                   ;; its own text when it does not (premises-for returns nil).
                   (let [prem (premises-for ctx (arg ctx :claim))]
                     (cond-> (malformed branch
-                                       (str "You are in the EXPLORE phase: no claim reaches an engine"
+                                       (str "You are in the EXPLORE phase: no claim reaches LEAN"
                                             " until the branch has a plan on record. Sketch the"
                                             " approach as a Lean skeleton — `sketch({claim, lean})` —"
                                             " and use `lean_search` to find the lemmas it will cite."
                                             " The phase ends when a sketch elaborates, or when the"
-                                            " explore budget runs out."
+                                            " explore budget runs out. The other engines are open"
+                                            " meanwhile: Prolog, Z3 and Octave are not withheld,"
+                                            " because a Lean skeleton cannot stand in for them."
                                             (premises-block prem)))
                       (seq (:names prem))
                       (update :branch update :premises-served

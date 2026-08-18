@@ -254,9 +254,10 @@
                       "user"
                       (str "[harness] The explore prologue is over: "
                            (gates/threshold :explore-cap)
-                           " turns without a sketch on record. Verification is"
-                           " now available — you are in the BUILD phase. The"
-                           " way forward is to prove your claims directly."))))
+                           " turns without a sketch on record. You are in the"
+                           " BUILD phase — Lean verification is available and"
+                           " `sketch` is not. The way forward is to prove your"
+                           " claims directly."))))
         {:keys [ok response error]} (call-model ctx branch)]
     (if-not ok
       ;; A provider failure is not the branch's fault and must not count

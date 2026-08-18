@@ -267,6 +267,28 @@
   #{"verify" "verify_smt" "verify_lean" "verify_octave" "verify_template"
     "proof_start" "proof_step" "measure" "octave_eval"})
 
+(def lean-verification-tools
+  "The subset of `verification-tools` that a Lean sketch can stand in for.
+
+  What the explore phase withholds (vf-b25), which is deliberately NARROWER
+  than `verification-tools`. The only way out of explore is to bank a sketch,
+  and `sketch` is Lean only — it lints its argument as Lean and requires it to
+  elaborate with open sorries. Withholding Prolog, Z3 and Octave as well would
+  ask a problem with no Lean content for a move it cannot make: refused, told
+  to sketch, unable to, and burning the whole explore budget before the cap
+  releases it. Nine of the fifteen bench problems are prolog/smt only,
+  including knights-3, whose own note calls it the floor that catches
+  regressions, and the odd-covering campaign was entirely Z3 and Prolog.
+
+  So the phase gates the path its plan is written in. That is also what the
+  literature separates: DSP and Hilbert are about drafting a proof for an
+  interactive theorem prover, not about deferring a decision procedure.
+
+  The wider set still exists and is still what clears the search counter — a
+  branch that has been searching has to try SOMETHING, and any engine counts
+  (vf-2vi)."
+  #{"verify_lean" "proof_start" "proof_step"})
+
 (defn enter-build
   "Transition the branch into :build, stamping the turn the phase began.
 
