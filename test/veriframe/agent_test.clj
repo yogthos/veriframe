@@ -1771,6 +1771,41 @@
     (is (= :active (:status (#'beam/cull-or-keep {:turn 10} at-stuck 2 [])))
         "and the branch is not yet cullable when it does")))
 
+(deftest a-failed-tactic-does-not-count-against-the-branch
+  ;; The harness tells the model, in system.md and in its own result text, that
+  ;; "a tactic that fails leaves the goal UNCHANGED, so trying another costs
+  ;; nothing but the turn" — and then charged each one to the counter that
+  ;; culls at three. Trying tactics until one works IS interactive proving.
+  ;;
+  ;; gen-31 B2 produced a#862, the run's first slow-tier lemma on the target,
+  ;; and was culled twenty turns later for three consecutive proof_step
+  ;; failures while assembling the composition. The contradiction was written
+  ;; in the prompt the whole time.
+  (let [b (-> (branch-with :consecutive-failures 2)
+              (state/record-outcome {:category :neutral :tool "proof_step"
+                                     :claim "the cycle is balanced"}))]
+    (is (= 1 (:consecutive-failures b))
+        "a failed tactic tests nothing about the claim, so it works one off the
+         tally exactly as any other inconclusive-but-well-formed turn does"))
+
+  (testing "the tool reports it that way"
+    (with-db [c]
+      (let [rid (runs/start-run! c {:problem "p"})
+            b (assoc (state/new-branch {:id "B1" :problem "p"})
+                     :lean {:id "s"}
+                     :proof {:claim "the cycle is balanced" :theorem "theorem t : True"
+                             :state 1 :tactics []})]
+        (runs/open-branch! c rid {:branch-id "B1"})
+        (with-redefs [lean-repl/apply-tactic (fn [& _] {:ok false :errors [{:data "unsolved goals"}]})]
+          (let [r (tools/run-tool {:branch b :conn c :run-id rid
+                                   :tool-name "proof_step" :args {:tactic "omega"}})]
+            (is (= :neutral (:category r))
+                "not :failure — the goal is unchanged and nothing was learned against the claim")
+            (is (false? (:progress? r))
+                "and not progress either, so turns-since-progress still climbs and
+                 progress-stalled remains the guard against grinding tactics")
+            (is (str/includes? (:result r) "goal is unchanged"))))))))
+
 (deftest a-lookup-miss-is-not-a-mathematical-failure
   ;; gen-31 B1, turn 25 (2026-08-18). B1 was the only branch attempting the
   ;; run's actual target. It failed verify_lean on a wrong lemma name, then

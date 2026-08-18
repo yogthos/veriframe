@@ -2579,8 +2579,26 @@
         (not (:ok r))
         ;; The state is NOT advanced on a failed tactic, so the branch can try
         ;; another without unwinding.
-        (fail branch (str "The tactic failed; the goal is unchanged:\n"
-                          (lean-error-text (:errors r))))
+        ;;
+        ;; :neutral, not :failure. system.md tells the model "a tactic that
+        ;; fails leaves the goal UNCHANGED, so trying another costs nothing but
+        ;; the turn", and the line below says the same — and charging it to
+        ;; consecutive-failures made that untrue, culling at three. Trying
+        ;; tactics until one works is what interactive proving IS. gen-31 B2
+        ;; produced a#862, the run's first slow-tier lemma on the target, and
+        ;; died twenty turns later on three tactic errors while assembling the
+        ;; composition. The vf-jki mistake, with the contradiction sitting in
+        ;; the prompt.
+        ;;
+        ;; Nothing is given away: the goal is unchanged, so the branch tested
+        ;; nothing about its claim — the same reasoning `malformed` makes. The
+        ;; turn is still not progress, so turns-since-progress climbs and
+        ;; progress-stalled remains the guard against grinding tactics forever,
+        ;; alongside the turn budget. What is lost is the CULL as a bound on
+        ;; that, which is the right trade: the cull was killing branches for
+        ;; using the tool as documented.
+        (ok branch (str "The tactic failed; the goal is unchanged:\n"
+                        (lean-error-text (:errors r))))
 
         (:closed? r)
         (let [p (update p :tactics conj (arg ctx :tactic))
