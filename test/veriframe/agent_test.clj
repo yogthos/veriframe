@@ -2014,7 +2014,36 @@
                                   {:current-turn 13 :tools-called ["lean_search"]
                                    :branch-before (branch-with)
                                    :branch-after (branch-with)}))
-        "and the window still closes")))
+        "and the window still closes"))
+
+  (testing "a verification accepted while the reframe stands is compliance"
+    ;; Observed settling UNMET on a live knights-3 run (2026-08-18, B2 turn 5)
+    ;; while the branch was doing exactly what the refusal asked: it dropped
+    ;; the withheld claim and opened a proof on a different one. proof_start
+    ;; banks nothing, so progressed? was false and no named tool matched, and
+    ;; the gate recorded a miss against its own success.
+    ;;
+    ;; The signal is that the call went THROUGH. While a reframe stands the
+    ;; withheld claim is refused, so any accepted verification is on a
+    ;; different one by construction — and a refusal leaves the policy counter
+    ;; non-zero, which is how the two are told apart.
+    (let [reframed (-> (branch-with) (state/enter-reframe 10 "the withheld approach"))
+          firing {:gate :stuck :turn 10 :window 3}]
+      (is (= :met (arbiter/settle firing
+                                  {:current-turn 11 :tools-called ["proof_start"]
+                                   :branch-before reframed
+                                   :branch-after (assoc reframed :consecutive-policy-refusals 0)})))
+      (is (nil? (arbiter/settle firing
+                                {:current-turn 11 :tools-called ["proof_start"]
+                                 :branch-before reframed
+                                 :branch-after (assoc reframed :consecutive-policy-refusals 1)}))
+          "a REFUSED call is the branch re-submitting the withheld approach, which
+           is the opposite of compliance")
+      (is (nil? (arbiter/settle firing
+                                {:current-turn 11 :tools-called ["proof_start"]
+                                 :branch-before (branch-with)
+                                 :branch-after (branch-with)}))
+          "and outside a reframe this clause must not fire at all"))))
 
 (deftest the-stuck-gate-enters-the-reframe-on-the-turn-it-fires
   ;; The wiring, end to end: the gate is data and cannot mutate the branch, so

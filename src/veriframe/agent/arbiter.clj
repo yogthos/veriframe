@@ -114,7 +114,30 @@
         ;; the reframe is claim-scoped only, and complying looks exactly like
         ;; verifying something else successfully.
         :stuck (or (called? "retract_rule" "thesis" "add_rule" "sketch")
-                   (progressed? branch-before branch-after))
+                   (progressed? branch-before branch-after)
+                   ;; A verification the harness ACCEPTED while the reframe
+                   ;; stood. The withheld claim is refused for as long as the
+                   ;; reframe lasts, so a call that got through is on a
+                   ;; different one by construction — which is precisely what
+                   ;; the refusal asked for, and it banks nothing, so neither
+                   ;; progressed? nor any named tool can see it.
+                   ;;
+                   ;; Without this the gate records a miss against its own
+                   ;; success. Watched it happen on a live knights-3 run
+                   ;; (2026-08-18): B2 was withheld "A is a knave, B is a
+                   ;; knight, and C is a knave", dropped it, opened a proof on
+                   ;; something else, and the firing settled unmet. Since the
+                   ;; met-rate is the only evidence any of this works, a
+                   ;; blind spot there would have re-measured the same
+                   ;; misleading zero vf-31m exists to correct.
+                   ;;
+                   ;; A refusal leaves the policy counter non-zero and any
+                   ;; accepted call clears it, which is how the two are told
+                   ;; apart. Known soft spot: octave_eval carries no claim and
+                   ;; is never refused, so it reads as compliance on its own.
+                   (and (:reframe-entered-turn branch-after)
+                        (some (set tools-called) state/verification-tools)
+                        (zero? (or (:consecutive-policy-refusals branch-after) 0))))
         ;; Its prediction is "the branch retracts, changes technique, or ships
         ;; what it has", and each of those is a tool the harness can see.
         ;; Absent from this case the fallthrough returned false, so the gate
