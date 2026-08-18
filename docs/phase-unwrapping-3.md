@@ -379,6 +379,26 @@ nonzero sign-aligned circulation, and contradict the per-edge cancellation
 arithmetic of `a#718`/`a#723` (gen-22). Both are inherited and proved. That is
 the last unverified arrow in the correctness chain.
 
+### `a#880` does NOT close lemma (A), and says so in its own claim
+
+`a#880` (`balanced_sign_support_contradicts_stage2_optimal`) is confirmed and
+is **conditional**: it takes the statements of the balanced-support circulation
+theorem and the C-restricted contradiction core as HYPOTHESES rather than
+containing their proofs, so what it establishes is modus ponens over assumed
+components. Its claim is honest about this — "if the verified ... theorem and
+the verified ... core are available as hypotheses, then False follows" — but
+its closing sentence, "this is the missing composition", is the one a later
+generation would quote.
+
+Lemma (A) closes when ONE artifact elaborates as a unit containing the
+extraction, the edge-list construction, the count identity, `a#876`, the
+circulation theorem, the contradiction core, and a composition that discharges
+all of them, concluding with no component assumed. `a#876` already demonstrates
+the pattern: it carried five supporting lemmas in one 7,907-character file.
+
+Recorded here rather than only in the run's prompt, because that is how the
+`a#818` finding was lost for three generations.
+
 ### An assumption the chain has carried since gen-22
 
 `a#718`, the cancellation lemma the whole acyclicity argument terminates in,
