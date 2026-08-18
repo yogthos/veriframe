@@ -2296,6 +2296,151 @@
         [{:no-goal true}]
         (vec (repeat 9 {:goal "too many"}))))))
 
+;; --- retrieval-before-drafting (vf-3wg) --------------------------------------
+
+(def ^:private premise-hit
+  "A hit above the relevance floor, shaped as lean-search/search returns it."
+  {:n "Nat.even_sq_iff_even" :k "theorem"
+   :s "∀ n : Nat, Even (n ^ 2) ↔ Even n"
+   :idf-frac 0.9 :score 3.0 :overlap 5})
+
+(defn- refusal-ctx [b & {:as overrides}]
+  (merge {:branch b :tool-name "verify"
+          :args {:claim "if the square of a natural number is even then the number is even"}
+          :config {:engines {:lean {}}}}
+         overrides))
+
+(deftest explore-refusal-carries-premises-for-the-claim
+  ;; vf-3wg: the refusal is the highest-signal moment in the run — the branch
+  ;; has just stated, precisely, what it wants to prove. Hand it the
+  ;; declarations that actually say it, so it drafts from real Mathlib
+  ;; instead of concluding from an empty search that nothing exists (gen-30
+  ;; B1.4 invented a six-lemma splitByLoop API after exactly that).
+  (let [b (state/new-branch {:id "B1" :problem "p"})
+        queries (atom [])]
+    (with-redefs [lean-search/search (fn [_ q _] (swap! queries conj q)
+                                       [premise-hit])]
+      (let [r (tools/phase-refusal (refusal-ctx b))]
+        (is (some? r))
+        (is (str/includes? (:result r)
+                           "Nat.even_sq_iff_even :: ∀ n : Nat, Even (n ^ 2) ↔ Even n")
+            "the premises render as name :: statement")
+        (is (str/includes? (:result r) "draft FROM")
+            "the block is labelled so the branch knows these are candidates to draft from, not results")
+        (is (contains? (get-in r [:branch :premises-served])
+                       "Nat.even_sq_iff_even")
+            "the served premise is recorded on the branch so it is not re-served")
+        (is (= ["if the square of a natural number is even then the number is even"]
+               @queries)
+            "the claim is exactly what is retrieved for")))))
+
+(deftest explore-refusal-stays-silent-when-nothing-clears-the-floor
+  ;; The ranking keeps anything sharing a single token, so against 230k
+  ;; declarations there is always SOMETHING — a plausible-looking list of
+  ;; near-misses would be worse than nothing, because the branch would draft
+  ;; from it. An honest silence is the correct output.
+  (let [b (state/new-branch {:id "B1" :problem "p"})]
+    (with-redefs [lean-search/search (fn [_ _ _]
+                                       [{:n "Finite.subset" :k "theorem"
+                                         :s "a subset of a finite set" :idf-frac 0.05
+                                         :score 1.0 :overlap 2}])]
+      (let [r (tools/phase-refusal (refusal-ctx b))]
+        (is (some? r) "the refusal itself still stands")
+        (is (not (str/includes? (:result r) "draft FROM"))
+            "no premise block when nothing clears the floor")
+        (is (not (str/includes? (:result r) "Finite.subset"))
+            "near-misses are not served either — no 'the closest names are'")
+        (is (nil? (get-in r [:branch :premises-served]))
+            "and nothing is recorded as served")))))
+
+(deftest a-throwing-search-never-breaks-the-refusal
+  ;; Retrieval decorates the refusal; a missing index or a search that throws
+  ;; must leave the refusal intact, without premises.
+  (let [b (state/new-branch {:id "B1" :problem "p"})]
+    (with-redefs [lean-search/search (fn [_ _ _] (throw (ex-info "no index" {})))]
+      (let [r (tools/phase-refusal (refusal-ctx b))]
+        (is (some? r))
+        (is (= :mechanics (:category r)))
+        (is (str/includes? (:result r) "EXPLORE") "the refusal text is untouched")
+        (is (not (str/includes? (:result r) "draft FROM")))))))
+
+(deftest no-engine-config-means-no-search-and-no-premises
+  (let [b (state/new-branch {:id "B1" :problem "p"})
+        called (atom 0)]
+    (with-redefs [lean-search/search (fn [_ _ _] (swap! called inc) [premise-hit])]
+      (let [r (tools/phase-refusal {:branch b :tool-name "verify"
+                                    :args {:claim "c"}})]
+        (is (= 0 @called) "no engine config, no index to ask")
+        (is (some? r))
+        (is (not (str/includes? (:result r) "draft FROM")))))))
+
+(deftest premises-are-not-re-served-to-the-same-branch
+  ;; A branch refused twice on the same claim gets the premises once; the
+  ;; second refusal stands on its own text. Re-serving the same block turn
+  ;; after turn is context the branch pays for and learns nothing from.
+  (let [b (state/new-branch {:id "B1" :problem "p"})]
+    (with-redefs [lean-search/search (fn [_ _ _] [premise-hit])]
+      (let [r1 (tools/phase-refusal (refusal-ctx b))
+            b2 (:branch r1)
+            r2 (tools/phase-refusal (refusal-ctx b2))]
+        (is (str/includes? (:result r1) "Nat.even_sq_iff_even"))
+        (is (not (str/includes? (:result r2) "Nat.even_sq_iff_even"))
+            "already-served premises are not handed out again")))))
+
+(deftest premises-are-capped
+  ;; Five, not ten: each line is a statement the branch pays context for
+  ;; (vf-h2v), and beyond five the marginal candidate stops adding coverage.
+  (let [b (state/new-branch {:id "B1" :problem "p"})
+        hits (mapv (fn [i] {:n (str "thm_" i) :k "theorem" :s "stmt"
+                            :idf-frac 0.9 :score (- 10.0 i)})
+                   (range 7))]
+    (with-redefs [lean-search/search (fn [_ _ _] hits)]
+      (let [r (tools/phase-refusal (refusal-ctx b))]
+        (is (= 5 (count (re-seq #"thm_\d" (:result r)))))
+        (is (= 5 (count (get-in r [:branch :premises-served]))))))))
+
+(deftest thesis-commits-with-premises-for-the-goal
+  ;; Retrieve-before-drafting in its purest form: the branch has declared
+  ;; what it will work on and has not drafted anything yet.
+  (let [b (branch-with)]
+    (with-redefs [lean-search/search (fn [_ _ _] [premise-hit])]
+      (let [r (tools/run-tool {:branch b :turn 1 :tool-name "thesis"
+                               :config {:engines {:lean {}}}
+                               :args {:goal "if the square of a natural number is even then the number is even"
+                                      :technique "induction on n"}})]
+        (is (= "if the square of a natural number is even then the number is even"
+               (get-in r [:branch :thesis :goal]))
+            "the thesis still commits")
+        (is (str/includes? (:result r)
+                           "Nat.even_sq_iff_even :: ∀ n : Nat, Even (n ^ 2) ↔ Even n"))
+        (is (contains? (get-in r [:branch :premises-served])
+                       "Nat.even_sq_iff_even"))))))
+
+(deftest a-throwing-search-never-breaks-thesis-commit
+  (let [b (branch-with)]
+    (with-redefs [lean-search/search (fn [_ _ _] (throw (ex-info "no index" {})))]
+      (let [r (tools/run-tool {:branch b :turn 1 :tool-name "thesis"
+                               :config {:engines {:lean {}}}
+                               :args {:goal "g" :technique "t"}})]
+        (is (= "g" (get-in r [:branch :thesis :goal]))
+            "the thesis commits even when retrieval throws")
+        (is (str/includes? (:result r) "Thesis registered"))
+        (is (not (str/includes? (:result r) "draft FROM")))))))
+
+(deftest branch-theses-attach-premises-for-the-committed-goal
+  (let [b (branch-with)
+        queries (atom [])]
+    (with-redefs [lean-search/search (fn [_ q _] (swap! queries conj q) [premise-hit])]
+      (let [r (tools/run-tool {:branch b :turn 1 :tool-name "branch_theses"
+                               :config {:engines {:lean {}}}
+                               :args {:theses [{:goal "prove G" :technique "t"}
+                                               {:goal "route B" :technique "algebra"}]}})]
+        (is (str/includes? (:result r) "Nat.even_sq_iff_even")
+            "premises ride the result for the goal the branch committed to")
+        (is (contains? (get-in r [:branch :premises-served]) "Nat.even_sq_iff_even"))
+        (is (= ["prove G"] @queries)
+            "premises are retrieved for THIS branch's goal, not the siblings'")))))
+
 ;; --- the beam scheduler -----------------------------------------------------
 
 (deftest scheduler-spawns-siblings-under-the-cap

@@ -64,6 +64,9 @@
   - :shared-served (which shared artifacts a branch was already told about)
     is branch memory; resume starts it empty, so each artifact-branch pair
     can journal one duplicate shared-artifact-hit after a resume.
+  - :premises-served (which retrieved premises a branch was already handed,
+    vf-3wg) is branch memory for the same reason; a resumed branch may be
+    re-served one premise block.
   - :critic scores and :fork-invited markers are branch memory; a resumed
     branch is re-scored at its next boundary, and may be re-invited to fork
     sooner than the cooldown would otherwise allow.

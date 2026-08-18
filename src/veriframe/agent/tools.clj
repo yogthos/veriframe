@@ -414,8 +414,92 @@
                         ", has already banked a sketch for almost this same"
                         " plan:\n\n\"" (:claim dup) "\"\n\n"
                         "Two branches sketching the same line buys one attack"
-                        " twice. Pick a different decomposition — a different"
-                        " claim, or a different Lean structure."))))))
+                         " twice. Pick a different decomposition — a different"
+                         " claim, or a different Lean structure."))))))
+
+;; --- retrieval-before-drafting (vf-3wg) --------------------------------------
+;;
+;; The sketch tool used to be the only place premises mattered: a branch that
+;; invented a lemma found out at elaboration, after the branch had already
+;; committed to a plan built on it. Retrieval-before-drafting attacks the
+;; failure at its source — the branch gets the declarations that actually say
+;; what it wants to prove BEFORE it drafts, instead of concluding from an
+;; empty search that nothing exists (gen-30 B1.4 invented a six-lemma
+;; `splitByLoop` API after exactly that).
+
+(def ^:private max-premises
+  "How many retrieved candidates a refusal or thesis result may carry.
+
+  Five, not ten. Each renders as a `name :: statement` line the branch pays
+  context for (vf-h2v), and a Mathlib statement is typically a long binder
+  run. Beyond five the marginal candidate stops adding coverage and starts
+  crowding the prose the branch actually needs — and the whole point of the
+  relevance floor is that a few strong hits are worth more than a long
+  plausible list.
+
+  A constant here rather than gates.edn on purpose: this is a context-budget
+  number, not a harness-policy lever. gates.edn is the surface for gates the
+  arbiter steers on; the premise cap is a budget the code spends directly,
+  and putting it next to the code that spends it keeps the two from
+  drifting."
+  5)
+
+(defn- premises-for
+  "Retrieve candidate premises for `query`, or nil when there is nothing to
+  serve.
+
+  The relevance floor is load-bearing — see lean-search/render's docstring.
+  The ranking keeps anything sharing a single token, so against 230k
+  declarations there is always SOMETHING, and a plausible-looking list of
+  irrelevant names would be actively harmful: the branch would draft from
+  it. gen-25 spent fourteen searches and zero verification attempts chasing
+  a match that shared two words out of eight. So only hits clearing
+  `relevant?` qualify, and when none do this returns nil — an honest silence
+  is the correct output, and the refusal or thesis result stands on its own.
+
+  Also returns nil when there is no Lean engine config, when the search
+  throws (missing index), or when every qualifying hit has already been
+  served to this branch. Retrieval decorates the refusal and the thesis
+  result; it must never break either.
+
+  Served names are tracked on the branch under :premises-served, the same
+  shape as the loop's :shared-served (what this branch was already told
+  about) but a separate key: that set holds journal artifact ids, this one
+  holds Mathlib declaration names, and mixing the two key spaces would let a
+  name collide with an id and suppress a shared artifact. Like :shared-served
+  it is branch memory — a resumed branch may be re-served once, the same
+  accepted cost as a duplicate shared-artifact hit."
+  [{:keys [branch config]} query]
+  (when (and (get-in config [:engines :lean]) (seq query))
+    (try
+      (let [hits (lean-search/search (get-in config [:engines :lean])
+                                     query (* max-premises 2))
+            served (or (:premises-served branch) #{})
+            fresh (->> hits
+                       (filter lean-search/relevant?)
+                       (remove (comp served :n))
+                       (take max-premises)
+                       vec)]
+        (when (seq fresh)
+          {:names (mapv :n fresh)
+           :lines (mapv (fn [h]
+                          (str (:k h) " " (:n h)
+                               (when-not (str/blank? (:s h))
+                                 (str " :: " (:s h)))))
+                        fresh)}))
+      (catch Throwable _
+        nil))))
+
+(defn- premises-block
+  "The labelled premise block for a result, or nil when there is none.
+
+  The label tells the branch these are candidates to draft FROM, not
+  results: search hits with the statement attached — exactly what a branch
+  needs to stop inventing lemmas, and nothing it may cite as settled."
+  [{:keys [lines]}]
+  (when (seq lines)
+    (str "\n\nRetrieved candidate premises to draft FROM (Mathlib search, not"
+         " results):\n  " (str/join "\n  " lines))))
 
 (defn phase-refusal
   "The one place that owns the explore/build phase policy, consulted by the
@@ -441,13 +525,23 @@
   (let [refusal (cond
                   (and (= :explore (:phase branch))
                        (contains? state/verification-tools tool-name))
-                  (malformed branch
-                             (str "You are in the EXPLORE phase: no claim reaches an engine"
-                                  " until the branch has a plan on record. Sketch the"
-                                  " approach as a Lean skeleton — `sketch({claim, lean})` —"
-                                  " and use `lean_search` to find the lemmas it will cite."
-                                  " The phase ends when a sketch elaborates, or when the"
-                                  " explore budget runs out."))
+                  ;; vf-3wg: the branch has just stated, precisely, what it
+                  ;; wants to prove — the highest-signal moment in the run to
+                  ;; hand it premises. The refusal carries them when retrieval
+                  ;; finds something above the relevance floor, and stands on
+                  ;; its own text when it does not (premises-for returns nil).
+                  (let [prem (premises-for ctx (arg ctx :claim))]
+                    (cond-> (malformed branch
+                                       (str "You are in the EXPLORE phase: no claim reaches an engine"
+                                            " until the branch has a plan on record. Sketch the"
+                                            " approach as a Lean skeleton — `sketch({claim, lean})` —"
+                                            " and use `lean_search` to find the lemmas it will cite."
+                                            " The phase ends when a sketch elaborates, or when the"
+                                            " explore budget runs out."
+                                            (premises-block prem)))
+                      (seq (:names prem))
+                      (update :branch update :premises-served
+                              (fnil into #{}) (:names prem))))
 
                   (and (= :build (:phase branch))
                        (= "sketch" tool-name))
@@ -1036,8 +1130,13 @@
                   :subClaims (vec (or (arg ctx :subClaims) []))
                   :technique (arg ctx :technique)
                   :nonFiniteJustification (arg ctx :nonFiniteJustification)
-                  :set-at-turn (:turn ctx)}]
-      (ok (assoc branch :thesis thesis)
+                  :set-at-turn (:turn ctx)}
+          ;; vf-3wg, retrieve-before-drafting in its purest form: the branch
+          ;; has declared what it will work on and drafted nothing yet.
+          prem (premises-for ctx (arg ctx :goal))]
+      (ok (cond-> (assoc branch :thesis thesis)
+            (seq (:names prem))
+            (update :premises-served (fnil into #{}) (:names prem)))
           (str "Thesis registered: " (:goal thesis)
                "\nTechnique: " (:technique thesis)
                (when (seq (:subClaims thesis))
@@ -1046,7 +1145,8 @@
                                                   (:subClaims thesis)))))
                "\n\nThe audit gate cross-references this against what you actually"
                " verified, so a general claim backed only by small instances will"
-               " be caught here.")
+               " be caught here."
+               (premises-block prem))
           :progress? true
           :thesis thesis))))
 
@@ -1830,16 +1930,23 @@
       ;; reads :pending-branch-theses after the turn and clears it, so a tool
       ;; never creates a branch itself — one place owns the branch table.
       (let [[mine & others] proposals
-            thesis (assoc mine :set-at-turn (:turn ctx))]
-        (ok (assoc branch :thesis thesis
-                   :pending-branch-theses (vec others))
+            thesis (assoc mine :set-at-turn (:turn ctx))
+            ;; vf-3wg: premises for the goal THIS branch commits to. The
+            ;; siblings are separate branches the scheduler opens; they are
+            ;; not drafted from here.
+            prem (premises-for ctx (:goal thesis))]
+        (ok (cond-> (assoc branch :thesis thesis
+                           :pending-branch-theses (vec others))
+              (seq (:names prem))
+              (update :premises-served (fnil into #{}) (:names prem)))
             (str "Committed to: " (:goal thesis)
                  (when (seq others)
                    (str "\nRequested " (count others) " sibling branch(es) for: "
                         (str/join "; " (map :goal others))
                         "\nThey explore independently and share this branch's"
                         " failure log, so none of you will repeat another's"
-                        " dead end."))) 
+                        " dead end."))
+                 (premises-block prem))
             :progress? true
             :thesis thesis)))))
 
