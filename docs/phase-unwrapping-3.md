@@ -299,3 +299,61 @@ of them has yet run on a Q-1 generation: `sketch` artifacts number **zero**
 across gen-28, gen-29 and gen-30, because the tool landed after gen-30
 finished. gen-31 is the first generation that will have them, and the drift
 rate is the thing to watch.
+
+## gen-31: gaps 1 and 2 of the last step, closed
+
+Run `f4b53e8f`, deepseek-v4-pro, still in flight at 308 turns. Formulated
+against the single remaining step of TARGET 1, with the difficulty named
+explicitly: `a#836` returns a LIST OF VERTICES and
+`balanced_support_gives_sign_circulation` consumes a `Finset E` with balance
+stated as sign-oriented indicator sums, so the work is (1) choose an edge per
+consecutive pair, (2) show the chosen edges are distinct, (3) turn that into
+two equal `Finset.sum`s.
+
+**(1) and (2) are proved**, bodies read rather than labels trusted:
+
+- `chain_exists_nodup_edge_list` (`a#862`, slow tier) and its relation-general
+  form `sign_support_walk_edge_list` (`a#864`, slow tier): from a nonempty
+  `Chain'` walk whose `dropLast` is `Nodup`, a `Nodup` edge list `es` with
+  `es.length + 1 = l.length`, `es.map src = l.dropLast` and
+  `es.map dst = l.tail`. Structural induction, `cases hc with | cons_cons` to
+  take the step witness and the tail chain, distinctness by a membership
+  argument through the map. Every hypothesis is consumed.
+- `chain_exists_nodup_edge_list_nonzero` (`a#865`): the same carrying
+  `∀ e ∈ es, k e ≠ 0`, which is exactly the `hsupp` that `a#777` requires.
+- `a#866` cross-checks the construction exhaustively in Prolog over all 16
+  two-vertex two-edge orientation assignments.
+
+**(3) is sketched, not proved** (`a#867`): for a nonempty list whose first
+element equals its last, `dropLast` and `tail` have equal counts of every
+element. That is the balance property in combinatorial form, and combined with
+`es.map src = dropLast` and `es.map dst = tail` it says every vertex is the
+source of as many edges of `es` as it is the destination — which is `hbal`.
+The branch stated the bridge itself.
+
+So what remains of TARGET 1 is: prove `a#867`, convert counts to indicator
+sums over `es.toFinset`, feed that to `a#777`, and contradict the `a#718`/
+`a#723` cancellation arithmetic.
+
+### Two operator interventions, and what they were for
+
+The run's first four artifacts were all polynomial arithmetic on a work bound
+its own inheritance already contained — the drift pattern, on turn 15, in a
+run whose formulation forbids it in as many words. No gate can see this: every
+guard keys on failure or on absence of progress, and a branch banking easy true
+off-target results never fails and never stalls (`vf-1ep`).
+
+A directive at turn 46 fixed something the harness could not have known. In
+this Mathlib the list-chain predicate is `List.IsChain`; `Chain'` survives as
+an alias, so the campaign's inherited statements still elaborate while every
+LEMMA is named `isChain_*`. The corpus is written in `Chain'` and the index
+holds 72 `isChain_*` entries, so branches searching in their own vocabulary
+found nothing. `B1` spent seven consecutive turns on correct, on-target
+queries — `Finset.sum_filter`, `List.toFinset sum Nodup`,
+`List.Chain' get consecutive elements relation` — and the last returned
+`Acc.list_chain'` and five `Ico` interval lemmas. The lemma it wanted exists as
+`isChain_iff_get`. Tracked as `vf-i5q`.
+
+Before turn 46: four artifacts, all drift. After: nine, all on target. That is
+n=1 and confounded — three harness fixes landed in the same window — so it is
+a sequence, not a measurement.
