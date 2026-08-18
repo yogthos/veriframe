@@ -27,6 +27,32 @@
 
 (defn- fenced [body] (str "prose before\n```tool-call\n" body "\n```\nprose after"))
 
+(deftest xml-parameters-tolerate-extra-attributes
+  ;; Observed live in gen-31, run f4b53e8f, branch B3 (2026-08-18).
+  ;; deepseek-v4-pro emits `<parameter name="query" string="true">`. The
+  ;; parameter regex required the tag to close immediately after the name, so
+  ;; the extra attribute made every parameter fail to match while <invoke>,
+  ;; which carried no extra attribute, matched fine. The branch was answered
+  ;; "Missing required argument(s): query" five times with the query sitting in
+  ;; the tag, then culled for a malformed fence it had not emitted. Same class
+  ;; as the gen-30 loss: a real call discarded and the cull reason untrue.
+  (let [resp (str "reasoning about the goal\n"
+                  "<tool_calls>\n<invoke name=\"lean_search\">\n"
+                  "<parameter name=\"query\" string=\"true\">List.Chain'.get consecutive relation</parameter>\n"
+                  "</invoke>\n</tool_calls>")
+        parsed (fence/parse-tool-call resp {})]
+    (is (= "lean_search" (:name parsed)))
+    (is (= "List.Chain'.get consecutive relation" (get-in parsed [:args :query]))
+        "the argument is right there in the tag")))
+
+(deftest xml-numeric-parameter-still-coerces-with-extra-attributes
+  (let [resp (str "<invoke name=\"lean_search\">\n"
+                  "<parameter name=\"query\" string=\"true\">chain</parameter>\n"
+                  "<parameter name=\"top_k\" type=\"int\">5</parameter>\n"
+                  "</invoke>")
+        parsed (fence/parse-tool-call resp {})]
+    (is (= 5 (get-in parsed [:args :top_k])) "top_k reaches (take k) and a string throws there")))
+
 (deftest a-long-branch-sends-a-digest-of-its-early-turns-not-the-turns
   ;; What a branch needs from its own distant past is which approaches it
   ;; already tried and how each came out — not the prose it wrote at the time.

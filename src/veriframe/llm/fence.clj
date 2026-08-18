@@ -145,11 +145,19 @@
 ;; Anthropic's XML tool syntax, which deepseek-v4-pro emits in place of the
 ;; fenced JSON this harness documents. Both parts are required — an opener with
 ;; no closer is not a call — so prose ABOUT the format does not become one.
+;; `[^>]*` rather than `\s*` before the tag closes: the attribute list does
+;; not stop at `name`. deepseek-v4-pro writes
+;; `<parameter name="query" string="true">`, and requiring the tag to close
+;; immediately after the name made every such parameter fail to match while
+;; `<invoke>`, which carries no extra attribute, matched fine — so the call
+;; arrived with the right name and NO arguments, and the branch was told
+;; "Missing required argument(s): query" with the query sitting in the tag.
+;; gen-31 B3 was culled for a malformed fence it had not emitted (2026-08-18).
 (def ^:private invoke-re
-  #"(?s)<invoke\s+name=\"([^\"]+)\"\s*>(.*?)</invoke>")
+  #"(?s)<invoke\s+name=\"([^\"]+)\"[^>]*>(.*?)</invoke>")
 
 (def ^:private parameter-re
-  #"(?s)<parameter\s+name=\"([^\"]+)\"\s*>(.*?)</parameter>")
+  #"(?s)<parameter\s+name=\"([^\"]+)\"[^>]*>(.*?)</parameter>")
 
 (defn- xml-value
   "A parameter's value. Verbatim, except that something which is entirely a
