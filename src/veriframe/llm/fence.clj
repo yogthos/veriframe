@@ -40,8 +40,20 @@
 ;; Both spellings are unmistakable in intent, so the body between them is
 ;; treated exactly like the documented fence's, malformed ones included: those
 ;; earn a parse error, which is what lets a branch correct itself.
+;;
+;; The CLOSER also takes the plural and the underscore — </tool-calls>,
+;; </tool_call>, </tool_calls>. gen-31 B1.2 opened with the documented fence
+;; and closed with </tool-calls> on three consecutive turns; `</tool-call>` did
+;; not match, the `s` sitting where the `>` was expected, and what was thrown
+;; away was a proof of edge-choice injectivity, one of the three gaps that run
+;; existed to cross. Same shape as the gen-30 loss, one letter over.
+;;
+;; The OPENER is deliberately NOT widened to <tool_calls>. That is the wrapper
+;; of the XML tool syntax, and xml-call is the last rung — reached only when no
+;; fence matched — so treating it as a fence opener would capture a good XML
+;; call into the fence path and turn it into a parse error.
 (def fence-re
-  #"(?s)(?:```tool-call\s*\r?\n|<tool-call>\s*)(.*?)(?:```|</tool-call>)")
+  #"(?s)(?:```tool-call\s*\r?\n|<tool-call>\s*)(.*?)(?:```|</tool[-_]calls?>)")
 
 ;; A general-purpose ```json fence, which a model also uses to show data. Only
 ;; counts when the body is the DOCUMENTED shape, checked in json-fence below.

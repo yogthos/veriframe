@@ -27,6 +27,38 @@
 
 (defn- fenced [body] (str "prose before\n```tool-call\n" body "\n```\nprose after"))
 
+(deftest a-plural-tool-calls-closer-still-closes-the-fence
+  ;; gen-31 B1.2 (2026-08-18), three turns running. It opened with the
+  ;; documented ```tool-call fence and closed with </tool-calls> — plural — so
+  ;; the closer alternation `</tool-call>` did not match, the `s` sitting where
+  ;; the `>` was expected. Same class as the gen-30 loss that cost thirteen
+  ;; turns and a 30,658-character proof: right call, wrong bracket, discarded.
+  ;; What it was discarding here was edge-choice injectivity, one of the three
+  ;; gaps the run was formulated to cross.
+  (let [resp (str "```tool-call\n"
+                  "{\"name\": \"proof_step\", \"args\": {\"tactic\": \"exact htail i\"}}\n"
+                  "</tool-calls>")
+        p (fence/parse-tool-call resp {})]
+    (is (= "proof_step" (:name p)))
+    (is (= "exact htail i" (get-in p [:args :tactic]))))
+
+  (testing "every spelling of the closer, since the model mixes them freely"
+    (doseq [closer ["```" "</tool-call>" "</tool-calls>" "</tool_call>" "</tool_calls>"]]
+      (let [p (fence/parse-tool-call
+               (str "```tool-call\n{\"name\": \"review\", \"args\": {}}\n" closer) {})]
+        (is (= "review" (:name p)) (str "closer " closer " must close the fence")))))
+
+  (testing "and the XML path is untouched"
+    ;; <tool_calls> must NOT become a fence opener: xml-call is the last rung
+    ;; and only runs when no fence matched, so capturing XML into the fence
+    ;; path would turn a good call into a parse error.
+    (let [p (fence/parse-tool-call
+             (str "<tool_calls>\n<invoke name=\"lean_search\">\n"
+                  "<parameter name=\"query\" string=\"true\">Chain' get</parameter>\n"
+                  "</invoke>\n</tool_calls>") {})]
+      (is (= "lean_search" (:name p)))
+      (is (= "Chain' get" (get-in p [:args :query]))))))
+
 (deftest xml-parameters-carry-lists-as-json
   ;; The XML parameter form has no way to express an array, so a model handing
   ;; over subClaims writes the JSON text as the parameter body. Returning that
