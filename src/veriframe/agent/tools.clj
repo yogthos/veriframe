@@ -2647,7 +2647,14 @@
           ;; forces the artifacts table.
           from-shared? (and a (nil? own))]
       (if-not a
-        (fail branch (str "No artifact " raw " in this run."
+        ;; :mechanics, not :failure. A lookup establishes nothing, as the note
+        ;; above says, and by the same token a lookup that finds nothing
+        ;; refutes nothing — a bad id is a call made wrong. Sending it to the
+        ;; consecutive-failure counter puts bookkeeping mistakes in front of
+        ;; the cull and, since vf-9wx, in front of the gate that WITHHOLDS the
+        ;; branch's claim: gen-31 B1 lost TARGET 1 step 4, the run's whole
+        ;; purpose, to one wrong lemma name plus one wrong id prefix.
+        (malformed branch (str "No artifact " raw " in this run."
                           " Ids come from the settled-state block: `a#12` for"
                           " something this run established, `s#7` for something"
                           " it inherited. A run cannot reach another run's"
@@ -2682,7 +2689,8 @@
           t (when (and conn run-id n)
               (journal/branch-turn conn run-id (:id branch) n))]
       (if-not t
-        (fail branch (str "No turn " raw " on this branch. The digest lists"
+        ;; :mechanics for the same reason as fetch_artifact's miss.
+        (malformed branch (str "No turn " raw " on this branch. The digest lists"
                           " your own turns as t1, t2, …; a sibling's turns are"
                           " not readable here — what crossed from them is in"
                           " the settled-state block."))

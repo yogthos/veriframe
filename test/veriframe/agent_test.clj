@@ -1771,6 +1771,32 @@
     (is (= :active (:status (#'beam/cull-or-keep {:turn 10} at-stuck 2 [])))
         "and the branch is not yet cullable when it does")))
 
+(deftest a-lookup-miss-is-not-a-mathematical-failure
+  ;; gen-31 B1, turn 25 (2026-08-18). B1 was the only branch attempting the
+  ;; run's actual target. It failed verify_lean on a wrong lemma name, then
+  ;; fetched a#777 using the wrong id namespace and was told so — and those two
+  ;; together tripped the stuck gate, which withheld TARGET 1 step 4, the whole
+  ;; point of the run, from the only branch working on it.
+  ;;
+  ;; fetch_artifact is documented as deliberately :neutral because "a lookup
+  ;; establishes nothing". That cuts both ways: a lookup that finds nothing
+  ;; refutes nothing. A bad id is a call made wrong, which is what :mechanics
+  ;; counts, and it must not reach the counter that culls branches and now also
+  ;; withholds their claims. Same principle as vf-jki.
+  (with-db [c]
+    (let [rid (runs/start-run! c {:problem "p"})
+          b (state/new-branch {:id "B1" :problem "p"})]
+      (runs/open-branch! c rid {:branch-id "B1"})
+      (let [r (tools/run-tool {:branch b :conn c :run-id rid
+                               :tool-name "fetch_artifact" :args {:id "a#777"}})]
+        (is (= :mechanics (:category r))
+            "a miss is a call made wrong, not evidence about mathematics")
+        (is (str/includes? (:result r) "a#12")
+            "and it still says how ids are spelled"))
+      (let [r (tools/run-tool {:branch b :conn c :run-id rid
+                               :tool-name "fetch_turn" :args {:id "t999"}})]
+        (is (= :mechanics (:category r)) "same for a turn that is not there")))))
+
 (deftest a-repeated-mechanics-failure-is-a-loop-too
   ;; gen-31 B3 called lean_search five times and was answered "Missing required
   ;; argument(s): query" five identical times, because a parser bug dropped its
@@ -4832,8 +4858,12 @@
         (testing "a branch reads its OWN history, not a sibling's"
           (is (not (re-find #"someone else's turn" (:result r)))))
         (testing "a turn that does not exist says so"
+          ;; :mechanics, not :failure — a call made wrong rather than evidence
+          ;; about mathematics. It must not reach the counter that culls the
+          ;; branch and, since vf-9wx, withholds its claim: gen-31 B1 lost
+          ;; TARGET 1 step 4 partly to a mistyped artifact id.
           (let [r (call {:turn 999})]
-            (is (= :failure (:category r)))
+            (is (= :mechanics (:category r)))
             (is (re-find #"(?i)no turn 999" (:result r)))))
         (testing "a missing argument is the standard complaint"
           (is (re-find #"(?i)missing required argument" (:result (call {})))))))))
@@ -4911,9 +4941,11 @@
               (is (re-find #"(?i)confirmed.*inherited"
                            (:result (call2 {:id sid}))))))))
 
-      (testing "an unknown id fails rather than inventing something"
+      (testing "an unknown id is refused rather than inventing something"
+        ;; :mechanics: a lookup establishes nothing, so a lookup that finds
+        ;; nothing refutes nothing.
         (let [r (call {:id 999999})]
-          (is (= :failure (:category r)))
+          (is (= :mechanics (:category r)))
           (is (re-find #"(?i)no artifact" (:result r)))))
 
       (testing "a missing id is the standard missing-argument complaint"
