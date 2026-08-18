@@ -379,6 +379,24 @@ nonzero sign-aligned circulation, and contradict the per-edge cancellation
 arithmetic of `a#718`/`a#723` (gen-22). Both are inherited and proved. That is
 the last unverified arrow in the correctness chain.
 
+### An assumption the chain has carried since gen-22
+
+`a#718`, the cancellation lemma the whole acyclicity argument terminates in,
+is stated with `(w k2 χ : E → ℤ)` — **integer** weights. Q-1 says weights come
+from a coherence map, which is real-valued. gen-31's first attempt at the final
+composition (`a#877`) inherited the restriction and was refused as unfaithful
+for claiming 'nonnegative weights' while proving the integer case; the judge
+was right about the mismatch and could not know the restriction was nine
+generations old.
+
+It is probably reparable rather than fatal: `C(k) = Σ w(e)·|k(e)|` is
+positively homogeneous in `w` and `Q` is weight-free, so scaling rational
+weights by a common denominator preserves both optimal sets, and every real
+instance has rational weights. But that rescaling step is not proved and the
+dependency is not written down anywhere. Until it is, the honest statement when
+lemma (A) closes is *the chain is complete for integer-weighted instances* —
+not *for Q-1*. Tracked as vf-a1f.
+
 ### Two operator interventions, and what they were for
 
 The run's first four artifacts were all polynomial arithmetic on a work bound
