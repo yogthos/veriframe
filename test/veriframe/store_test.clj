@@ -31,6 +31,24 @@
   `(let [~binding (db/open! ":memory:")]
      (try ~@body (finally (db/close ~binding)))))
 
+(deftest a-connection-does-not-die-when-something-else-is-reading
+  ;; A branch was lost to this on 2026-08-18: an external `sqlite3` query held
+  ;; a read lock, the harness's next write got SQLITE_BUSY with a zero busy
+  ;; timeout, and the branch was abandoned with "database is locked" while it
+  ;; was mid-proof. In-process access is serialized, so this only ever bites
+  ;; when someone looks at the file — which is the first thing anyone does
+  ;; with a run.
+  (let [f (str "/tmp/veriframe-lock-test-" (System/nanoTime) ".sqlite3")]
+    (try
+      (let [c (db/connect f)]
+        (is (= "wal" (clojure.string/lower-case (str (first (vals (db/fetch-one c "PRAGMA journal_mode"))))))
+            "readers must not exclude the writer")
+        (is (pos? (long (first (vals (db/fetch-one c "PRAGMA busy_timeout")))))
+            "and a writer that does contend must wait rather than fail"))
+      (finally
+        (doseq [suffix ["" "-wal" "-shm"]]
+          (.delete (java.io.File. (str f suffix))))))))
+
 (deftest migrations-apply
   (with-db [c]
     (is (= (count migrations/migrations) (db/schema-version c)))

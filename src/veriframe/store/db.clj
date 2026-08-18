@@ -20,9 +20,36 @@
             [veriframe.store.migrations :as migrations]))
 
 (defn connect
-  "Open `path` (a file, or \":memory:\") and return a connection."
+  "Open `path` (a file, or \":memory:\") and return a connection.
+
+  The two pragmas are about EXTERNAL readers. In-process access is serialized
+  through one lock (see with-conn), so the beam's own branches never collide;
+  but the database is a file on disk and the first thing anyone does with a
+  run is point sqlite3 or a viewer at it. Under the defaults — rollback
+  journal, zero busy timeout — such a reader holds a shared lock, the harness's
+  next write gets SQLITE_BUSY immediately, and the branch that was writing dies
+  with \"branch error: sqlite step failed: database is locked\".
+
+  That is not a hypothetical: it happened while watching a live knights-3 run
+  on 2026-08-18, and the branch it killed was mid-proof. A branch lost to a
+  monitoring query is the vf-jki mistake in a different subsystem — a
+  non-mathematical event ending a line of mathematical work — and it is
+  invisible afterwards, because the reason recorded is true and says nothing
+  about what to fix.
+
+  WAL is the actual fix: readers and the writer stop excluding each other, so
+  the case cannot arise. busy_timeout is the belt to its braces, covering the
+  writer-versus-writer contention WAL does not (a second harness process on
+  the same file). Both are set per connection; WAL additionally persists in
+  the file, which is why it is safe to set here and pointless to set twice.
+
+  On \":memory:\" the journal_mode pragma is a documented no-op returning
+  \"memory\" rather than an error, so tests need no special case."
   [path]
-  (jdbc/connection (str "sqlite:" path)))
+  (let [conn (jdbc/connection (str "sqlite:" path))]
+    (jdbc/execute! conn "PRAGMA journal_mode = WAL")
+    (jdbc/execute! conn "PRAGMA busy_timeout = 5000")
+    conn))
 
 (def ^:private conn-lock (Object.))
 
