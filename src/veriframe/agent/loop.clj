@@ -241,6 +241,22 @@
   "Advance one branch by one turn. Returns the updated branch."
   [{:keys [conn run-id max-turns] :as ctx} branch turn]
   (let [before branch
+        ;; The release valve for the explore prologue (vf-b25): a branch that
+        ;; cannot get a skeleton to elaborate must not be locked out of
+        ;; verification for the whole run, so at the cap the prologue is
+        ;; declared over and the branch told why. The message lands before
+        ;; the model call so the next response actually sees it.
+        branch (cond-> branch
+                 (state/explore-cap-expired? branch
+                                             (gates/threshold :explore-cap) turn)
+                 (-> (state/enter-build turn)
+                     (state/add-message
+                      "user"
+                      (str "[harness] The explore prologue is over: "
+                           (gates/threshold :explore-cap)
+                           " turns without a sketch on record. Verification is"
+                           " now available — you are in the BUILD phase. The"
+                           " way forward is to prove your claims directly."))))
         {:keys [ok response error]} (call-model ctx branch)]
     (if-not ok
       ;; A provider failure is not the branch's fault and must not count
@@ -334,8 +350,16 @@
 
           ;; A real tool call.
           (let [tool (:name parsed)
-                result (tools/run-tool (assoc ctx :branch branch :turn turn
-                                              :tool-name tool :args (:args parsed)))
+                ;; Phase policy is consulted before dispatch: a refused call
+                ;; never reaches an engine, and the refusal is journalled like
+                ;; any other turn (vf-b25, vf-eaw). One place owns the
+                ;; refusals — see tools/phase-refusal.
+                refusal (tools/phase-refusal
+                         (assoc ctx :branch branch :turn turn
+                                :tool-name tool :args (:args parsed)))
+                result (or refusal
+                           (tools/run-tool (assoc ctx :branch branch :turn turn
+                                                  :tool-name tool :args (:args parsed))))
                 branch (-> (:branch result)
                            ;; Any attempt at an engine clears the search
                            ;; counter, including one that fails — trying is
@@ -367,7 +391,12 @@
                                        " different encoding of the same one."))
                          result)
                 branch (if-let [a (:artifact result)]
-                         (state/add-artifact branch (assoc a :turn turn))
+                         (cond-> (state/add-artifact branch (assoc a :turn turn))
+                           ;; A banked sketch is the way out of the explore
+                           ;; prologue: from the turn it lands, verification
+                           ;; is open (vf-b25).
+                           (= :sketch (:claim-status a))
+                           (state/enter-build turn))
                          branch)
                 ;; A confirmation is the green point the safe-state rung falls
                 ;; back to. The snapshot is the session's replay log, not a
@@ -377,11 +406,12 @@
                          (state/mark-green branch (prolog/snapshot (:prolog branch)))
                          branch)]
             (journal/record-turn! conn run-id
-                                  {:branch-id (:id branch) :turn turn
-                                   :tool-name tool :args (:args parsed)
-                                   :result (truncate (:result result))
-                                   :category (name (:category result))
-                                   :auto-repaired (:auto-repaired? parsed)
+                                   {:branch-id (:id branch) :turn turn
+                                    :tool-name tool :args (:args parsed)
+                                    :result (truncate (:result result))
+                                    :category (name (:category result))
+                                    :policy-refusal? (:policy-refusal? result)
+                                    :auto-repaired (:auto-repaired? parsed)
                                    :assistant-text said
                                    :reasoning-text (:reasoning response)
                                    :usage (:usage response)})

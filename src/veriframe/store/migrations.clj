@@ -226,6 +226,14 @@
    "ALTER TABLE turns ADD COLUMN cache_hit_tokens INTEGER"
    "ALTER TABLE turns ADD COLUMN cache_miss_tokens INTEGER"])
 
+(def ^:private v5
+  ;; One bit per turn: whether the tool call was declined by harness phase
+  ;; policy (vf-b25/vf-eaw). The cull record has to be able to tell a
+  ;; declined call — a perfectly well-formed one the harness refused — from a
+  ;; malformed fence, or the reason string lies in the permanent record
+  ;; (gen-30 B3.2 was culled with exactly that false reason).
+  ["ALTER TABLE turns ADD COLUMN policy_refusal INTEGER"])
+
 (def migrations
   "Ordered. Index 0 is migration 1; PRAGMA user_version holds the count applied."
-  [v1 v2 v3 v4])
+  [v1 v2 v3 v4 v5])

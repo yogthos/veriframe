@@ -54,15 +54,16 @@
   tool that produced it knows, and a reconstruction would be guessing."
   [conn run-id {:keys [branch-id turn tool-name args result category
                        parse-error auto-repaired assistant-text reasoning-text
-                       usage]}]
+                       usage policy-refusal?]}]
   (db/with-writer
     (db/execute! conn
                    ["INSERT INTO turns (run_id, branch_id, turn, tool_name, args, result,
                                         category, parse_error, auto_repaired,
                                         assistant_text, reasoning_text, created_at,
                                         prompt_tokens, completion_tokens, total_tokens,
-                                        cache_hit_tokens, cache_miss_tokens)
-                     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
+                                        cache_hit_tokens, cache_miss_tokens,
+                                        policy_refusal)
+                     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
                     run-id branch-id turn (str tool-name) (js (or args {}))
                     (str result) (some-> category name) parse-error
                     (if auto-repaired 1 0)
@@ -72,7 +73,8 @@
                     ;; provider-error path by construction.
                     (:prompt-tokens usage) (:completion-tokens usage)
                     (:total-tokens usage)
-                    (:cache-hit-tokens usage) (:cache-miss-tokens usage)]))
+                    (:cache-hit-tokens usage) (:cache-miss-tokens usage)
+                    (if policy-refusal? 1 0)]))
   (emit! conn run-id :turn {:branch-id branch-id :turn turn
                             :data {:tool tool-name :category category}}))
 

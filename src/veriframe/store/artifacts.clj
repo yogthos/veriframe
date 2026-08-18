@@ -233,11 +233,45 @@
       (set toks)
       (set (map #(str/join " " %) (partition 4 1 toks))))))
 
-(defn- near-duplicate? [a b]
-  (let [x (shingles a) y (shingles b)]
-    (and (seq x) (seq y)
-         (let [i (count (clojure.set/intersection x y))]
-           (>= (/ (double i) (count (clojure.set/union x y))) 0.6)))))
+(defn near-duplicate?
+  "Whether two claims say the same thing — 4-word shingle Jaccard at or
+  above `threshold`, defaulting to the 0.6 `dedupe-claims` dedups at.
+
+  Gates two things now. The ledger's dedupe collapses claims that are the
+  same theorem differently worded (see dedupe-claims), and — since vf-eaw —
+  the sketch tool's diversity gate refuses a sketch too close to a live
+  sibling's. The sketch cutoff rides in gates.edn
+  (:sketch-duplicate-threshold) so a run can record it; 0.6 was tuned on
+  ledger CLAIMS, not on plans, so the sketch use is deliberately the same
+  number until a generation of sketches exists to tune against."
+  ([a b] (near-duplicate? a b 0.6))
+  ([a b threshold]
+   (let [x (shingles a) y (shingles b)]
+     (and (seq x) (seq y)
+          (let [i (count (clojure.set/intersection x y))]
+            (>= (/ (double i) (count (clojure.set/union x y))) threshold))))))
+
+(defn sibling-sketches
+  "The plans LIVE siblings in the same run have already banked, newest last.
+
+  vf-eaw's diversity gate reads this to refuse a sketch too close to one a
+  sibling already made. Live means the sibling's branches row still says
+  active — a culled or shipped branch is not competing for the line of
+  attack. The branch's own sketches are excluded; a branch may refine its own
+  plan freely.
+
+  Returns [] rather than throwing when there are none, for the same reason
+  `similar` does: an empty set is a normal state, and a branch should not
+  lose its turn to a query that found nothing."
+  [conn run-id branch-id]
+  (db/fetch conn
+            ["SELECT a.branch_id, a.turn, a.kind, a.claim, a.code
+                FROM artifacts a
+                JOIN branches b ON b.id = a.branch_id AND b.run_id = a.run_id
+               WHERE a.run_id = ? AND a.claim_status = 'sketch'
+                 AND a.branch_id != ? AND b.status = 'active'
+               ORDER BY a.id DESC"
+             run-id branch-id]))
 
 (defn dedupe-claims
   "Collapse entries whose claims say the same thing, keeping the fullest.

@@ -1646,6 +1646,358 @@
       (is (= :failure (:category r)))
       (is (str/includes? (:result r) "no confirmed artifact")))))
 
+;; --- the explore/build phase machine (vf-b25, vf-eaw) ----------------------
+
+(deftest a-new-branch-starts-in-explore
+  (let [b (state/new-branch {:id "B1" :problem "p" :created-at-turn 3})]
+    (is (= :explore (:phase b)))
+    (is (= 3 (:phase-entered-turn b))
+        "the phase clock starts at branch creation, so a forked branch gets
+         a full explore budget instead of inheriting its parent's spent one")))
+
+(deftest enter-build-stamps-the-phase-once
+  (let [b (state/enter-build (state/new-branch {:id "B1" :problem "p"}) 3)]
+    (is (= :build (:phase b)))
+    (is (= 3 (:phase-entered-turn b)))
+    (is (= 3 (:phase-entered-turn (state/enter-build b 9)))
+        "already in build: the phase did not begin again, so the stamp does
+         not move")))
+
+(deftest reenter-explore-restarts-the-phase-clock
+  ;; vf-9wx will drop a stuck branch back into explore; the cap has to
+  ;; restart when it does, or the branch would be re-forced into build on
+  ;; the very next turn.
+  (let [b (-> (state/new-branch {:id "B1" :problem "p"})
+              (state/enter-build 3)
+              (state/reenter-explore 17))]
+    (is (= :explore (:phase b)))
+    (is (= 17 (:phase-entered-turn b)))))
+
+(deftest explore-cap-expires-after-cap-full-turns
+  (let [b (state/new-branch {:id "B1" :problem "p" :created-at-turn 0})]
+    (is (not (state/explore-cap-expired? b 5 5))
+        "turns 1-5 are the five explore turns the cap allows")
+    (is (state/explore-cap-expired? b 5 6))
+    (is (not (state/explore-cap-expired? (state/enter-build b 3) 5 20))
+        "only the explore phase is capped")))
+
+(deftest explore-phase-refuses-verification-tools
+  (let [b (state/new-branch {:id "B1" :problem "p"})]
+    (doseq [tool (sort state/verification-tools)]
+      (let [r (tools/phase-refusal {:branch b :tool-name tool})]
+        (is (some? r) (str tool " is refused in explore"))
+        (is (= :mechanics (:category r))
+            "a refusal is not a failed verification and must not cull")
+        (is (str/includes? (:result r) "EXPLORE") "the phase is named")
+        (is (str/includes? (:result r) "sketch")
+            "the branch is told to plan instead")
+        (is (str/includes? (:result r) "lean_search")
+            "and to search for the lemmas the plan will cite")
+        (is (str/includes? (:result r) "phase ends")
+            "the branch is told how the phase ends")))))
+
+(deftest explore-phase-leaves-the-planning-tools-open
+  (let [b (state/new-branch {:id "B1" :problem "p"})]
+    (doseq [tool ["thesis" "branch_theses" "lean_search" "sketch"
+                  "fetch_artifact" "fetch_turn" "done"]]
+      (is (nil? (tools/phase-refusal {:branch b :tool-name tool}))
+          (str tool " is open in explore")))))
+
+(deftest build-phase-refuses-sketch
+  (let [b (state/enter-build (state/new-branch {:id "B1" :problem "p"}) 3)
+        r (tools/phase-refusal {:branch b :tool-name "sketch"})]
+    (is (some? r))
+    (is (= :mechanics (:category r)))
+    (is (str/includes? (:result r) "BUILD") "the phase is named")
+    (is (str/includes? (:result r) "committed")
+        "the plan is already committed")
+    (is (str/includes? (:result r) "close its goals")
+        "the way forward is to close the goals, not re-plan")))
+
+(deftest build-phase-leaves-verification-open
+  (let [b (state/enter-build (state/new-branch {:id "B1" :problem "p"}) 3)]
+    (doseq [tool (sort state/verification-tools)]
+      (is (nil? (tools/phase-refusal {:branch b :tool-name tool}))
+          (str tool " is open in build")))))
+
+(deftest a-sketch-too-close-to-a-live-sibling-is-refused
+  ;; vf-eaw. gen-29 put all three branches on TARGET 1 within one turn and
+  ;; never diversified; gen-30 forked to eight branches all circling the same
+  ;; lemma. The beam pays for N branches and buys one line of attack, so a
+  ;; sketch that duplicates a live sibling's is refused at the boundary where
+  ;; it is cheap to change — with the sibling's approach quoted.
+  (with-db [c]
+    (let [rid (runs/start-run! c {:problem "p"})
+          _ (runs/open-branch! c rid {:branch-id "B1"})
+          _ (runs/open-branch! c rid {:branch-id "B2"})
+          _ (journal/record-artifact! c rid
+                                      {:branch-id "B2" :turn 1 :kind :lean
+                                       :claim "the union bound splits the cost into per-edge terms"
+                                       :claim-status :sketch})
+          b (state/new-branch {:id "B1" :problem "p"})
+          r (tools/phase-refusal {:branch b :conn c :run-id rid
+                                  :tool-name "sketch"
+                                  :args {:claim "the union bound splits the cost into per-edge components"
+                                         :lean "theorem t := by sorry"}})]
+      (is (some? r))
+      (is (= :mechanics (:category r))
+          "a duplicate plan is not a failed verification")
+      (is (str/includes? (:result r) "B2") "the sibling is named")
+      (is (str/includes? (:result r) "union bound splits the cost into per-edge terms")
+          "the sibling's approach is quoted, so the branch can pick a different one"))))
+
+(deftest a-sketch-different-from-every-sibling-passes
+  (with-db [c]
+    (let [rid (runs/start-run! c {:problem "p"})
+          _ (runs/open-branch! c rid {:branch-id "B1"})
+          _ (runs/open-branch! c rid {:branch-id "B2"})
+          _ (journal/record-artifact! c rid
+                                      {:branch-id "B2" :turn 1 :kind :lean
+                                       :claim "the union bound splits the cost into per-edge terms"
+                                       :claim-status :sketch})
+          b (state/new-branch {:id "B1" :problem "p"})
+          r (tools/phase-refusal {:branch b :conn c :run-id rid
+                                  :tool-name "sketch"
+                                  :args {:claim "the greedy exchange argument terminates"
+                                         :lean "theorem t := by sorry"}})]
+      (is (nil? r)))))
+
+(deftest a-refused-duplicate-sketch-releases-the-claim
+  ;; Every sketch exit releases the claim — a plan settles nothing — and the
+  ;; duplicate refusal is an exit. The claim must be open to the next branch,
+  ;; whatever the sketch then did.
+  (with-db [c]
+    (let [rid (runs/start-run! c {:problem "p"})
+          _ (runs/open-branch! c rid {:branch-id "B1"})
+          _ (runs/open-branch! c rid {:branch-id "B2"})
+          _ (journal/record-artifact! c rid
+                                      {:branch-id "B2" :turn 1 :kind :lean
+                                       :claim "the union bound splits the cost into per-edge terms"
+                                       :claim-status :sketch})
+          claim "the union bound splits the cost into per-edge components"
+          registry (claims/new-registry)
+          b (state/new-branch {:id "B1" :problem "p"})]
+      (claims/try-claim! registry "B1" claim)
+      (tools/phase-refusal {:branch b :conn c :run-id rid :claims registry
+                            :tool-name "sketch"
+                            :args {:claim claim :lean "theorem t := by sorry"}})
+      (is (= :claimed (claims/try-claim! registry "B2" claim))
+          "the refusal releases the claim like every other sketch exit"))))
+
+(deftest a-branchs-own-sketch-does-not-gate
+  ;; A branch may refine its own plan freely; only SIBLING sketches compete
+  ;; for the line of attack.
+  (with-db [c]
+    (let [rid (runs/start-run! c {:problem "p"})
+          _ (runs/open-branch! c rid {:branch-id "B1"})
+          _ (journal/record-artifact! c rid
+                                      {:branch-id "B1" :turn 1 :kind :lean
+                                       :claim "the union bound splits the cost into per-edge terms"
+                                       :claim-status :sketch})
+          b (state/new-branch {:id "B1" :problem "p"})
+          r (tools/phase-refusal {:branch b :conn c :run-id rid
+                                  :tool-name "sketch"
+                                  :args {:claim "the union bound splits the cost into per-edge terms"
+                                         :lean "theorem t := by sorry"}})]
+      (is (nil? r)))))
+
+(deftest a-culled-siblings-sketch-does-not-gate
+  ;; Only LIVE branches are competing for the beam's width; a culled or
+  ;; shipped sibling's plan is not a line of attack in play.
+  (with-db [c]
+    (let [rid (runs/start-run! c {:problem "p"})
+          _ (runs/open-branch! c rid {:branch-id "B1"})
+          _ (runs/open-branch! c rid {:branch-id "B2"})
+          _ (runs/close-branch! c rid "B2" :culled "dominated on every objective")
+          _ (journal/record-artifact! c rid
+                                      {:branch-id "B2" :turn 1 :kind :lean
+                                       :claim "the union bound splits the cost into per-edge terms"
+                                       :claim-status :sketch})
+          b (state/new-branch {:id "B1" :problem "p"})
+          r (tools/phase-refusal {:branch b :conn c :run-id rid
+                                  :tool-name "sketch"
+                                  :args {:claim "the union bound splits the cost into per-edge terms"
+                                         :lean "theorem t := by sorry"}})]
+      (is (nil? r)))))
+
+(deftest a-banked-sketch-moves-the-branch-to-build
+  ;; vf-b25. The first successfully banked sketch is the way out of the
+  ;; explore prologue: from that turn the branch is in build and verification
+  ;; is open.
+  (let [c (db/connect ":memory:")
+        _ (db/migrate! c)
+        rid (runs/start-run! c {:problem "p" :beam-width 1})
+        b (state/new-branch {:id "B1" :problem "p"})]
+    (runs/open-branch! c rid {:branch-id "B1" :created-at-turn 0})
+    (with-redefs [lean-repl/create-session (fn [& _] {:id "s"})
+                  lean-repl/mathlib-env (fn [& _] nil)
+                  lean-pool/checkout! (fn [& _] {:id "s"})
+                  lean-repl/run-command (fn [& _] {:ok true :sorries [{:goal "g"}]})
+                  llm/chat (fn [& _]
+                             {:content (str "```tool-call\n"
+                                            (json/write-str
+                                             {:name "sketch"
+                                              :args {:claim "the greedy exchange terminates"
+                                                     :lean "theorem g : t := by sorry"}})
+                                            "\n```")
+                              :finish-reason "stop"})]
+      (let [after (aloop/run-turn {:conn c :run-id rid :max-turns 40
+                                   :llm-adapter :a :llm-config {:max-tokens 16384}}
+                                  b 1)]
+        (is (= :build (:phase after)))
+        (is (= 1 (:phase-entered-turn after)))
+        (is (= :sketch (get-in after [:artifacts 0 :claim-status])))))))
+
+(deftest explore-cap-expiry-forces-build-and-says-so
+  ;; The release valve: a branch that cannot get a skeleton to elaborate must
+  ;; not be locked out of verification for the whole run. At the cap the
+  ;; prologue is declared over, and the branch is told why.
+  (let [c (db/connect ":memory:")
+        _ (db/migrate! c)
+        rid (runs/start-run! c {:problem "p" :beam-width 1})
+        b (state/new-branch {:id "B1" :problem "p"})
+        cap (gates/threshold :explore-cap)]
+    (runs/open-branch! c rid {:branch-id "B1" :created-at-turn 0})
+    (with-redefs [llm/chat (fn [& _]
+                             {:content (str "```tool-call\n"
+                                            (json/write-str
+                                             {:name "thesis"
+                                              :args {:goal "settle Q-1"
+                                                     :technique "scalarization"
+                                                     :subClaims ["the box bound holds"]}})
+                                            "\n```")
+                              :finish-reason "stop"})]
+      (let [after (aloop/run-turn {:conn c :run-id rid :max-turns 40
+                                   :llm-adapter :a :llm-config {:max-tokens 16384}}
+                                  b (inc cap))]
+        (is (= :build (:phase after)))
+        (is (= (inc cap) (:phase-entered-turn after)))
+        (is (some #(and (= "user" (:role %))
+                        (str/includes? (:content %) "prologue is over"))
+                  (:messages after))
+            "the branch is told the prologue is over and why")))))
+
+(deftest a-refused-verification-in-explore-banks-a-mechanics-turn
+  ;; The refusal must not read as mathematics: a branch refused a
+  ;; verification in explore has failed at nothing, so the turn is mechanics
+  ;; and the cull counter does not move.
+  (let [c (db/connect ":memory:")
+        _ (db/migrate! c)
+        rid (runs/start-run! c {:problem "p" :beam-width 1})
+        b (state/new-branch {:id "B1" :problem "p"})]
+    (runs/open-branch! c rid {:branch-id "B1" :created-at-turn 0})
+    (with-redefs [llm/chat (fn [& _]
+                             {:content (str "```tool-call\n"
+                                            (json/write-str
+                                             {:name "verify"
+                                              :args {:claim "the sequence converges"
+                                                     :prolog "conv_seq"}})
+                                            "\n```")
+                              :finish-reason "stop"})]
+      (let [after (aloop/run-turn {:conn c :run-id rid :max-turns 40
+                                   :llm-adapter :a :llm-config {:max-tokens 16384}}
+                                  b 1)
+            turn (first (journal/turns c rid))]
+        (is (= "mechanics" (:category turn)))
+        (is (= 0 (:consecutive-failures after)))))))
+
+(deftest a-root-branch-starts-its-phase-clock-at-zero
+  ;; loop.clj creates the root branch without :created-at-turn, so the phase
+  ;; clock has to survive that: a nil :phase-entered-turn is a trap for the
+  ;; next reader — vf-9wx, the GUI — and the fallback in
+  ;; explore-cap-expired? exists to paper over exactly this.
+  (let [b (state/new-branch {:id "B1" :problem "p"})]
+    (is (= 0 (:phase-entered-turn b)))))
+
+(deftest phase-refusals-carry-the-policy-marker
+  ;; The cull must be able to tell a declined call from a malformed fence;
+  ;; the marker is how the refusal survives the journey to record-outcome.
+  (let [explore (state/new-branch {:id "B1" :problem "p"})
+        build (state/enter-build explore 3)]
+    (is (true? (:policy-refusal? (tools/phase-refusal {:branch explore
+                                                       :tool-name "verify"}))))
+    (is (true? (:policy-refusal? (tools/phase-refusal {:branch build
+                                                       :tool-name "sketch"}))))))
+
+(deftest six-build-phase-sketch-refusals-are-policy-not-fences
+  ;; The full path, six times: a build-phase branch calls sketch, the harness
+  ;; refuses each on phase policy, and the counters come out as policy
+  ;; refusals — so the cull, were it to fire, would name the policy and not a
+  ;; malformed fence. The journal keeps the split so a resume rebuilds it.
+  (let [c (db/connect ":memory:")
+        _ (db/migrate! c)
+        rid (runs/start-run! c {:problem "p" :beam-width 1})
+        b (-> (state/new-branch {:id "B1" :problem "p"})
+              (state/enter-build 0))]
+    (runs/open-branch! c rid {:branch-id "B1" :created-at-turn 0})
+    (with-redefs [llm/chat (fn [& _]
+                             {:content (str "```tool-call\n"
+                                            (json/write-str
+                                             {:name "sketch"
+                                              :args {:claim "the greedy exchange terminates"
+                                                     :lean "theorem g : t := by sorry"}})
+                                            "\n```")
+                              :finish-reason "stop"})]
+      (let [after (reduce (fn [b turn]
+                            (aloop/run-turn {:conn c :run-id rid :max-turns 40
+                                             :llm-adapter :a
+                                             :llm-config {:max-tokens 16384}}
+                                            b turn))
+                          b (range 1 7))]
+        (is (= :build (:phase after)))
+        (is (= 6 (:consecutive-mechanics-failures after)))
+        (is (= 6 (:consecutive-policy-refusals after))
+            "every one of them a well-formed call the harness declined"))
+      (testing "and the journal keeps the split for a resumed run"
+        (is (= 6 (count (filter #(pos? (:policy_refusal %))
+                                (journal/turns c rid)))))))))
+
+(deftest a-resumed-branch-keeps-its-policy-refusal-count
+  ;; The cull reason must stay true across a resume: policy refusals are
+  ;; journalled on the turn and rebuilt through the same record-outcome the
+  ;; live loop uses, so the split between declined calls and malformed fences
+  ;; survives a crash.
+  (with-db [c]
+    (let [rid (runs/start-run! c {:problem "p" :max-turns 10 :beam-width 1})]
+      (runs/open-branch! c rid {:branch-id "B1" :created-at-turn 0})
+      (doseq [t (range 1 4)]
+        (journal/record-turn! c rid {:branch-id "B1" :turn t
+                                     :tool-name "sketch" :result "refused"
+                                     :category "mechanics"
+                                     :policy-refusal? true}))
+      (let [handed (atom nil)]
+        (with-redefs [beam/run-rounds (fn [_ branches _]
+                                        (reset! handed branches)
+                                        {:status :captured})
+                      veriframe.engine.prolog/create-session (fn [_] nil)]
+          (resume/resume! {:conn c :config {} :run-id rid}))
+        (let [b (first @handed)]
+          (is (= 3 (:consecutive-policy-refusals b)))
+          (is (= 3 (:consecutive-mechanics-failures b))))))))
+
+(deftest a-resumed-branch-keeps-its-phase
+  ;; state.clj promises everything a gate needs is journalled; the phase is
+  ;; no exception. It is rebuilt from the banked sketch artifacts — a sketch
+  ;; on record means the branch left explore, and its turn is the phase
+  ;; entry.
+  (with-db [c]
+    (let [rid (runs/start-run! c {:problem "p" :max-turns 10 :beam-width 1})]
+      (runs/open-branch! c rid {:branch-id "B1" :created-at-turn 0})
+      (journal/record-turn! c rid {:branch-id "B1" :turn 1 :tool-name "sketch"
+                                   :result "ok" :category "neutral"})
+      (journal/record-artifact! c rid {:branch-id "B1" :turn 1 :kind :lean
+                                       :claim "the greedy exchange terminates"
+                                       :claim-status :sketch})
+      (let [handed (atom nil)]
+        (with-redefs [beam/run-rounds (fn [_ branches _]
+                                        (reset! handed branches)
+                                        {:status :captured})
+                      veriframe.engine.prolog/create-session (fn [_] nil)]
+          (resume/resume! {:conn c :config {} :run-id rid}))
+        (let [b (first @handed)]
+          (is (= :build (:phase b)))
+          (is (= 1 (:phase-entered-turn b))))))))
+
 (deftest shared-artifact-log-round-trips
   ;; The failure log's twin: what an engine CONFIRMED, with provenance inline.
   (with-db [c]
@@ -3768,6 +4120,35 @@
         (is (= 1 (:consecutive-failures b))
             "and starts from 1, not compounded by the malformed turns")))))
 
+(deftest a-policy-refusal-is-mechanics-but-not-a-malformed-fence
+  ;; vf-b25/vf-eaw follow-up. A phase or sketch-diversity refusal is a
+  ;; mechanics turn — nothing to do with the mathematics — but the branch
+  ;; emitted a perfectly well-formed call and was declined. Counting it only
+  ;; as a malformed fence would make the cull reason a lie, so it gets its
+  ;; own counter with the same clear rule.
+  (testing "six policy refusals count on their own counter, not just mechanics"
+    (let [b (reduce (fn [b _] (state/record-outcome b {:category :mechanics
+                                                       :policy-refusal? true}))
+                    (state/new-branch {:id "B1" :problem "p"})
+                    (range 6))]
+      (is (= 6 (:consecutive-mechanics-failures b)))
+      (is (= 6 (:consecutive-policy-refusals b)))))
+  (testing "a genuinely malformed fence does not move the policy counter"
+    (let [b (reduce (fn [b _] (state/record-outcome b {:category :mechanics}))
+                    (state/new-branch {:id "B1" :problem "p"})
+                    (range 6))]
+      (is (= 6 (:consecutive-mechanics-failures b)))
+      (is (zero? (:consecutive-policy-refusals b)))))
+  (testing "any real tool call clears both, exactly like the mechanics tally"
+    (let [b (state/record-outcome
+             (reduce (fn [b _] (state/record-outcome b {:category :mechanics
+                                                       :policy-refusal? true}))
+                     (state/new-branch {:id "B1" :problem "p"})
+                     (range 6))
+             {:category :neutral :progress? false})]
+      (is (zero? (:consecutive-policy-refusals b)))
+      (is (zero? (:consecutive-mechanics-failures b))))))
+
 (deftest a-claim-has-to-be-a-statement-not-a-label
   ;; Three entries in the campaign's inherited set read "weighted sum yields
   ;; lex min", "coordinate bound from Q bound" and "one coordinate
@@ -4158,6 +4539,46 @@
                  (:inactive-reason dead))))
       (testing "and the last branch standing is never culled for it either"
         (is (state/active? (#'beam/cull-or-keep ctx (babbling (* 4 threshold)) 0 [])))))))
+
+(deftest a-branch-culled-on-policy-refusals-is-not-blamed-for-malformed-fences
+  ;; Six build-phase `sketch` refusals are six perfectly well-formed calls the
+  ;; harness declined — but the mechanics cull string said "could not emit a
+  ;; well-formed fence", which would be a lie in the permanent record. gen-30
+  ;; B3.2 was culled with exactly that false reason when the real cause was a
+  ;; harness parse bug, and the reason was believed. The cull says what
+  ;; actually happened: the policy, and the phase it happened in.
+  (with-db [c]
+    (let [rid (runs/start-run! c {:problem "p"})
+          ctx {:conn c :run-id rid}
+          threshold (gates/threshold :cull-threshold)
+          b (-> (branch-with :id "BM"
+                             :consecutive-mechanics-failures (* 2 threshold)
+                             :consecutive-policy-refusals (* 2 threshold)
+                             :phase :build)
+                (assoc :turns (vec (repeat 8 {}))))
+          dead (#'beam/cull-or-keep ctx b 2 [])]
+      (is (= :culled (:status dead)))
+      (is (not (re-find #"(?i)well-formed fence|malformed" (:inactive-reason dead)))
+          "a declined call is not a protocol failure")
+      (is (re-find #"(?i)policy" (:inactive-reason dead))
+          "the reason names the policy")
+      (is (re-find #"(?i)build" (:inactive-reason dead))
+          "and the phase it happened in"))))
+
+(deftest a-mixed-streak-culls-with-both-counts
+  (with-db [c]
+    (let [rid (runs/start-run! c {:problem "p"})
+          ctx {:conn c :run-id rid}
+          threshold (gates/threshold :cull-threshold)
+          b (-> (branch-with :id "BM"
+                             :consecutive-mechanics-failures (* 2 threshold)
+                             :consecutive-policy-refusals 2)
+                (assoc :turns (vec (repeat 8 {}))))
+          dead (#'beam/cull-or-keep ctx b 2 [])]
+      (is (= :culled (:status dead)))
+      (is (re-find #"(?i)2 .*policy" (:inactive-reason dead)))
+      (is (re-find #"(?i)4 .*fence|4 .*malformed" (:inactive-reason dead))
+          "the two kinds are counted separately, so the record stays true"))))
 
 (deftest an-encoding-that-proves-more-than-the-claim-still-proves-the-claim
   ;; gen-18 B4 T33. The claim was a theorem about a finite set D; the encoding

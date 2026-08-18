@@ -32,6 +32,7 @@
             [clojure.string :as str]
             [veriframe.agent.claims :as claims]
             [veriframe.agent.faithful :as faithful]
+            [veriframe.agent.gates :as gates]
             [veriframe.agent.state :as state]
             [veriframe.agent.verdict :as verdict]
             [veriframe.engine.lean-pool :as lean-pool]
@@ -383,6 +384,85 @@
     (if (= :released outcome)
       (claims/release! claims (:id branch) claim)
       (claims/complete! claims (:id branch) claim outcome payload))))
+
+(defn- sketch-diversity-refusal
+  "Refuse a sketch too close to one a LIVE sibling has already banked.
+
+  vf-eaw: gen-29 put all three branches on TARGET 1 within one turn and never
+  diversified; gen-30 forked to eight branches all circling the same lemma.
+  The beam pays for N branches and buys one line of attack, and the boundary
+  where a plan can still change cheaply is the sketch call itself. The
+  sibling's approach is quoted and the branch named, so the branch can pick
+  something different.
+
+  The claim is released like every other sketch exit: a plan was never made,
+  so nothing was decided, and another branch must be able to take the claim.
+  Returns nil when there is no near-duplicate, or no store to ask (a nil
+  registry/no conn makes tools behave as before)."
+  [{:keys [branch conn run-id] :as ctx}]
+  (when (and conn run-id (seq (arg ctx :claim)))
+    (let [claim (arg ctx :claim)
+          threshold (gates/threshold :sketch-duplicate-threshold)
+          dup (some (fn [s]
+                      (when (artifacts/near-duplicate? claim (:claim s) threshold)
+                        s))
+                    (artifacts/sibling-sketches conn run-id (:id branch)))]
+      (when dup
+        (settle-claim! ctx claim :released nil)
+        (malformed branch
+                   (str "A live sibling, " (:branch_id dup)
+                        ", has already banked a sketch for almost this same"
+                        " plan:\n\n\"" (:claim dup) "\"\n\n"
+                        "Two branches sketching the same line buys one attack"
+                        " twice. Pick a different decomposition — a different"
+                        " claim, or a different Lean structure."))))))
+
+(defn phase-refusal
+  "The one place that owns the explore/build phase policy, consulted by the
+  branch loop BEFORE run-tool dispatch. Returns a result map refusing the
+  call, or nil when it may proceed.
+
+  vf-b25: verification is withheld during :explore — DSP and Hilbert both
+  separate drafting from proving, and this harness's most reliable finding is
+  that a gate which WITHHOLDS changes behaviour while one which SUGGESTS does
+  not (gen-27 ignored seventeen advisory nudges) — and sketch is withheld
+  during :build, or a branch that cannot prove anything retreats into
+  re-planning forever (the drift where gen-24, gen-26 and gen-27 each hit the
+  hard lemma and spent the rest of the run re-confirming settled things).
+
+  Both refusals are `malformed` (:mechanics), deliberately: a branch refused
+  by harness policy has failed at nothing, and charging it to the cull
+  counter would be the vf-jki mistake. The mechanics count still bounds a
+  branch looping on refusals.
+
+  Every refusal carries `:policy-refusal? true`, so the cull record can tell
+  a declined call from a malformed fence and the reason string stays true."
+  [{:keys [branch tool-name] :as ctx}]
+  (let [refusal (cond
+                  (and (= :explore (:phase branch))
+                       (contains? state/verification-tools tool-name))
+                  (malformed branch
+                             (str "You are in the EXPLORE phase: no claim reaches an engine"
+                                  " until the branch has a plan on record. Sketch the"
+                                  " approach as a Lean skeleton — `sketch({claim, lean})` —"
+                                  " and use `lean_search` to find the lemmas it will cite."
+                                  " The phase ends when a sketch elaborates, or when the"
+                                  " explore budget runs out."))
+
+                  (and (= :build (:phase branch))
+                       (= "sketch" tool-name))
+                  (malformed branch
+                             (str "You are in the BUILD phase: the plan is already"
+                                  " committed, so `sketch` is refused. The way forward is to"
+                                  " close its goals — `proof_start` on a statement, or"
+                                  " `verify_lean` once the whole proof is ready."))
+
+                  (= "sketch" tool-name)
+                  (sketch-diversity-refusal ctx)
+
+                  :else nil)]
+    (cond-> refusal
+      refusal (assoc :policy-refusal? true))))
 
 (declare judge)
 

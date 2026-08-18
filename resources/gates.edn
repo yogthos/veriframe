@@ -178,4 +178,21 @@
  {:value 6 :kind :re-fire-guard :capability-tunable? true
   :doc "Turns before the same branch may be invited to fork again. The
         invitation predicate cannot tell 'strong' from 'strong and already
-        asked', which is the shape re-fire guards exist for."}}
+        asked', which is the shape re-fire guards exist for."}
+
+ :explore-cap
+ {:value 5 :kind :threshold :capability-tunable? false
+  :doc "Turns a branch may spend in the explore prologue before it is forced
+        into build. The sketch tool is new — no generation has run with it —
+        so 5 is a judgement call with no data behind it: a couple of searches
+        and a sketch attempt or two, against prologue-cap's 8. The forced
+        transition is the release valve that keeps a branch which cannot get
+        a skeleton to elaborate from being locked out of verification for the
+        whole run."}
+
+ :sketch-duplicate-threshold
+ {:value 0.6 :kind :threshold :capability-tunable? false
+  :doc "Jaccard cutoff for refusing a sketch too close to a live sibling's.
+        UNCALIBRATED: the sketch tool landed after gen-30, so there is no
+        historical sketch data to tune against, and 0.6 is inherited from
+        ledger claim dedup, where it was tuned on claims, not plans."}}

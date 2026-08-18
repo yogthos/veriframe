@@ -768,3 +768,37 @@
           "the top heading has to cover plans too, or it misdescribes them"))
     (testing "the sketch section still says plainly that nothing in it is verified"
       (is (re-find #"(?i)UNVERIFIED|not results" block)))))
+
+(deftest sibling-sketches-returns-live-siblings-only
+  ;; vf-eaw's diversity gate reads this query: a sketch too close to one a
+  ;; LIVE sibling banked is refused. Live is the operative word — a culled or
+  ;; shipped branch is not competing for the beam's width — and the branch's
+  ;; own sketches must not gate a refinement of its own plan.
+  (with-db [c]
+    (let [rid (runs/start-run! c {:problem "p"})
+          _ (runs/open-branch! c rid {:branch-id "B1"})
+          _ (runs/open-branch! c rid {:branch-id "B2"})
+          _ (runs/open-branch! c rid {:branch-id "B3"})
+          _ (runs/close-branch! c rid "B3" :culled "dominated on every objective")
+          _ (journal/record-artifact! c rid {:branch-id "B1" :turn 1 :kind :lean
+                                             :claim "my own plan, free to refine"
+                                             :claim-status :sketch})
+          _ (journal/record-artifact! c rid {:branch-id "B2" :turn 2 :kind :lean
+                                             :claim "a live sibling's plan"
+                                             :claim-status :sketch})
+          _ (journal/record-artifact! c rid {:branch-id "B3" :turn 3 :kind :lean
+                                             :claim "a culled sibling's plan"
+                                             :claim-status :sketch})
+          _ (journal/record-artifact! c rid {:branch-id "B2" :turn 4 :kind :smt
+                                             :claim "a confirmed thing, not a plan"
+                                             :claim-status :confirmed})
+          rows (artifacts/sibling-sketches c rid "B1")]
+      (is (= ["a live sibling's plan"] (mapv :claim rows)))
+      (is (= ["B2"] (mapv :branch_id rows)))
+      (is (= ["my own plan, free to refine"]
+             (mapv :claim (artifacts/sibling-sketches c rid "B2")))
+          "B2's own sketch is excluded; B1 is a live sibling of B2")
+      (let [rid2 (runs/start-run! c {:problem "q"})]
+        (runs/open-branch! c rid2 {:branch-id "B1"})
+        (is (empty? (artifacts/sibling-sketches c rid2 "B1"))
+            "no sketches at all is an empty set, not an error")))))

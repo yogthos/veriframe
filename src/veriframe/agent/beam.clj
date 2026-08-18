@@ -124,6 +124,7 @@
   (let [threshold (gates/threshold :cull-threshold)
         fails (or (:consecutive-failures branch) 0)
         mech (or (:consecutive-mechanics-failures branch) 0)
+        pol (or (:consecutive-policy-refusals branch) 0)
         cull (fn [why] (assoc branch :status :culled :inactive-reason why))
         scores (get-in branch [:critic :scores])
         hard-floor (* (gates/threshold :cull-hard-multiple) threshold)]
@@ -133,8 +134,28 @@
       ;; a model having a bad turn; twice that is a branch that cannot work the
       ;; protocol, and saying so beats the dead-end line it used to die with.
       (and (>= mech (* 2 threshold)) (pos? survivors))
-      (cull (str "culled after " mech " consecutive turns with no usable tool"
-                 " call; the branch could not emit a well-formed fence"))
+      (cull (cond
+              ;; The mechanics counter also counts policy refusals, so the
+              ;; reason has to say which actually happened. gen-30 B3.2 was
+              ;; culled with "could not emit a well-formed fence" when the
+              ;; real cause was a harness parse bug, and the reason was
+              ;; believed; a declined sketch or verification is a well-formed
+              ;; call the harness refused, and naming it as a protocol
+              ;; failure would be the same lie in the permanent record.
+              (and (pos? pol) (= pol mech))
+              (str "culled after " mech " consecutive turns with no usable"
+                   " tool call; every call was declined by harness phase policy"
+                   " in the " (str/upper-case (name (or (:phase branch) :build)))
+                   " phase")
+
+              (pos? pol)
+              (str "culled after " mech " consecutive turns with no usable"
+                   " tool call; " pol " were declined on phase policy and "
+                   (- mech pol) " could not emit a well-formed fence")
+
+              :else
+              (str "culled after " mech " consecutive turns with no usable tool"
+                   " call; the branch could not emit a well-formed fence")))
 
       (not (and (>= fails threshold)
                 (not (state/banked-in-last branch

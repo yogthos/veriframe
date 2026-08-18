@@ -42,6 +42,12 @@
   - tiers-seen from rebuilt artifact tiers.
   - mechanics from the turns parse_error / auto_repaired columns; fence
     signals that are not journalled (truncation, multi-fence) reset to zero.
+  - consecutive-policy-refusals replayed from the turns policy_refusal
+    column, through record-outcome exactly as the live loop counts it.
+  - phase from the banked sketch artifacts, phase-entered-turn from the first
+    sketch's turn. A cap-forced build with no sketch resumes as :explore and
+    re-fires the cap check — the re-entry can only grant extra explore turns,
+    never fewer.
 
   DOES NOT REPLAY (known limits, accepted):
   - Lean: a resumed branch gets no Lean session and its Lean tools report the
@@ -115,6 +121,14 @@
   [run branch-row turns artifacts firings max-turns session]
   (let [branch-id (:id branch-row)
         branch-turns (get turns branch-id [])
+        ;; The phase is rebuilt from the banked sketch artifacts: a sketch on
+        ;; record means the branch left explore, and its turn is the phase
+        ;; entry. A cap-forced build with no sketch resumes as :explore and
+        ;; re-fires the cap check on the next turn — conservative, and the
+        ;; re-entry can only grant extra explore turns, never fewer.
+        artifact-maps (mapv artifact-map (get artifacts branch-id []))
+        first-sketch (some #(when (= :sketch (:claim-status %)) (:turn %))
+                           artifact-maps)
         base (-> (state/new-branch {:id branch-id
                                     :parent-id (:parent_id branch-row)
                                     :problem (:problem run)
@@ -125,7 +139,10 @@
                  (assoc :status (keyword (:status branch-row))
                         :inactive-reason (:inactive_reason branch-row)
                         :thesis (parse-json (:thesis branch-row))
-                        :artifacts (mapv artifact-map (get artifacts branch-id []))
+                        :artifacts artifact-maps
+                        :phase (if first-sketch :build :explore)
+                        :phase-entered-turn (or first-sketch
+                                                (:created_at_turn branch-row))
                         :gate-history (mapv (fn [f]
                                               {:gate (keyword (:gate f))
                                                :turn (:turn f)})
@@ -148,7 +165,8 @@
                                                 :tool (:tool_name t)
                                                 :category cat})
                                (state/record-outcome {:category cat
-                                                      :progress? (= :success cat)}))))
+                                                      :progress? (= :success cat)
+                                                      :policy-refusal? (pos? (or (:policy_refusal t) 0))}))))
                        base
                        branch-turns)
         branch (assoc branch

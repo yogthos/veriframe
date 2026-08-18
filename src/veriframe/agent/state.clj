@@ -41,6 +41,12 @@
    ;; malformed fence says nothing about whether the branch's line of inquiry
    ;; is any good, and the cull gate reads that counter as if it did.
    :consecutive-mechanics-failures 0
+   ;; The subset of the mechanics tally that were calls the harness declined
+   ;; on phase policy (vf-b25/vf-eaw) — perfectly well-formed calls, so the
+   ;; cull record must be able to tell them from malformed fences, or the
+   ;; reason string lies in the permanent record (gen-30 B3.2 died with
+   ;; exactly that false reason).
+   :consecutive-policy-refusals 0
    ;; Turns since the last progress event. See gates/progress-stalled?.
    :turns-since-progress 0
    ;; Whether this branch has ever produced anything at all. The stall counter
@@ -55,6 +61,16 @@
    ;; the signal measures (dirge PR 740).
    :mechanics {:calls 0 :parse-errors 0 :auto-repairs 0
                :unknown-tools 0 :truncations 0 :multi-fences 0}
+   ;; The draft/prove split (vf-b25): :explore until a sketch is on record,
+   ;; :build after. Verification is withheld during explore — the harness's
+   ;; one reliably-working gate is the one that WITHHOLDS — and sketch is
+   ;; withheld after, or a branch that cannot prove anything retreats into
+   ;; re-planning forever.
+   :phase :explore
+   ;; The turn the CURRENT phase began, not when the branch did. Starts at
+   ;; branch creation so a forked branch gets a full explore budget instead
+   ;; of inheriting its parent's spent one; reenter-explore moves it.
+   :phase-entered-turn (or created-at-turn 0)
    ;; Gate firings awaiting settlement, as {:id :gate :prediction :window :turn}
    :open-predictions []
    ;; Verification tiers seen. :fast is a one-shot check, :slow is a
@@ -251,6 +267,37 @@
   #{"verify" "verify_smt" "verify_lean" "verify_octave" "verify_template"
     "proof_start" "proof_step" "measure" "octave_eval"})
 
+(defn enter-build
+  "Transition the branch into :build, stamping the turn the phase began.
+
+  A no-op when already there: the stamp means when THIS phase began, and the
+  release valve's re-entry is reenter-explore's job (vf-9wx)."
+  [branch turn]
+  (if (= :build (:phase branch))
+    branch
+    (assoc branch :phase :build :phase-entered-turn turn)))
+
+(defn reenter-explore
+  "Drop the branch back into :explore and restart the phase clock.
+
+  Nothing calls this yet — vf-9wx, the stuck-branch recovery, will. The
+  restart is the point: the explore cap is per-entry, not per-branch, so a
+  branch re-dropped into explore gets a fresh budget rather than being
+  re-forced out on the next turn."
+  [branch turn]
+  (assoc branch :phase :explore :phase-entered-turn turn))
+
+(defn explore-cap-expired?
+  "Whether the branch has spent more than `cap` turns in the current explore
+  entry. The release valve: a branch that cannot get a skeleton to elaborate
+  must not be locked out of verification for the whole run. Only :explore is
+  capped — build has no clock, and reenter-explore restarts the count."
+  [branch cap current-turn]
+  (and (= :explore (:phase branch))
+       (> (- current-turn (or (:phase-entered-turn branch)
+                              (:created-at-turn branch)))
+          cap)))
+
 (defn record-outcome
   "Apply a turn's outcome to the counters the gates read.
 
@@ -288,7 +335,7 @@
   emitting nothing but garbage would hold a beam slot to the turn budget. Any
   well-formed call clears the tally — the branch has demonstrated it can work
   the protocol, whatever the call then did."
-  [branch {:keys [category progress? claim]}]
+  [branch {:keys [category progress? claim policy-refusal?]}]
   (let [real-progress? (and progress?
                             (or (nil? claim) (advances-thesis? branch claim)))]
     (cond-> branch
@@ -297,8 +344,12 @@
       (= :neutral category) (update :consecutive-failures #(max 0 (dec (or % 0))))
       (= :mechanics category)
       (update :consecutive-mechanics-failures (fnil inc 0))
+      (and (= :mechanics category) policy-refusal?)
+      (update :consecutive-policy-refusals (fnil inc 0))
       (contains? #{:failure :success :neutral} category)
       (assoc :consecutive-mechanics-failures 0)
+      (contains? #{:failure :success :neutral} category)
+      (assoc :consecutive-policy-refusals 0)
       real-progress? (assoc :turns-since-progress 0 :any-progress? true)
       (not real-progress?) (update :turns-since-progress inc))))
 
