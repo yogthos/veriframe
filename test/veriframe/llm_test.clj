@@ -27,6 +27,38 @@
 
 (defn- fenced [body] (str "prose before\n```tool-call\n" body "\n```\nprose after"))
 
+(deftest xml-parameters-carry-lists-as-json
+  ;; The XML parameter form has no way to express an array, so a model handing
+  ;; over subClaims writes the JSON text as the parameter body. Returning that
+  ;; verbatim gave downstream code a String where it expected a collection,
+  ;; which seq'd into Characters and died in the journal writer with "Don't
+  ;; know how to write JSON of class java.lang.Character" — killing gen-31's
+  ;; B1.3 and B2.2 (2026-08-18), both of which were on TARGET 1 step 4.
+  ;; Same reason the number case exists: a value whose TYPE is wrong throws
+  ;; somewhere far from here.
+  (let [resp (str "<invoke name=\"thesis\">\n"
+                  "<parameter name=\"goal\">Close TARGET 1 step 4</parameter>\n"
+                  "<parameter name=\"subClaims\">[\"define the adjacency\", \"build the Finset\"]</parameter>\n"
+                  "</invoke>")
+        parsed (fence/parse-tool-call resp {})]
+    (is (= ["define the adjacency" "build the Finset"] (get-in parsed [:args :subClaims]))
+        "a JSON array in a parameter body is a list, not a string")
+    (is (= "Close TARGET 1 step 4" (get-in parsed [:args :goal]))
+        "and ordinary prose is untouched")))
+
+(deftest xml-parameter-that-merely-starts-with-a-bracket-stays-a-string
+  ;; Lean and prose both contain brackets. Only something that actually parses
+  ;; as JSON is treated as structure; everything else is verbatim, which is the
+  ;; whole reason a model reaches for this form when handing over a proof.
+  (let [resp (str "<invoke name=\"verify_lean\">\n"
+                  "<parameter name=\"claim\">[1,2,3] is not sorted descending</parameter>\n"
+                  "<parameter name=\"lean\">theorem t : True := by\n  simp [List.mem_cons]</parameter>\n"
+                  "</invoke>")
+        parsed (fence/parse-tool-call resp {})]
+    (is (string? (get-in parsed [:args :claim])))
+    (is (str/includes? (get-in parsed [:args :lean]) "List.mem_cons")
+        "a Lean body with brackets survives verbatim")))
+
 (deftest xml-parameters-tolerate-extra-attributes
   ;; Observed live in gen-31, run f4b53e8f, branch B3 (2026-08-18).
   ;; deepseek-v4-pro emits `<parameter name="query" string="true">`. The

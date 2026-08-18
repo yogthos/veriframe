@@ -171,9 +171,25 @@
   strings."
   [s]
   (let [t (str/trim s)]
-    (if (re-matches #"-?\d+" t)
-      (parse-long t)
-      s)))
+    (cond
+      (re-matches #"-?\d+" t) (parse-long t)
+
+      ;; A JSON array or object. The XML parameter form has no way to express
+      ;; one, so a model handing over `subClaims` writes the JSON text as the
+      ;; body. Returned verbatim that is a String where the caller wants a
+      ;; collection, which seqs into Characters and dies far from here — in the
+      ;; journal writer, with "Don't know how to write JSON of class
+      ;; java.lang.Character", taking the branch with it. gen-31 lost B1.3 and
+      ;; B2.2 that way, both of them on the run's actual target.
+      ;;
+      ;; Only when it really parses. Lean bodies and prose contain brackets,
+      ;; and a value that merely starts with one stays the string it is.
+      (and (or (str/starts-with? t "[") (str/starts-with? t "{"))
+           (str/includes? t "\""))
+      (let [{:keys [ok value]} (read-json t)]
+        (if (and ok (coll? value)) value s))
+
+      :else s)))
 
 (defn- xml-call
   "The response's last complete <invoke>, as {:name :args}, or nil.
