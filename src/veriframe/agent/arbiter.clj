@@ -131,13 +131,22 @@
                    ;; blind spot there would have re-measured the same
                    ;; misleading zero vf-31m exists to correct.
                    ;;
-                   ;; A refusal leaves the policy counter non-zero and any
-                   ;; accepted call clears it, which is how the two are told
-                   ;; apart. Known soft spot: octave_eval carries no claim and
-                   ;; is never refused, so it reads as compliance on its own.
+                   ;; The MECHANICS counter, not the policy one. Every call
+                   ;; the harness declines increments it and every call it
+                   ;; accepts clears it, so it covers refusals the phase policy
+                   ;; never sees. Keying on the policy counter alone produced a
+                   ;; false met on gen-31 B2.3 (2026-08-18): the branch's next
+                   ;; turn was declined with "That statement is already proved
+                   ;; ... in different words", which is :mechanics but not a
+                   ;; policy refusal, and the gate was credited with compliance
+                   ;; that had not happened. A settling that can be wrong in
+                   ;; THIS direction is worse than one that is blind, because
+                   ;; the met-rate is the only evidence the reframe works.
+                   ;; Known soft spot: octave_eval carries no claim and is
+                   ;; never refused, so it reads as compliance on its own.
                    (and (:reframe-entered-turn branch-after)
                         (some (set tools-called) state/verification-tools)
-                        (zero? (or (:consecutive-policy-refusals branch-after) 0))))
+                        (zero? (or (:consecutive-mechanics-failures branch-after) 0))))
         ;; Its prediction is "the branch retracts, changes technique, or ships
         ;; what it has", and each of those is a tool the harness can see.
         ;; Absent from this case the fallthrough returned false, so the gate

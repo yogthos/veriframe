@@ -2054,9 +2054,25 @@
       (is (nil? (arbiter/settle firing
                                 {:current-turn 11 :tools-called ["proof_start"]
                                  :branch-before reframed
-                                 :branch-after (assoc reframed :consecutive-policy-refusals 1)}))
+                                 :branch-after (assoc reframed :consecutive-mechanics-failures 1)}))
           "a REFUSED call is the branch re-submitting the withheld approach, which
            is the opposite of compliance")
+      (testing "and any other refusal counts the same way"
+        ;; Observed as a FALSE met on gen-31 B2.3 t19 (2026-08-18). Its next
+        ;; turn was a verify_smt the harness declined with "That statement is
+        ;; already proved ... in different words" — a duplicate-claim refusal,
+        ;; which is :mechanics but NOT a policy refusal. Keying on the policy
+        ;; counter alone read that as an accepted call and credited the gate
+        ;; with compliance the branch had not produced. The mechanics counter
+        ;; is the right signal: every declined call increments it and every
+        ;; accepted one clears it.
+        (is (nil? (arbiter/settle firing
+                                  {:current-turn 11 :tools-called ["verify_smt"]
+                                   :branch-before reframed
+                                   :branch-after (assoc reframed
+                                                        :consecutive-policy-refusals 0
+                                                        :consecutive-mechanics-failures 1)}))
+            "a duplicate-claim refusal is not compliance either"))
       (is (nil? (arbiter/settle firing
                                 {:current-turn 11 :tools-called ["proof_start"]
                                  :branch-before (branch-with)
