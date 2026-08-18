@@ -252,7 +252,14 @@
                  (-> (state/enter-build turn)
                      (state/add-message
                       "user"
-                      (str "[harness] The explore prologue is over: "
+                      ;; "prologue" only for a branch that has never left
+                      ;; explore. Once a reframe can send one back (vf-9wx)
+                      ;; the same message on a re-entry would be describing
+                      ;; something that is not happening.
+                      (str "[harness] "
+                           (if (:reframe-entered-turn branch)
+                             "Your re-planning budget is spent: "
+                             "The explore prologue is over: ")
                            (gates/threshold :explore-cap)
                            " turns without a sketch on record. You are in the"
                            " BUILD phase — Lean verification is available and"
@@ -368,7 +375,18 @@
                            ;; place rather than inside each verify tool.
                            (cond-> (contains? state/verification-tools tool)
                              (dissoc :searches-since-attempt))
-                           (state/record-outcome (assoc result :claim (get-in parsed [:args :claim])))
+                           ;; The tool and the claim ride along so the branch
+                           ;; can remember what it was grinding when it failed
+                           ;; — which is what the stuck gate withholds, and
+                           ;; how it decides whether a Lean sketch is a move
+                           ;; this branch can make (vf-9wx). proof_step carries
+                           ;; no claim of its own; the one it is working sits
+                           ;; on the branch.
+                           (state/record-outcome
+                            (assoc result :tool tool
+                                   :claim (or (get-in parsed [:args :claim])
+                                              (when (#{"proof_start" "proof_step"} tool)
+                                                (get-in branch [:proof :claim])))))
                            (state/add-turn {:turn turn :tool tool
                                             :category (:category result)
                                             ;; Kept only for failures, and only
@@ -397,7 +415,12 @@
                            ;; prologue: from the turn it lands, verification
                            ;; is open (vf-b25).
                            (= :sketch (:claim-status a))
-                           (state/enter-build turn))
+                           (state/enter-build turn)
+                           ;; And anything banked at all ends a reframe: the
+                           ;; withheld approach could not have produced it, so
+                           ;; the branch has done what was asked (vf-9wx).
+                           (:reframe-entered-turn branch)
+                           (state/clear-reframe))
                          branch)
                 ;; A confirmation is the green point the safe-state rung falls
                 ;; back to. The snapshot is the session's replay log, not a
@@ -496,7 +519,20 @@
                     ;; reacted" and re-fires every turn past the threshold.
                     (= :turn-budget (:gate decision))
                     (assoc :notified-fractions
-                           (gates/crossed-fractions branch max-turns))))))))))))
+                           (gates/crossed-fractions branch max-turns))
+                    ;; The stuck gate is the only one that changes branch state
+                    ;; rather than only speaking (vf-49o). A gate is data and
+                    ;; cannot mutate the branch, so its effect is applied here,
+                    ;; beside the turn-budget bookkeeping. From this turn the
+                    ;; approach that kept failing is refused on every engine,
+                    ;; and the failures that led here stop counting toward the
+                    ;; cull for :reframe-grace turns (vf-31m) — the beam culls
+                    ;; only after every branch has advanced, so the reprieve is
+                    ;; in place before retention is decided on this same turn.
+                    (= :stuck (:gate decision))
+                    (state/begin-reframe turn
+                                         (:last-failed-claim branch)
+                                         (:last-failed-tool branch))))))))))))
 
 ;; --- the run ----------------------------------------------------------------
 

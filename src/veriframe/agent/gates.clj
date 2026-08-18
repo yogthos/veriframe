@@ -236,10 +236,37 @@
     :priority 8
     :budget :max-stuck-hints
     :doc "Consecutive failed or repetitive verifications. Keyed on failure,
-          which is why the progress gate below exists as well."
+          which is why the progress gate below exists as well.
+
+          The one gate that changes branch state rather than only speaking.
+          It used to append a hint and nothing else, and settled 0 met across
+          every generation that recorded it — for two reasons, both fixed
+          together. It fired at cull-threshold, so the advice to change course
+          arrived on the turn the branch became killable for not having
+          changed it (vf-31m); stuck-threshold is now strictly lower and the
+          firing opens a grace window. And it merely suggested, where this
+          harness's one reliably-working gate is the one that WITHHOLDS
+          (vf-49o): the loop answers a firing by calling state/begin-reframe,
+          after which re-verifying the failing approach is refused on every
+          engine until the branch puts a different one on record.
+
+          A gate is data and cannot mutate the branch, so the effect lives in
+          the loop beside the turn-budget bookkeeping. The ordering that makes
+          it work is the beam's: every branch advances before any is culled,
+          so the reprieve is in place by the time retention is decided on the
+          same turn."
     :when (fn [{:keys [branch]}]
             (>= (:consecutive-failures branch) (threshold :stuck-threshold)))
-    :message (fn [_] (prompt "stuck"))
+    :message (fn [{:keys [branch]}]
+               (str (prompt "stuck")
+                    (when-let [c (:last-failed-claim branch)]
+                      (str "\n\n**Withheld**, until you put a different approach"
+                           " on record:\n\n> " c "\n\nThat claim will not reach an"
+                           " engine — any engine — while this stands. Everything"
+                           " else is open, including a smaller piece of the same"
+                           " goal. The next " (threshold :reframe-grace) " turns are"
+                           " yours to change course in; you will not be culled for"
+                           " the failures that led here."))))
     :prediction (fn [_] "the branch retracts, decomposes, or changes technique")
     :window 3}
 
@@ -250,8 +277,19 @@
           principled-blind here: the stall counter arms on a progress event, the
           stuck gate needs failures, and a branch making successful, varied,
           useless calls trips neither."
+    ;; Build phase only (vf-9wx). A banked sketch is deliberately :neutral
+    ;; with progress? false — a plan is not progress — so a branch dropped
+    ;; back into :explore by a reframe accrues nothing while it re-plans, and
+    ;; without this guard is told at turn 41 that it is 41 turns in with
+    ;; nothing verified. True, and useless to a branch doing exactly what the
+    ;; harness just asked of it. The ordering is right by construction: a
+    ;; branch that sketches at once gets the full build allowance before the
+    ;; nudge, one that burns its whole explore budget gets what is left, so
+    ;; the flailing branch gets LESS rope rather than more. (Counting from
+    ;; build entry instead would invert that, which is why it is not done.)
     :when (fn [{:keys [branch]}]
-            (and (not (:any-progress? branch))
+            (and (= :build (:phase branch))
+                 (not (:any-progress? branch))
                  (>= (state/turn-count branch) (threshold :prologue-cap))))
     :message (fn [{:keys [branch]}]
                (str (prompt "prologue-cap")

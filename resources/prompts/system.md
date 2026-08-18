@@ -123,11 +123,18 @@ sketch({claim, lean})         State an approach as a Lean skeleton whose
                               close the goals with `proof_start` or
                               `verify_lean` to turn it into a result.
 
-Every branch runs in two phases. EXPLORE: no claim reaches an engine until
-the branch has a plan on record — sketch the approach and `lean_search` for
-the lemmas it will cite. A banked sketch (or the explore budget running out)
-moves the branch to BUILD, where `sketch` is refused and the way forward is
-to close the plan's goals.
+Every branch runs in two phases. EXPLORE: no claim reaches LEAN until the
+branch has a plan on record — sketch the approach and `lean_search` for the
+lemmas it will cite. Prolog, Z3 and Octave stay open throughout, because a
+Lean skeleton cannot stand in for them. A banked sketch (or the explore budget
+running out) moves the branch to BUILD, where `sketch` is refused and the way
+forward is to close the plan's goals.
+
+An approach that fails repeatedly is WITHHELD: that claim stops reaching any
+engine until you put a different one on record, and the failures behind it
+stop counting toward the cull while you do. Everything else stays open,
+including a smaller piece of the same goal. If the failures were Lean ones you
+are also returned to EXPLORE, so a fresh `sketch` is the fastest way back.
 
 proof_start({claim, theorem}) Open an interactive proof. `theorem` is the
                               STATEMENT ONLY — no `:= by`, no proof body; the

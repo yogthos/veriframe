@@ -305,7 +305,14 @@
   (testing "the prologue cap covers the branch that produced nothing at all"
     ;; The case every other guard is principled-blind to: no failures for the
     ;; stuck gate, no progress event to arm the stall gate.
-    (let [b (branch-with :any-progress? false :turns (vec (repeat 8 {})))]
+    ;;
+    ;; In :build, because that is where a branch this old actually is — the
+    ;; explore cap (5) forces the transition well before the prologue cap (8),
+    ;; so the fixture would otherwise be a state the loop never produces. The
+    ;; phase is now part of the precondition; see the gate's own note and
+    ;; prologue-cap-is-silent-while-a-branch-is-re-planning.
+    (let [b (state/enter-build
+             (branch-with :any-progress? false :turns (vec (repeat 8 {}))) 6)]
       (is (= :prologue-cap (:gate (arbiter/decide {:branch b :max-turns 40}))))))
 
   (testing "the tier escalation fires only while everything is fast-tier"
@@ -378,6 +385,13 @@
     (doseq [g gates/gates :when (:budget g)]
       (is (some? (gates/threshold (:budget g)))
           (str (:gate g) " names a budget with no entry in gates.edn"))))
+
+  (testing "the stuck gate fires strictly before the branch is cullable"
+    ;; vf-31m. Both were 3, so the gate that says change your approach landed
+    ;; on the turn the branch became killable for not having changed it, and
+    ;; every move it predicts costs at least a turn. Asserted here rather than
+    ;; left to the two numbers agreeing by habit.
+    (is (< (gates/threshold :stuck-threshold) (gates/threshold :cull-threshold))))
 
   (testing "priorities are unique, or the arbiter's choice is arbitrary"
     (let [ps (map :priority gates/gates)]
@@ -1735,6 +1749,276 @@
     (doseq [tool (sort state/verification-tools)]
       (is (nil? (tools/phase-refusal {:branch b :tool-name tool}))
           (str tool " is open in build")))))
+
+;; --- the forced reframe (vf-9wx, vf-31m, vf-49o) -----------------------------
+;;
+;; The harness's only answer to repeated failure was to kill the branch. These
+;; tests pin the cheaper alternative that runs first: the approach that keeps
+;; failing is WITHHELD, the branch is given room to propose a different one,
+;; and the cull stays as the backstop.
+
+(deftest the-stuck-gate-fires-with-room-left-to-obey-it
+  ;; vf-31m. stuck-threshold and cull-threshold were both 3, so the hint that
+  ;; says change your approach arrived on the turn the branch became eligible
+  ;; to be killed for not having changed it. Every move it predicts — retract,
+  ;; decompose, change technique — costs at least one turn.
+  (is (< (gates/threshold :stuck-threshold) (gates/threshold :cull-threshold))
+      "the advice has to arrive before the execution or it cannot be obeyed")
+  (let [at-stuck (branch-with :consecutive-failures (gates/threshold :stuck-threshold)
+                              :turns (vec (repeat 10 {})))]
+    (is (some #{:stuck} (map :gate (arbiter/eligible {:branch at-stuck :max-turns 40})))
+        "the gate fires at its own threshold")
+    (is (= :active (:status (#'beam/cull-or-keep {:turn 10} at-stuck 2 [])))
+        "and the branch is not yet cullable when it does")))
+
+(deftest record-outcome-remembers-the-claim-that-failed
+  ;; What the reframe withholds. Only failures set it: a branch that fails on
+  ;; A and then succeeds on B has not been told to abandon anything.
+  (let [b (-> (branch-with)
+              (state/record-outcome {:category :failure :claim "the greedy exchange terminates"}))]
+    (is (= "the greedy exchange terminates" (:last-failed-claim b)))
+    (is (= "the greedy exchange terminates"
+           (:last-failed-claim (state/record-outcome b {:category :neutral :claim "something else"})))
+        "a claimless or non-failing turn does not overwrite it")))
+
+(deftest a-reframe-withholds-the-approach-that-keeps-failing
+  ;; vf-49o + vf-9wx. The harness's most reliable finding is that gates which
+  ;; WITHHOLD change behaviour and gates which SUGGEST do not. What stuck
+  ;; withholds is verification of the claim that keeps failing — every other
+  ;; claim stays open, which is what makes this a redirection rather than a
+  ;; punishment.
+  (let [b (-> (state/enter-build (state/new-branch {:id "B1" :problem "p"}) 3)
+              (state/enter-reframe 10 "the greedy exchange terminates in n steps"))]
+    (testing "the same claim is refused"
+      (let [r (tools/phase-refusal {:branch b :turn 11 :tool-name "verify_lean"
+                                    :args {:claim "the greedy exchange terminates in n steps"}})]
+        (is (some? r))
+        (is (= :mechanics (:category r))
+            "a refused call has failed at nothing and must not reach the cull counter")
+        (is (:policy-refusal? r)
+            "and the cull record must be able to tell it from a malformed fence")
+        (is (str/includes? (:result r) "greedy exchange")
+            "the branch is told which approach is withheld")))
+
+    (testing "a reworded version of the same claim is refused too"
+      ;; Sameness, not string equality: a branch that re-submits the same
+      ;; approach with the words moved around has not reframed.
+      (is (some? (tools/phase-refusal
+                  {:branch b :turn 11 :tool-name "verify_lean"
+                   :args {:claim "the greedy exchange terminates in n steps flat"}}))))
+
+    (testing "a different claim proceeds"
+      (is (nil? (tools/phase-refusal
+                 {:branch b :turn 11 :tool-name "verify_lean"
+                  :args {:claim "every maximal matching has size at least half the maximum"}}))
+          "the withholding is scoped to the failing approach, not to the branch"))
+
+    (testing "an open proof is refused by the claim it was started on"
+      ;; proof_step carries no claim of its own; the one it is working is on
+      ;; the branch. Without this the branch grinds the refused approach one
+      ;; tactic at a time.
+      (is (some? (tools/phase-refusal
+                  {:branch (assoc b :proof {:claim "the greedy exchange terminates in n steps"})
+                   :turn 11 :tool-name "proof_step" :args {:tactic "simp"}}))))))
+
+(deftest a-reframe-withholds-every-engine-not-only-lean
+  ;; The vf-2vi rule arriving from the other side. Dropping a branch into
+  ;; :explore withholds only the LEAN tools, because the way out of explore is
+  ;; a Lean sketch. So on a Prolog or Z3 problem — the odd-covering campaign is
+  ;; entirely Z3 and Prolog, and nine of the fifteen bench problems are
+  ;; prolog/smt only — a phase-based reframe would withhold nothing at all and
+  ;; the gate would be a no-op exactly where it is most needed. The claim-scoped
+  ;; refusal is what makes it bite on every engine, and its substitute — verify
+  ;; something different — is available to all of them.
+  (let [b (-> (state/enter-build (state/new-branch {:id "B1" :problem "p"}) 3)
+              (state/enter-reframe 10 "the LP relaxation is infeasible at Q = 105"))]
+    (doseq [tool ["verify" "verify_smt" "verify_octave" "verify_template" "measure"]]
+      (is (some? (tools/phase-refusal
+                  {:branch b :turn 11 :tool-name tool
+                   :args {:claim "the LP relaxation is infeasible at Q = 105"}}))
+          (str tool " re-runs the refused approach and must be withheld too")))
+    (testing "but the planning tools stay open — the branch needs a way to comply"
+      (doseq [tool ["thesis" "lean_search" "branch_theses" "fetch_artifact"]]
+        (is (nil? (tools/phase-refusal
+                   {:branch b :turn 11 :tool-name tool
+                    :args {:claim "the LP relaxation is infeasible at Q = 105"}}))
+            (str tool " is how the branch proposes something else"))))))
+
+(deftest a-reframe-on-a-lean-failure-drops-the-branch-back-into-explore
+  ;; vf-9wx's landing place. A branch whose failing work is Lean gets the
+  ;; phase machine as well: sketch reopens, Lean verification closes until a
+  ;; new plan elaborates, and the explore clock restarts so the cap does not
+  ;; force it straight back out.
+  (let [b (-> (state/enter-build (state/new-branch {:id "B1" :problem "p"}) 3)
+              (state/begin-reframe 10 "the greedy exchange terminates" "verify_lean"))]
+    (is (= :explore (:phase b)))
+    (is (= 10 (:phase-entered-turn b)) "the explore budget restarts, per-entry")
+    (is (nil? (tools/phase-refusal {:branch b :turn 11 :tool-name "sketch"
+                                    :args {:claim "a different decomposition"}}))
+        "sketch is the move the reframe is asking for, so it must be open")))
+
+(deftest a-reframe-on-a-non-lean-failure-leaves-the-phase-alone
+  ;; The other half of the vf-2vi rule: a gate must not demand a move the
+  ;; branch cannot make. `sketch` lints its argument as Lean and requires it to
+  ;; elaborate, so a branch failing on Prolog or Z3 has no sketch to write.
+  ;; Dropping it into :explore would ask for one and withhold nothing it was
+  ;; actually using.
+  (let [b (-> (state/enter-build (state/new-branch {:id "B1" :problem "p"}) 3)
+              (state/begin-reframe 10 "the LP relaxation is infeasible" "verify_smt"))]
+    (is (= :build (:phase b))
+        "no Lean in this branch's failure, so no Lean skeleton is demanded of it")
+    (is (some? (:reframe-claim b))
+        "the claim-scoped withholding still applies — that is what bites here")))
+
+(deftest the-reframe-reprieve-is-a-loan-with-a-clock
+  ;; vf-31m. A branch dropped into a reframe carries the failures that caused
+  ;; it, so without this it is culled mid-reframe for the very approach it was
+  ;; just told to abandon. The reprieve is bounded: Pareto's known weakness is
+  ;; permissiveness and a zombie beam is the failure mode.
+  (let [grace (gates/threshold :reframe-grace)
+        failing (-> (branch-with :consecutive-failures (gates/threshold :cull-threshold))
+                    (assoc :turns (vec (repeat 10 {})))
+                    (state/enter-reframe 10 "the greedy exchange terminates"))]
+    (is (= :active (:status (#'beam/cull-or-keep {:turn 11} failing 2 [])))
+        "spared while it is re-planning")
+    (let [expired (#'beam/cull-or-keep {:turn (+ 10 grace)} failing 2 [])]
+      (is (= :culled (:status expired)) "the loan comes due")
+      (is (str/includes? (:inactive-reason expired) "reframe")
+          "and the record says the branch had already been given its chance"))
+    (testing "the hard floor ends it regardless"
+      ;; A branch still failing at twice the cull threshold is not reframing.
+      (let [floored (assoc failing :consecutive-failures
+                           (* (gates/threshold :cull-hard-multiple)
+                              (gates/threshold :cull-threshold)))
+            r (#'beam/cull-or-keep {:turn 11} floored 2 [])]
+        (is (= :culled (:status r)))
+        (is (str/includes? (:inactive-reason r) "reframe")
+            "the reason names what actually happened; the cull reasons are the
+             run's post-hoc explanation of itself and are read later as evidence")))
+    (testing "a branch with no reframe is culled exactly as before"
+      (is (= :culled (:status (#'beam/cull-or-keep
+                               {:turn 11}
+                               (dissoc failing :reframe-claim :reframe-entered-turn)
+                               2 [])))))))
+
+(deftest banking-something-ends-the-reframe
+  ;; The branch complied: it produced something the refused approach could not
+  ;; have produced, so the restriction and the reprieve both end.
+  (let [b (-> (state/enter-build (branch-with) 3)
+              (state/enter-reframe 10 "the greedy exchange terminates")
+              (state/clear-reframe))]
+    (is (nil? (:reframe-claim b)))
+    (is (nil? (tools/phase-refusal {:branch b :turn 11 :tool-name "verify_lean"
+                                    :args {:claim "the greedy exchange terminates"}}))
+        "nothing is withheld once the branch has moved on")))
+
+(deftest prologue-cap-is-silent-while-a-branch-is-re-planning
+  ;; vf-9wx note 1. A banked sketch is deliberately :neutral with progress?
+  ;; false — a plan is not progress — so a branch dropped back into explore at
+  ;; turn 40 accrues nothing while it re-plans and would be told "you are 41
+  ;; turns in with nothing verified", which is true and useless. The guard is
+  ;; ordered so the branch that wasted its explore budget gets LESS rope, not
+  ;; more: sketch immediately and you get the full build allowance before the
+  ;; nudge; burn the whole prologue and you get what is left.
+  (let [replanning (branch-with :any-progress? false :turns (vec (repeat 12 {})))
+        building (state/enter-build replanning 6)]
+    (is (= :explore (:phase replanning)) "the fixture is what it claims to be")
+    (is (not-any? #{:prologue-cap}
+                  (map :gate (arbiter/eligible {:branch replanning :max-turns 40})))
+        "not scolded for having verified nothing while re-planning")
+    (is (some #{:prologue-cap}
+              (map :gate (arbiter/eligible {:branch building :max-turns 40})))
+        "but the gate still covers the branch it was written for")))
+
+(deftest the-stuck-gate-says-what-it-is-withholding
+  ;; vf-49o. A branch that is refused without being told why re-submits the
+  ;; same call; the audit gate's refusals redirected work precisely because
+  ;; they named what was wrong.
+  (let [b (branch-with :consecutive-failures (gates/threshold :stuck-threshold)
+                       :last-failed-claim "the greedy exchange terminates in n steps"
+                       :turns (vec (repeat 10 {})))
+        d (arbiter/decide {:branch b :max-turns 40})]
+    (is (= :stuck (:gate d)))
+    (is (str/includes? (:message d) "greedy exchange")
+        "the withheld approach is quoted, not merely alluded to")))
+
+(deftest the-stuck-message-claims-no-withholding-it-cannot-make
+  ;; A branch whose failures carried no claim — every verify tool takes one,
+  ;; but a call refused as vague never reaches an engine and so never fails —
+  ;; leaves nothing to withhold. The gate still fires and still grants the
+  ;; reprieve, and its message must not assert a refusal that will not happen.
+  ;; This is the vf-2vi failure mode in miniature: the tell was a message
+  ;; naming a category broader than the code covered.
+  (let [b (branch-with :consecutive-failures (gates/threshold :stuck-threshold)
+                       :turns (vec (repeat 10 {})))
+        d (arbiter/decide {:branch b :max-turns 40})]
+    (is (= :stuck (:gate d)))
+    (is (nil? (:last-failed-claim b)) "the fixture is what it claims to be")
+    (is (not (str/includes? (:message d) "Withheld"))
+        "nothing is being withheld, so the message must not say it is")
+    (let [after (state/begin-reframe b 11 (:last-failed-claim b) (:last-failed-tool b))]
+      (is (state/reframe-active? after 12 (gates/threshold :reframe-grace))
+          "the reprieve still applies — the branch was told to change technique
+           either way, and that costs turns either way")
+      (is (nil? (tools/phase-refusal {:branch (state/enter-build after 3) :turn 12
+                                      :tool-name "verify_smt"
+                                      :args {:claim "anything at all"}}))
+          "and with no approach on record, nothing is refused"))))
+
+(deftest the-stuck-prediction-settles-on-what-the-branch-did
+  ;; vf-49o's acceptance criterion. The prediction has to settle against the
+  ;; branch's behaviour, and now that the gate withholds, a new plan and a
+  ;; result from a different approach are both compliance.
+  (let [firing {:gate :stuck :turn 10 :window 3}
+        settle (fn [tools] (arbiter/settle firing
+                                           {:current-turn 11 :tools-called tools
+                                            :branch-before (branch-with)
+                                            :branch-after (branch-with)}))]
+    (is (= :met (settle ["sketch"])) "a new plan is the move the reframe asks for")
+    (is (= :met (settle ["thesis"])))
+    (is (= :met (settle ["retract_rule"])))
+    (is (nil? (settle ["verify_lean"])) "still open inside the window")
+    (is (= :met (arbiter/settle firing
+                                {:current-turn 11 :tools-called ["verify_smt"]
+                                 :branch-before (branch-with)
+                                 :branch-after (branch-with :artifacts [{:claim-status :confirmed}])}))
+        "a result from a different approach is compliance, whatever tool produced it")
+    (is (= :unmet (arbiter/settle firing
+                                  {:current-turn 13 :tools-called ["lean_search"]
+                                   :branch-before (branch-with)
+                                   :branch-after (branch-with)}))
+        "and the window still closes")))
+
+(deftest the-stuck-gate-enters-the-reframe-on-the-turn-it-fires
+  ;; The wiring, end to end: the gate is data and cannot mutate the branch, so
+  ;; the loop is what applies its effect. Ordered before the cull — the beam
+  ;; culls after every branch has advanced — so the reprieve is in place by the
+  ;; time retention is decided on the same turn.
+  (with-db [c]
+    (let [rid (runs/start-run! c {:problem "p" :beam-width 1})
+          ;; Long enough and specific enough to clear the vague-claim guard —
+          ;; a claim refused as a label never reaches an engine, so it never
+          ;; fails, and there would be nothing for the gate to withhold.
+          claim "the greedy exchange terminates in at most 3n steps"
+          b (-> (state/enter-build (state/new-branch {:id "B1" :problem "p"}) 0)
+                (assoc :consecutive-failures (gates/threshold :stuck-threshold)
+                       :turns (vec (repeat 10 {}))))]
+      (runs/open-branch! c rid {:branch-id "B1" :created-at-turn 0})
+      (with-redefs [prolog/query (fn [& _] {:ok false :error "existence_error(procedure, terminates/1)"})
+                    llm/chat (fn [& _]
+                               {:content (str "```tool-call\n"
+                                              (json/write-str
+                                               {:name "verify"
+                                                :args {:claim claim :check "terminates(g)"}})
+                                              "\n```")
+                                :finish-reason "stop"})]
+        (let [after (aloop/run-turn {:conn c :run-id rid :max-turns 40
+                                     :llm-adapter :a :llm-config {:max-tokens 16384}}
+                                    b 11)]
+          (is (= :stuck (:gate (last (:gate-history after)))))
+          (is (= claim (:reframe-claim after))
+              "the claim that just failed is the one withheld")
+          (is (= 11 (:reframe-entered-turn after)) "the clock starts on the firing turn"))))))
 
 (deftest a-sketch-too-close-to-a-live-sibling-is-refused
   ;; vf-eaw. gen-29 put all three branches on TARGET 1 within one turn and

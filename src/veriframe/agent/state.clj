@@ -71,6 +71,18 @@
    ;; branch creation so a forked branch gets a full explore budget instead
    ;; of inheriting its parent's spent one; reenter-explore moves it.
    :phase-entered-turn (or created-at-turn 0)
+   ;; The claim of the last verification that FAILED, and the tool it failed
+   ;; on. What the stuck gate names when it withholds an approach (vf-9wx),
+   ;; and how it decides whether a Lean sketch is a move this branch can
+   ;; actually make.
+   :last-failed-claim nil
+   :last-failed-tool nil
+   ;; The forced reframe: the approach the harness has told this branch to
+   ;; abandon, and the turn it said so. While these are set and inside
+   ;; :reframe-grace, re-verifying that approach is refused and the branch is
+   ;; not culled for the failures that caused the reframe.
+   :reframe-claim nil
+   :reframe-entered-turn nil
    ;; Gate firings awaiting settlement, as {:id :gate :prediction :window :turn}
    :open-predictions []
    ;; Verification tiers seen. :fast is a one-shot check, :slow is a
@@ -263,7 +275,13 @@
 
   Used to clear the consecutive-search counter: a branch that has been
   searching has to TRY something, and a failed attempt counts — it tells the
-  branch which step is hard, which another search does not."
+  branch which step is hard, which another search does not.
+
+  Also the set the forced reframe scopes over (vf-9wx). That one is right to
+  use the WIDE set, unlike the explore phase below: what it withholds is a
+  claim rather than a path, an approach can be ground in Z3 as easily as in
+  Lean, and its substitute — verify something different — is available on
+  every engine here."
   #{"verify" "verify_smt" "verify_lean" "verify_octave" "verify_template"
     "proof_start" "proof_step" "measure" "octave_eval"})
 
@@ -308,6 +326,69 @@
   re-forced out on the next turn."
   [branch turn]
   (assoc branch :phase :explore :phase-entered-turn turn))
+
+(defn enter-reframe
+  "Withhold `claim` from this branch and start the reframe clock.
+
+  vf-9wx. The harness's only answer to repeated failure was to kill the
+  branch, which is a fine backstop and a poor first move: a branch that has
+  been grinding one approach for three turns usually needs a different
+  approach, not a funeral. The gate that fires here WITHHOLDS rather than
+  suggests, because that is the one thing this harness has repeatedly measured
+  as working — gen-27 ignored seventeen advisory nudges, while the audit
+  gate's refusals had B4 rewriting its encoding three times.
+
+  Claim-scoped rather than tool-scoped, which is what makes it work on every
+  engine. The obvious implementation is to reuse the phase machine — drop the
+  branch into :explore, where verification is unavailable and a plan is the
+  only move — but :explore withholds only the LEAN tools, for the good reason
+  that the way out of it is a Lean sketch (vf-2vi). On a Prolog or Z3 problem
+  that withholds nothing and the gate is a no-op precisely where it is most
+  needed: the odd-covering campaign is entirely Z3 and Prolog. Refusing the
+  failing CLAIM bites on every engine, and its substitute — verify something
+  else — is available to all of them."
+  [branch turn claim]
+  (assoc branch :reframe-claim claim :reframe-entered-turn turn))
+
+(defn clear-reframe
+  "End the reframe. The branch banked something, which the refused approach
+  could not have produced, so the restriction and the reprieve both lift."
+  [branch]
+  (dissoc branch :reframe-claim :reframe-entered-turn))
+
+(defn reframe-active?
+  "Whether the branch is inside its reframe window.
+
+  Keyed on the clock rather than on the claim, so a branch reframed with no
+  identifiable claim to withhold still gets its turns to change course — it
+  was told to change technique either way, and that costs turns either way.
+
+  A nil `turn` means the caller is not tracking turns (a unit test, or a
+  context that has no turn to give); the reframe then reads as active on the
+  strength of the stamp alone."
+  [branch turn grace]
+  (boolean (and (:reframe-entered-turn branch)
+                (or (nil? turn)
+                    (< (- turn (:reframe-entered-turn branch)) grace)))))
+
+(defn begin-reframe
+  "Enter a reframe, and drop the branch back into :explore when — and only
+  when — the approach that failed was a Lean one.
+
+  The conditional is the vf-2vi rule applied in the other direction. A gate
+  that withholds must not demand a move the branch cannot make, and `sketch`
+  lints its argument as Lean and requires it to elaborate with open sorries.
+  A branch failing on Prolog or Z3 has no Lean skeleton to write, so putting
+  it in :explore would ask for one while withholding nothing it was using.
+  For those branches the claim-scoped refusal is the whole mechanism, which is
+  the design it should have been anyway.
+
+  For a Lean branch the phase machine is worth the extra step: it reopens
+  `sketch`, closes Lean verification until a NEW plan elaborates, and restarts
+  the explore clock so the cap does not force it straight back out."
+  [branch turn claim failing-tool]
+  (cond-> (enter-reframe branch turn claim)
+    (contains? lean-verification-tools failing-tool) (reenter-explore turn)))
 
 (defn explore-cap-expired?
   "Whether the branch has spent more than `cap` turns in the current explore
@@ -357,11 +438,18 @@
   emitting nothing but garbage would hold a beam slot to the turn budget. Any
   well-formed call clears the tally — the branch has demonstrated it can work
   the protocol, whatever the call then did."
-  [branch {:keys [category progress? claim policy-refusal?]}]
+  [branch {:keys [category progress? claim tool policy-refusal?]}]
   (let [real-progress? (and progress?
                             (or (nil? claim) (advances-thesis? branch claim)))]
     (cond-> branch
       (= :failure category) (update :consecutive-failures inc)
+      ;; What the stuck gate withholds, and what it withholds it from. Only
+      ;; failures set it: a branch that failed on A and then succeeded on B
+      ;; has not been told to abandon anything. Left alone on a claimless
+      ;; failure rather than cleared, because the last claim that DID fail is
+      ;; still the better answer to "what is this branch grinding".
+      (and (= :failure category) (seq (str claim)))
+      (assoc :last-failed-claim claim :last-failed-tool tool)
       (= :success category) (assoc :consecutive-failures 0)
       (= :neutral category) (update :consecutive-failures #(max 0 (dec (or % 0))))
       (= :mechanics category)

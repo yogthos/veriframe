@@ -113,6 +113,16 @@
   threshold the reprieve ends unconditionally, because Pareto's known
   weakness is permissiveness and a zombie beam is the failure mode.
 
+  A branch inside a REFRAME is spared the failure rule outright (vf-31m). It
+  was told to abandon its approach and it carries the failures that caused the
+  reframe, so without this it dies for exactly the thing it was just told to
+  stop doing — the harness advising and executing on the same turn, which is
+  what the stuck gate's 0-met record was really measuring. Bounded like the
+  Pareto reprieve and for the same reason: :reframe-grace turns, and
+  cull-hard-multiple ends it early. Every cull on the failure path says so
+  when the branch had already been handed a reframe, because the reasons are
+  the run's post-hoc account of itself and are read later as evidence.
+
   `survivors` is how many other branches would still be running. Culling
   exists to reallocate the beam's budget to branches doing better; when
   there is nobody to reallocate to, culling is just an early exit with turns
@@ -120,12 +130,27 @@
   arm was culled at turn 9 of 12 and the run ended there. The last branch
   standing is never culled; the stuck and emergency-review gates keep
   talking to it instead."
-  [{:keys [conn run-id]} branch survivors sibling-scores]
+  [{:keys [conn run-id turn]} branch survivors sibling-scores]
   (let [threshold (gates/threshold :cull-threshold)
         fails (or (:consecutive-failures branch) 0)
         mech (or (:consecutive-mechanics-failures branch) 0)
         pol (or (:consecutive-policy-refusals branch) 0)
+        grace (gates/threshold :reframe-grace)
+        ;; Ever handed a reframe, versus still inside its window. The first
+        ;; belongs in the cull record and the second decides the reprieve.
+        reframed? (some? (:reframe-entered-turn branch))
+        reframing? (state/reframe-active? branch turn grace)
         cull (fn [why] (assoc branch :status :culled :inactive-reason why))
+        ;; The failure-path cull. A branch that was told to change approach and
+        ;; died failing anyway must say so: the cull reasons are the run's
+        ;; post-hoc explanation of itself and are read later as evidence, and
+        ;; "consecutive failures" alone hides the fact that the harness had
+        ;; already intervened and the intervention did not take (vf-31m).
+        cull-fail (fn [why]
+                    (cull (str why
+                               (when reframed?
+                                 (str "; the branch had already been handed a"
+                                      " reframe and kept failing")))))
         scores (get-in branch [:critic :scores])
         hard-floor (* (gates/threshold :cull-hard-multiple) threshold)]
     (cond
@@ -142,15 +167,20 @@
               ;; believed; a declined sketch or verification is a well-formed
               ;; call the harness refused, and naming it as a protocol
               ;; failure would be the same lie in the permanent record.
+              ;; Which policy declined them is not tracked per refusal, so
+              ;; the reason states the conditions rather than guessing between
+              ;; them. Naming one would be the same class of lie.
               (and (pos? pol) (= pol mech))
               (str "culled after " mech " consecutive turns with no usable"
-                   " tool call; every call was declined by harness phase policy"
-                   " in the " (str/upper-case (name (or (:phase branch) :build)))
-                   " phase")
+                   " tool call; every call was declined by harness policy —"
+                   " the branch was in the "
+                   (str/upper-case (name (or (:phase branch) :build))) " phase"
+                   (when reframing? " with its approach withheld")
+                   " and did not change what it was asking for")
 
               (pos? pol)
               (str "culled after " mech " consecutive turns with no usable"
-                   " tool call; " pol " were declined on phase policy and "
+                   " tool call; " pol " were declined by harness policy and "
                    (- mech pol) " could not emit a well-formed fence")
 
               :else
@@ -163,16 +193,34 @@
                 (pos? survivors)))
       branch
 
+      ;; Ahead of the reframe reprieve, deliberately: a branch still failing
+      ;; at twice the cull threshold is not reframing, and the reprieve is a
+      ;; loan with a clock rather than an exemption.
       (>= fails hard-floor)
-      (cull (str "culled after " fails
-                 " consecutive failures; the Pareto reprieve was spent"))
+      (cull-fail (str "culled after " fails
+                      " consecutive failures; the Pareto reprieve was spent"))
+
+      ;; The reframe reprieve (vf-31m). A branch dropped into a reframe carries
+      ;; the failures that caused it, so without this it is culled for exactly
+      ;; the approach it was just told to abandon — the harness advising and
+      ;; executing on the same turn, which is the bug the stuck gate's 0-met
+      ;; record was really measuring. Nothing is said here: the refusal is
+      ;; already talking to the branch every time it retries the old approach.
+      reframing?
+      (do (when (and conn run-id)
+            (journal/note! conn run-id :cull-spared
+                           {:branch-id (:id branch)
+                            :data {:scores scores :failures fails
+                                   :reframe? true
+                                   :reframe-claim (:reframe-claim branch)}}))
+          branch)
 
       ;; A dead end is a dead end at any age; the critic's own verdict is
       ;; the one judgement that does not depend on how long the branch has
       ;; had to accumulate anything.
       (and scores (<= (:viability scores) 1))
-      (cull (str "culled after " fails
-                 " consecutive failures; the critic scored the line a dead end"))
+      (cull-fail (str "culled after " fails
+                      " consecutive failures; the critic scored the line a dead end"))
 
       ;; Juvenile grace. Progress and momentum are age-correlated, so a
       ;; newborn is dominated by its own parent one turn after being forked.
@@ -191,13 +239,13 @@
                 " going.")))
 
       (nil? scores)
-      (cull (str "culled after " fails
-                 " consecutive failures with no recent confirmed work"))
+      (cull-fail (str "culled after " fails
+                      " consecutive failures with no recent confirmed work"))
 
       (critic/dominated? scores sibling-scores)
-      (cull (str "culled after " fails
-                 " consecutive failures; dominated by a sibling on every"
-                 " critic objective"))
+      (cull-fail (str "culled after " fails
+                      " consecutive failures; dominated by a sibling on every"
+                      " critic objective"))
 
       :else
       (do (when (and conn run-id)
@@ -641,7 +689,7 @@
                                                                  (not= (:id %) (:id b)))
                                                         (get-in % [:critic :scores]))
                                                      advanced)
-                                          b' (cull-or-keep ctx b (dec alive) sibs)]
+                                          b' (cull-or-keep (assoc ctx :turn turn) b (dec alive) sibs)]
                                       [(conj acc b')
                                        (if (state/active? b') alive (dec alive))]))
                                   [[] (count advanced)]

@@ -27,8 +27,47 @@
   :doc "A confirmed artifact this recently protects a branch from culling."}
 
  :stuck-threshold
- {:value 3 :kind :threshold :capability-tunable? false
-  :doc "Consecutive unproductive verifications before the stuck hint fires."}
+ {:value 2 :kind :threshold :capability-tunable? false
+  :doc "Consecutive unproductive verifications before the stuck gate fires.
+
+        STRICTLY BELOW cull-threshold, and that is the whole point (vf-31m).
+        Both were 3, so the gate that says change your approach arrived on the
+        turn the branch became eligible to be killed for not having changed
+        it — and every move it predicts (retract, decompose, change technique)
+        costs at least one turn. The README recorded the consequence without
+        naming the cause: stuck fired and was obeyed zero times. A gate whose
+        advice takes turns to follow, firing at the moment turns run out, is
+        broken on inspection.
+
+        gate-config-is-coherent asserts the inequality, so a later tuning pass
+        cannot quietly close the gap again."}
+
+ :reframe-grace
+ {:value 4 :kind :threshold :capability-tunable? false
+  :doc "Turns a branch is spared the consecutive-failure cull after the stuck
+        gate has dropped it into a reframe, and the window the withheld
+        approach stays withheld for.
+
+        A branch told to abandon its approach carries the failures that caused
+        the reframe, so without this it is culled mid-reframe for exactly the
+        thing it was told to stop doing (vf-31m). The reprieve machinery
+        already existed for Pareto-spared branches and is documented there as
+        'a loan with a clock, not an exemption'; this is the same shape.
+
+        The loan and the restriction expire together, deliberately: it would
+        be incoherent to keep refusing an approach after the branch has lost
+        the protection it was given to replace it. cull-hard-multiple still
+        ends it early — a branch failing at twice the cull threshold is not
+        reframing."}
+
+ :stale-approach-threshold
+ {:value 0.6 :kind :threshold :capability-tunable? false
+  :doc "Jaccard cutoff for deciding a claim re-runs the approach the branch was
+        told to abandon. Sameness rather than mere failure, so a branch
+        grinding genuinely different steps of a long proof is not punished for
+        the proof being long (vf-9wx). Same shingle machinery and same
+        UNCALIBRATED 0.6 as sketch-duplicate-threshold, inherited from ledger
+        claim dedup — where, unlike here, it was tuned on claims."}
 
  :progress-stall-threshold
  {:value 4 :kind :threshold :capability-tunable? false

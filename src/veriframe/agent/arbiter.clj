@@ -106,7 +106,15 @@
         :branch-out (called? "branch_theses")
         :repopulate (called? "branch_theses")
         :emergency-review (called? "review" "done" "thesis")
-        :stuck (called? "retract_rule" "thesis" "add_rule")
+        ;; Now that the gate withholds rather than suggests (vf-49o), what
+        ;; counts as compliance is what the branch DOES about the refused
+        ;; approach: a new plan, a restated thesis, a retraction — or a result
+        ;; the withheld approach could not have produced, whatever tool
+        ;; produced it. The last clause matters because on a non-Lean problem
+        ;; the reframe is claim-scoped only, and complying looks exactly like
+        ;; verifying something else successfully.
+        :stuck (or (called? "retract_rule" "thesis" "add_rule" "sketch")
+                   (progressed? branch-before branch-after))
         ;; Its prediction is "the branch retracts, changes technique, or ships
         ;; what it has", and each of those is a tool the harness can see.
         ;; Absent from this case the fallthrough returned false, so the gate

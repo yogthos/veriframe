@@ -67,6 +67,22 @@
   - :premises-served (which retrieved premises a branch was already handed,
     vf-3wg) is branch memory for the same reason; a resumed branch may be
     re-served one premise block.
+  - the forced reframe (vf-9wx): :reframe-claim and :reframe-entered-turn are
+    branch memory, so a branch that crashed mid-reframe resumes with neither
+    the withheld approach nor the reprieve that goes with it. Deriving them
+    would be easy and wrong — the last stuck firing's turn is in gate_firings
+    and the last failed claim is in the turns args, but the two need not
+    belong to the same reframe, and reinstating a withholding the harness
+    cannot justify blocks work the branch is entitled to do. Erring toward the
+    permissive direction is the right way to be wrong about a gate that
+    REFUSES things.
+
+    It largely self-heals: consecutive-failures replays, so the stuck gate
+    re-fires at the branch's next boundary and re-enters the reframe with a
+    claim it can justify. The residual gap is a branch whose max-stuck-hints
+    budget is already spent, which loses the reprieve and can be culled for
+    the failures that caused the reframe. Bounded by :reframe-grace, and the
+    cull was always the documented backstop.
   - :critic scores and :fork-invited markers are branch memory; a resumed
     branch is re-scored at its next boundary, and may be re-invited to fork
     sooner than the cooldown would otherwise allow.

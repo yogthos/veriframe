@@ -501,6 +501,51 @@
     (str "\n\nRetrieved candidate premises to draft FROM (Mathlib search, not"
          " results):\n  " (str/join "\n  " lines))))
 
+(defn- reframe-refusal
+  "Refuse a call that re-runs the approach the stuck gate told this branch to
+  abandon (vf-9wx, vf-49o).
+
+  This is the withholding half of the reframe, and it is deliberately scoped
+  to the CLAIM rather than to a set of tools. Every engine is covered — an
+  approach can be ground in Z3 as easily as in Lean — and every engine keeps
+  its escape, because verifying something DIFFERENT is always available.
+  Scoping it to tools instead would either withhold nothing on a non-Lean
+  problem or demand a Lean sketch from a branch that cannot write one; both
+  are the vf-2vi mistake.
+
+  Sameness, not failure. A branch working a long proof fails on many distinct
+  steps and must not be punished for the proof being long, so the test is
+  shingle overlap with the abandoned claim — the same machinery the ledger
+  dedups with and the sketch diversity gate reads.
+
+  `proof_step` carries no claim of its own; the one it is working sits on the
+  branch. Without that fallback a branch grinds the refused approach one
+  tactic at a time and the gate never sees it."
+  [{:keys [branch tool-name] :as ctx}]
+  (when (and (:reframe-claim branch)
+             (state/reframe-active? branch (:turn ctx) (gates/threshold :reframe-grace))
+             (contains? state/verification-tools tool-name))
+    (let [claim (or (arg ctx :claim)
+                    (when (#{"proof_start" "proof_step"} tool-name)
+                      (get-in branch [:proof :claim])))]
+      (when (and (seq (str claim))
+                 (artifacts/near-duplicate? claim (:reframe-claim branch)
+                                            (gates/threshold :stale-approach-threshold)))
+        (malformed branch
+                   (str "This is the approach the harness has withheld:\n\n> "
+                        (:reframe-claim branch)
+                        "\n\nIt has failed repeatedly and re-running it — on this"
+                        " engine or any other — is refused. Nothing else is: state a"
+                        " DIFFERENT claim and verify that. A smaller piece of the"
+                        " same goal counts, a different encoding of it does not."
+                        (when (= :explore (:phase branch))
+                          (str " You are also back in the EXPLORE phase, so the"
+                               " fastest way to reopen Lean is `sketch` on the new"
+                               " plan."))
+                        "\n\nThe failures that led here are not counting against"
+                        " you while you change course. Re-submitting this same"
+                        " claim is what spends the turns for nothing."))))))
+
 (defn phase-refusal
   "The one place that owns the explore/build phase policy, consulted by the
   branch loop BEFORE run-tool dispatch. Returns a result map refusing the
@@ -519,48 +564,62 @@
   counter would be the vf-jki mistake. The mechanics count still bounds a
   branch looping on refusals.
 
+  vf-9wx adds a third, ranked first: the approach the stuck gate told the
+  branch to abandon is refused on every engine until it proposes another. That
+  one is claim-scoped rather than phase-scoped — see `reframe-refusal` for why
+  reusing the phase machine alone would be a no-op on a Prolog or Z3 problem.
+
   Every refusal carries `:policy-refusal? true`, so the cull record can tell
   a declined call from a malformed fence and the reason string stays true."
   [{:keys [branch tool-name] :as ctx}]
-  (let [refusal (cond
-                  ;; lean-verification-tools, NOT verification-tools: the way
-                  ;; out of explore is a Lean sketch, so withholding Prolog,
-                  ;; Z3 or Octave would demand a move a non-Lean problem
-                  ;; cannot make (vf-2vi).
-                  (and (= :explore (:phase branch))
-                       (contains? state/lean-verification-tools tool-name))
-                  ;; vf-3wg: the branch has just stated, precisely, what it
-                  ;; wants to prove — the highest-signal moment in the run to
-                  ;; hand it premises. The refusal carries them when retrieval
-                  ;; finds something above the relevance floor, and stands on
-                  ;; its own text when it does not (premises-for returns nil).
-                  (let [prem (premises-for ctx (arg ctx :claim))]
-                    (cond-> (malformed branch
-                                       (str "You are in the EXPLORE phase: no claim reaches LEAN"
-                                            " until the branch has a plan on record. Sketch the"
-                                            " approach as a Lean skeleton — `sketch({claim, lean})` —"
-                                            " and use `lean_search` to find the lemmas it will cite."
-                                            " The phase ends when a sketch elaborates, or when the"
-                                            " explore budget runs out. The other engines are open"
-                                            " meanwhile: Prolog, Z3 and Octave are not withheld,"
-                                            " because a Lean skeleton cannot stand in for them."
-                                            (premises-block prem)))
-                      (seq (:names prem))
-                      (update :branch update :premises-served
-                              (fnil into #{}) (:names prem))))
+  (let [refusal (or
+                 ;; First, because it is the more specific reason: a branch
+                 ;; re-running a withheld approach in :explore would otherwise
+                 ;; be told only that it is in the wrong phase, which is true
+                 ;; and answers the wrong question. A DIFFERENT Lean claim
+                 ;; falls through to the explore refusal below, which is
+                 ;; correct — the new plan has to be sketched first.
+                 (reframe-refusal ctx)
 
-                  (and (= :build (:phase branch))
-                       (= "sketch" tool-name))
-                  (malformed branch
-                             (str "You are in the BUILD phase: the plan is already"
-                                  " committed, so `sketch` is refused. The way forward is to"
-                                  " close its goals — `proof_start` on a statement, or"
-                                  " `verify_lean` once the whole proof is ready."))
+                 (cond
+                   ;; lean-verification-tools, NOT verification-tools: the way
+                   ;; out of explore is a Lean sketch, so withholding Prolog,
+                   ;; Z3 or Octave would demand a move a non-Lean problem
+                   ;; cannot make (vf-2vi).
+                   (and (= :explore (:phase branch))
+                        (contains? state/lean-verification-tools tool-name))
+                   ;; vf-3wg: the branch has just stated, precisely, what it
+                   ;; wants to prove — the highest-signal moment in the run to
+                   ;; hand it premises. The refusal carries them when retrieval
+                   ;; finds something above the relevance floor, and stands on
+                   ;; its own text when it does not (premises-for returns nil).
+                   (let [prem (premises-for ctx (arg ctx :claim))]
+                     (cond-> (malformed branch
+                                        (str "You are in the EXPLORE phase: no claim reaches LEAN"
+                                             " until the branch has a plan on record. Sketch the"
+                                             " approach as a Lean skeleton — `sketch({claim, lean})` —"
+                                             " and use `lean_search` to find the lemmas it will cite."
+                                             " The phase ends when a sketch elaborates, or when the"
+                                             " explore budget runs out. The other engines are open"
+                                             " meanwhile: Prolog, Z3 and Octave are not withheld,"
+                                             " because a Lean skeleton cannot stand in for them."
+                                             (premises-block prem)))
+                       (seq (:names prem))
+                       (update :branch update :premises-served
+                               (fnil into #{}) (:names prem))))
 
-                  (= "sketch" tool-name)
-                  (sketch-diversity-refusal ctx)
+                   (and (= :build (:phase branch))
+                        (= "sketch" tool-name))
+                   (malformed branch
+                              (str "You are in the BUILD phase: the plan is already"
+                                   " committed, so `sketch` is refused. The way forward is to"
+                                   " close its goals — `proof_start` on a statement, or"
+                                   " `verify_lean` once the whole proof is ready."))
 
-                  :else nil)]
+                   (= "sketch" tool-name)
+                   (sketch-diversity-refusal ctx)
+
+                   :else nil))]
     (cond-> refusal
       refusal (assoc :policy-refusal? true))))
 
