@@ -340,16 +340,44 @@ catching precisely the class of error that let `a#818` through in gen-28 —
 here in the harder direction, where the mathematics is entirely sound and only
 the prose is wrong.
 
-**So all three gaps of TARGET 1's last step are closed.** Composing them:
+**TARGET 1's last step is PROVED.** `a#876`,
+`simple_cycle_arc_set_balanced`: for a sign-oriented simple closed walk `c`
+(`2 ≤ c.length`, `c.head? = c.getLast?`, `c.dropLast.Nodup`, chained by
+`∃ e, signTail e = x ∧ signHead e = y ∧ k e ≠ 0`), there is a `Finset E` that
+is nonempty, supported only where `k ≠ 0`, and balanced in the indicator-sum
+shape
+
+    ∑ e, if e ∈ C then if 0 < k e then if tail e = v then 1 else 0
+                                  else if head e = v then 1 else 0 else 0
+  = ∑ e, if e ∈ C then if 0 < k e then if head e = v then 1 else 0
+                                  else if tail e = v then 1 else 0 else 0
+
+which is character-for-character the `hCnonempty`/`hsupp`/`hbal` triple that
+`balanced_support_gives_sign_circulation` (`a#777`, gen-24) consumes. The
+artifact carries its own supporting lemmas and elaborates as a unit;
+re-elaborated here in a fresh Lean session outside the run — ok, no errors, no
+sorries, 7,907 characters.
+
+The proof is the composition below, and every hypothesis is used: `hc_len` and
+`hc_closed` give nonemptiness and the cyclic count identity, `hc_nodup` and
+`hc_chain` build the edge list.
+
+**The pieces it composes:**
 `a#865` gives a `Nodup` edge list `es` with `es.map L = l.dropLast`,
 `es.map R = l.tail` and `k e ≠ 0` throughout; `a#870` gives
 `l.dropLast.count v = l.tail.count v`. Together, every vertex is the source of
 as many edges of `es` as it is the destination — balance, in list-count form.
-What remains is assembly rather than new mathematics: move from list counts to
-indicator sums over `es.toFinset` (which `es.Nodup` licenses), produce `hbal`
-in the exact shape `a#777` consumes, apply it, and contradict the `a#718`/
-`a#723` cancellation arithmetic. Then lemma (A) closes and the correctness
-chain has no unverified arrow in it.
+`a#873`/`a#875` move an indicator sum over `univ` to a `Finset` sum, and
+`a#874` turns that into a list count — the step `es.Nodup` licenses, since
+without it `toFinset` collapses duplicates and `Finset.sum_insert` does not
+apply. `a#871`'s `signTail`/`signHead` are what convert the nested
+`if 0 < k e` conditionals into a single indicator, which is the only place
+those definitions do work.
+
+**What remains for lemma (A):** feed `a#876`'s output to `a#777` for the
+nonzero sign-aligned circulation, and contradict the per-edge cancellation
+arithmetic of `a#718`/`a#723` (gen-22). Both are inherited and proved. That is
+the last unverified arrow in the correctness chain.
 
 ### Two operator interventions, and what they were for
 
