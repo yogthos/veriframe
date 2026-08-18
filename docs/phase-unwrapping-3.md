@@ -324,16 +324,32 @@ two equal `Finset.sum`s.
 - `a#866` cross-checks the construction exhaustively in Prolog over all 16
   two-vertex two-edge orientation assignments.
 
-**(3) is sketched, not proved** (`a#867`): for a nonempty list whose first
-element equals its last, `dropLast` and `tail` have equal counts of every
-element. That is the balance property in combinatorial form, and combined with
-`es.map src = dropLast` and `es.map dst = tail` it says every vertex is the
-source of as many edges of `es` as it is the destination — which is `hbal`.
-The branch stated the bridge itself.
+**(3) is proved too** (`a#870`, `cyclic_dropLast_tail_count_eq`): for a
+nonempty list with `l.head? = l.getLast?`, `l.dropLast.count v = l.tail.count v`
+for every `v`. Cases on the list, `List.dropLast_append_getLast?` to split the
+tail as `dropLast ++ [a]`, then `count v (x :: m) = count v (m ++ [x])`
+(`a#869`) and a rewrite. Both hypotheses are used.
 
-So what remains of TARGET 1 is: prove `a#867`, convert counts to indicator
-sums over `es.toFinset`, feed that to `a#777`, and contradict the `a#718`/
-`a#723` cancellation arithmetic.
+It took two attempts, and the first is worth recording. `a#868` proved the
+right thing and DESCRIBED it wrongly — the claim named `dropLast s ++ [a]`
+where the theorem said `s ++ [a]`, which is a different list, and spoke of a
+closed `l` the statement never mentioned. The faithfulness judge refused it
+with a counterexample (`s = [b, c]` gives `[b, c, a]` against `[b, a]`), and
+the branch restated it correctly on the next turn. That is the slow tier
+catching precisely the class of error that let `a#818` through in gen-28 —
+here in the harder direction, where the mathematics is entirely sound and only
+the prose is wrong.
+
+**So all three gaps of TARGET 1's last step are closed.** Composing them:
+`a#865` gives a `Nodup` edge list `es` with `es.map L = l.dropLast`,
+`es.map R = l.tail` and `k e ≠ 0` throughout; `a#870` gives
+`l.dropLast.count v = l.tail.count v`. Together, every vertex is the source of
+as many edges of `es` as it is the destination — balance, in list-count form.
+What remains is assembly rather than new mathematics: move from list counts to
+indicator sums over `es.toFinset` (which `es.Nodup` licenses), produce `hbal`
+in the exact shape `a#777` consumes, apply it, and contradict the `a#718`/
+`a#723` cancellation arithmetic. Then lemma (A) closes and the correctness
+chain has no unverified arrow in it.
 
 ### Two operator interventions, and what they were for
 
