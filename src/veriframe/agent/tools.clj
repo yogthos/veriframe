@@ -520,11 +520,20 @@
 
   `proof_step` carries no claim of its own; the one it is working sits on the
   branch. Without that fallback a branch grinds the refused approach one
-  tactic at a time and the gate never sees it."
+  tactic at a time and the gate never sees it.
+
+  `sketch` is covered as well, though it is not a verification tool. Banking
+  anything ends a reframe, so a branch that could re-sketch the plan it was
+  told to abandon would bank it, clear its own withholding and be back in the
+  approach on the next turn — the restriction lasting exactly one turn on
+  precisely the branches least inclined to respect it. This is the same shape
+  as the sibling-diversity gate one function up, pointed at the branch's own
+  abandoned plan instead of at a sibling's live one."
   [{:keys [branch tool-name] :as ctx}]
   (when (and (:reframe-claim branch)
              (state/reframe-active? branch (:turn ctx) (gates/threshold :reframe-grace))
-             (contains? state/verification-tools tool-name))
+             (or (contains? state/verification-tools tool-name)
+                 (= "sketch" tool-name)))
     (let [claim (or (arg ctx :claim)
                     (when (#{"proof_start" "proof_step"} tool-name)
                       (get-in branch [:proof :claim])))]
@@ -534,14 +543,21 @@
         (malformed branch
                    (str "This is the approach the harness has withheld:\n\n> "
                         (:reframe-claim branch)
-                        "\n\nIt has failed repeatedly and re-running it — on this"
-                        " engine or any other — is refused. Nothing else is: state a"
-                        " DIFFERENT claim and verify that. A smaller piece of the"
-                        " same goal counts, a different encoding of it does not."
-                        (when (= :explore (:phase branch))
-                          (str " You are also back in the EXPLORE phase, so the"
-                               " fastest way to reopen Lean is `sketch` on the new"
-                               " plan."))
+                        "\n\n"
+                        (if (= "sketch" tool-name)
+                          (str "Re-planning it is still it. A new sketch has to be a"
+                               " different line of attack, not the same one restated —"
+                               " a different decomposition, a different induction, a"
+                               " different object to induct on.")
+                          (str "It has failed repeatedly and re-running it — on this"
+                               " engine or any other — is refused. Nothing else is:"
+                               " state a DIFFERENT claim and verify that. A smaller"
+                               " piece of the same goal counts, a different encoding"
+                               " of it does not."
+                               (when (= :explore (:phase branch))
+                                 (str " You are also back in the EXPLORE phase, so the"
+                                      " fastest way to reopen Lean is `sketch` on the"
+                                      " new plan."))))
                         "\n\nThe failures that led here are not counting against"
                         " you while you change course. Re-submitting this same"
                         " claim is what spends the turns for nothing."))))))

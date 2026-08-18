@@ -450,6 +450,14 @@
       ;; still the better answer to "what is this branch grinding".
       (and (= :failure category) (seq (str claim)))
       (assoc :last-failed-claim claim :last-failed-tool tool)
+      ;; Cleared by a success, so the gate can never withhold something the
+      ;; branch has already got past. Without this, a branch that failed on A,
+      ;; succeeded, and then failed twice on CLAIMLESS calls (octave_eval is
+      ;; the one verification tool with no claim) would be refused A — an
+      ;; approach it is not even working on. A false withholding blocks
+      ;; legitimate work and says nothing about why.
+      (= :success category)
+      (assoc :last-failed-claim nil :last-failed-tool nil)
       (= :success category) (assoc :consecutive-failures 0)
       (= :neutral category) (update :consecutive-failures #(max 0 (dec (or % 0))))
       (= :mechanics category)

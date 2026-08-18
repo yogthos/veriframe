@@ -1779,7 +1779,11 @@
     (is (= "the greedy exchange terminates" (:last-failed-claim b)))
     (is (= "the greedy exchange terminates"
            (:last-failed-claim (state/record-outcome b {:category :neutral :claim "something else"})))
-        "a claimless or non-failing turn does not overwrite it")))
+        "a claimless or non-failing turn does not overwrite it")
+    (is (nil? (:last-failed-claim (state/record-outcome b {:category :success
+                                                           :claim "something else"})))
+        "but a success clears it — the gate must never withhold an approach the
+         branch has already got past, which is what a stale value would do")))
 
 (deftest a-reframe-withholds-the-approach-that-keeps-failing
   ;; vf-49o + vf-9wx. The harness's most reliable finding is that gates which
@@ -1820,6 +1824,29 @@
       (is (some? (tools/phase-refusal
                   {:branch (assoc b :proof {:claim "the greedy exchange terminates in n steps"})
                    :turn 11 :tool-name "proof_step" :args {:tactic "simp"}}))))))
+
+(deftest a-reframe-refuses-a-sketch-that-restates-the-withheld-plan
+  ;; The laundering hole. `sketch` is not a verification tool, so without this
+  ;; a branch could re-sketch the very plan it was told to abandon, bank it —
+  ;; banking anything ends the reframe — and walk straight back into the
+  ;; approach on the next turn, having complied with nothing. The withholding
+  ;; would then last exactly one turn on the branches most determined to
+  ;; ignore it.
+  (let [b (-> (state/new-branch {:id "B1" :problem "p"})
+              (state/begin-reframe 10 "the greedy exchange terminates in n steps"
+                                   "verify_lean"))]
+    (is (= :explore (:phase b)) "the fixture is the Lean path, where sketch is open")
+    (let [r (tools/phase-refusal
+             {:branch b :turn 11 :tool-name "sketch"
+              :args {:claim "the greedy exchange terminates in n steps"
+                     :lean "theorem t : True := by sorry"}})]
+      (is (some? r) "the same plan, re-planned, is still the same plan")
+      (is (str/includes? (:result r) "greedy exchange")))
+    (is (nil? (tools/phase-refusal
+               {:branch b :turn 11 :tool-name "sketch"
+                :args {:claim "every maximal matching has size at least half the maximum"
+                       :lean "theorem t : True := by sorry"}}))
+        "a genuinely different plan is the way out, and must stay open")))
 
 (deftest a-reframe-withholds-every-engine-not-only-lean
   ;; The vf-2vi rule arriving from the other side. Dropping a branch into
