@@ -20,11 +20,35 @@
   `GET /v1/runs/:id/journal?since=N` reads. The loop calls these; nothing calls
   the loop."
   (:require [clojure.data.json :as json]
+            [clojure.tools.logging :as log]
             [jdbc.core :as jdbc]
             [veriframe.events :as events]
             [veriframe.store.db :as db]))
 
-(defn- js [v] (if (string? v) v (json/write-str v)))
+(defn- js
+  "A value as JSON text for a journal column.
+
+  Falls back to pr-str when the value holds something data.json cannot write.
+  The journal is a RECORD of the run; it must not be able to destroy the work
+  it is recording. gen-31 lost two branches — both on the run's actual target —
+  to a Don't-know-how-to-write-JSON-of-class-java.lang.Character thrown from
+  here: a tool's args held a String where a collection was expected, it seq'd
+  into Characters, and the exception propagated out of the turn writer to the
+  beam, which abandoned the branch. That specific cause is fixed in the XML
+  parameter parser; this is so the NEXT unserialisable value nobody predicted
+  costs a readable args column instead of a line of mathematics.
+
+  Degrading rather than dropping, because an args column that silently went
+  empty would be the same class of lie as a false cull reason: the record would
+  look like a turn that passed no arguments."
+  [v]
+  (if (string? v)
+    v
+    (try (json/write-str v)
+         (catch Throwable e
+           (log/warn "journal: falling back to pr-str for a value data.json"
+                     "could not write:" (ex-message e))
+           (pr-str v)))))
 
 (defn- emit!
   "Record an event and publish it. The row is the durable copy the tail

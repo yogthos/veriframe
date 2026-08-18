@@ -31,6 +31,28 @@
   `(let [~binding (db/open! ":memory:")]
      (try ~@body (finally (db/close ~binding)))))
 
+(deftest journalling-a-value-json-cannot-write-does-not-kill-the-turn
+  ;; The journal is a RECORD of the work. It must not be able to destroy the
+  ;; work it is recording. gen-31 lost B1.3 and B2.2 — both on the run's actual
+  ;; target — to "Don't know how to write JSON of class java.lang.Character"
+  ;; thrown out of the turn writer: the args held a String where a collection
+  ;; was expected, it seq'd into Characters, and the exception propagated up to
+  ;; the beam, which abandoned the branch. Same shape as vf-jki and as the
+  ;; database-lock cull: a non-mathematical event ending mathematical work.
+  ;;
+  ;; The root cause is fixed in the XML parser, but the journal must degrade
+  ;; rather than throw for the NEXT unserialisable thing nobody predicted.
+  (with-db [c]
+    (let [rid (runs/start-run! c {:problem "p"})]
+      (runs/open-branch! c rid {:branch-id "B1"})
+      (is (some? (journal/record-turn!
+                  c rid {:branch-id "B1" :turn 1 :tool-name "thesis"
+                         :args {:subClaims [\a \b]}
+                         :result "ok" :category "neutral"}))
+          "the turn is still recorded")
+      (let [row (first (db/fetch c ["SELECT args FROM turns WHERE run_id = ? AND turn = 1" rid]))]
+        (is (string? (:args row)) "and the args column holds something readable")))))
+
 (deftest a-connection-does-not-die-when-something-else-is-reading
   ;; A branch was lost to this on 2026-08-18: an external `sqlite3` query held
   ;; a read lock, the harness's next write got SQLITE_BUSY with a zero busy
