@@ -624,11 +624,30 @@
                      distinct
                      vec)]
     (if (empty? handles)
-      {:ok true :code nil :handles []}
-      (loop [[h & more] handles, blocks [], owners {}]
+      {:ok true :code nil :handles [] :spans []}
+      (let [known-rot (artifacts/rotten conn run-id)]
+      (loop [[h & more] handles, blocks [], owners {}, spans [], line 0]
         (if (nil? h)
-          {:ok true :handles handles
+          {:ok true :handles handles :spans spans
            :code (str/join "\n\n" blocks)}
+          ;; Already known not to compile: refused here, before a session is
+          ;; opened, with the error the branch that found it actually saw
+          ;; (vf-ppt). One branch pays the turn; the rest are told.
+          (if-let [rot (known-rot h)]
+            {:ok false
+             :reason (str "`" h "` does not compile. "
+                          (if (str/blank? (str (:branch_id rot)))
+                            "This run"
+                            (str "Branch " (:branch_id rot)))
+                          " cited it"
+                          (when (pos? (or (:turn rot) 0))
+                            (str " on turn " (:turn rot)))
+                          " and Lean rejected it before their own snippet was"
+                          " reached:\n" (:reason rot)
+                          "\n\nA result an earlier run confirmed was checked against the"
+                          " Mathlib of that day and can stop compiling since. Nothing here"
+                          " is your fault and nothing you write will make citing it work."
+                          " If you need what it stated, prove it yourself.")}
           (if-let [a (artifact-by-handle conn run-id h)]
             (let [status (if (::shared? a) "confirmed" (str (:claim_status a)))
                   kind (str (:kind a))
@@ -667,15 +686,26 @@
                                     " cannot be cited together — Lean rejects the second as"
                                     " already declared. Cite whichever one you actually need,"
                                     " or inline the part you want.")})
-                    (recur more
-                           (conj blocks (str "-- cited: " h " — "
-                                             (str/replace (str (:claim a)) #"\s+" " ")
-                                             "\n" (lint/strip-lean-imports code)))
-                           (into owners (map (fn [n] [n h])) names))))))
+                    (let [block (str "-- cited: " h " — "
+                                     (str/replace (str (:claim a)) #"\s+" " ")
+                                     "\n" (lint/strip-lean-imports code))
+                          ;; Blocks are joined with a blank line, so block n
+                          ;; starts one line after the previous one ended.
+                          ;; Knowing each range is what lets an error be
+                          ;; pinned to the artifact that owns it rather than
+                          ;; to the citation list as a whole.
+                          start (inc line)
+                          end (+ line (count (str/split-lines block)))]
+                      (recur more
+                             (conj blocks block)
+                             (into owners (map (fn [n] [n h])) names)
+                             (conj spans {:handle h :claim (:claim a)
+                                          :start start :end end})
+                             (inc end)))))))
             {:ok false
              :reason (str "No artifact `" h "` to cite. Ids come from the settled-state"
                           " block: `a#12` for something this run established, `s#7` for"
-                          " something it inherited.")}))))))
+                          " something it inherited.")}))))))))
 
 (defn- reframe-refusal
   "Refuse a call that re-runs the approach the stuck gate told this branch to
@@ -2562,17 +2592,42 @@
                    (seq (:errors r))
                    (every? #(when-let [l (get-in % [:pos :line])] (<= l cited-lines))
                            (:errors r)))
-              (let [etext (lean-error-text (:errors r))]
+              ;; Write it down. The harness knows exactly which artifact owns
+              ;; each error — blocks are prepended in order and their ranges
+              ;; are recorded — and used to spend that on one message to one
+              ;; branch. gen-33 rediscovered the same rot 26 times across six
+              ;; branches because nothing accumulated (vf-ppt). Marking it
+              ;; here means resolve-citations refuses it for every sibling and
+              ;; seed-from-run! will not carry it into the next generation.
+              (let [etext (lean-error-text (:errors r))
+                    owner (fn [l] (some #(when (and l (<= (:start %) l) (<= l (:end %))) %)
+                                        (:spans cited)))
+                    condemned (->> (:errors r)
+                                   (keep (fn [e]
+                                           (when-let [sp (owner (get-in e [:pos :line]))]
+                                             [sp (str (:data e))])))
+                                   (reduce (fn [acc [sp d]]
+                                             (update acc sp (fnil conj []) d)) {}))]
+                (doseq [[sp msgs] condemned]
+                  (artifacts/mark-rotten! (:conn ctx) (:run-id ctx) (:handle sp)
+                                          {:claim (:claim sp)
+                                           :reason (str/join "\n" (distinct msgs))
+                                           :branch-id (:id branch)
+                                           :turn (:turn ctx)}))
                 (settle-claim! ctx claim :released nil)
                 (ok branch
                     (str "The CITED source failed to elaborate, so your snippet was"
                          " never reached:\n" etext
-                         "\n\nEvery error is inside " (str/join ", " (:handles cited))
+                         "\n\nEvery error is inside "
+                         (if (seq condemned)
+                           (str/join ", " (map (comp :handle key) condemned))
+                           (str/join ", " (:handles cited)))
                          ", not in what you wrote. A result confirmed by an earlier run"
                          " was checked against the Mathlib of that day and can stop"
-                         " compiling since. Nothing here counts against you.\n\nDrop that"
-                         " citation. If you need what it stated, prove it yourself and"
-                         " say which artifact you found rotten.")))
+                         " compiling since. Nothing here counts against you.\n\nThis is"
+                         " now recorded, so no branch will be sent down it again — you do"
+                         " not need to report it. Drop that citation; if you need what it"
+                         " stated, prove it yourself.")))
 
               ;; No artifact. A snippet Lean rejects is a failed proof ATTEMPT,
               ;; which says nothing about whether the claim is true — this used

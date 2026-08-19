@@ -234,6 +234,29 @@
   ;; (gen-30 B3.2 was culled with exactly that false reason).
   ["ALTER TABLE turns ADD COLUMN policy_refusal INTEGER"])
 
+(def ^:private v6
+  ;; What the harness has learned does not compile any more (vf-ppt).
+  ;;
+  ;; verify_lean already detects this exactly: the cited block is prepended so
+  ;; its line range is known, and an error inside it means the branch's own
+  ;; snippet was never reached. That knowledge was used for one message to one
+  ;; branch and discarded — gen-33 rediscovered the same rotten artifacts 26
+  ;; times across all six branches, and what finally stopped it was a human
+  ;; auditing all 83 by hand.
+  ;;
+  ;; Keyed by HANDLE rather than artifact id because the two id spaces differ:
+  ;; `a#` is this run's artifacts table, `s#` the shared pool it inherited.
+  ["CREATE TABLE IF NOT EXISTS artifact_rot (
+      run_id     TEXT NOT NULL,
+      handle     TEXT NOT NULL,
+      claim      TEXT NOT NULL DEFAULT '',
+      reason     TEXT NOT NULL DEFAULT '',
+      branch_id  TEXT NOT NULL DEFAULT '',
+      turn       INTEGER NOT NULL DEFAULT 0,
+      created_at TEXT NOT NULL,
+      PRIMARY KEY (run_id, handle)
+    )"])
+
 (def migrations
   "Ordered. Index 0 is migration 1; PRAGMA user_version holds the count applied."
-  [v1 v2 v3 v4 v5])
+  [v1 v2 v3 v4 v5 v6])

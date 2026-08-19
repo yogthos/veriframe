@@ -2100,8 +2100,20 @@
       (journal/record-artifact! c rid
         {:branch-id "B1" :turn 1 :kind :lean :claim "a rotten inherited lemma"
          :code "theorem rotten_t : True := by\n  trivial" :claim-status :confirmed})
-      (let [aid (:id (first (db/fetch c ["SELECT id FROM artifacts WHERE run_id=?" rid])))
-            call (fn [err-line]
+      ;; A FRESH artifact per case. Once the first case records the rot,
+      ;; resolve-citations refuses that handle for everyone — which is the
+      ;; point of vf-ppt — so reusing one handle would test the refusal three
+      ;; times instead of the boundary.
+      (let [fresh! (fn []
+                     (journal/record-artifact! c rid
+                       {:branch-id "B1" :turn 1 :kind :lean
+                        :claim (str "a rotten inherited lemma " (gensym))
+                        :code "theorem rotten_t : True := by\n  trivial"
+                        :claim-status :confirmed})
+                     (str "a#" (:id (first (db/fetch c ["SELECT id FROM artifacts
+                                                         WHERE run_id=? ORDER BY id DESC
+                                                         LIMIT 1" rid])))))
+            call (fn [err-line handle]
                    (with-redefs [lean-repl/create-session (fn [& _] {:id "s"})
                                  lean-pool/checkout! (fn [& _] {:id "s"})
                                  lean-repl/run-command
@@ -2111,24 +2123,25 @@
                      (tools/run-tool
                       {:branch b :conn c :run-id rid :tool-name "verify_lean"
                        :args {:claim "every integer n satisfies the derived bound"
-                              :cites [(str "a#" aid)]
+                              :cites [handle]
                               :lean "theorem derived : True := by\n  trivial"}})))]
         (testing "an error inside the cited prefix does not count against the branch"
-          (let [r (call 2)]
+          (let [h (fresh!)
+                r (call 2 h)]
             (is (not= :failure (:category r))
                 "the branch's snippet was never reached, so it failed at nothing")
-            (is (str/includes? (:result r) (str "a#" aid))
+            (is (str/includes? (:result r) h)
                 "and the rotten artifact is named")))
         (testing "an error in the branch's own snippet still counts"
-          (let [r (call 99)]
+          (let [r (call 99 (fresh!))]
             (is (= :failure (:category r)))))
         (testing "and the boundary is the blank line, not the snippet's first line"
           ;; resolve-citations prepends a `-- cited:` line, so the block is
           ;; three lines: 1-3 cited, 4 the blank separator, 5 the branch's
           ;; opening line. Shipped as (+ 2 lines) = 5, which excused an error
           ;; the branch really did make on its own first line.
-          (is (= :neutral (:category (call 4))) "the separator is still theirs")
-          (let [r (call 5)]
+          (is (= :neutral (:category (call 4 (fresh!)))) "the separator is still theirs")
+          (let [r (call 5 (fresh!))]
             (is (= :failure (:category r))
                 "line 5 is the branch's own first line, not the citation's")))))))
 
@@ -2429,6 +2442,85 @@
             "a warning about the cited proof body is not this branch's business")
         (is (not (str/includes? (:result r) "simp argument"))
             "nor is style advice on code an earlier generation wrote")))))
+
+(deftest a-rotten-citation-is-recorded-once-and-refused-after
+  ;; vf-ppt, the whole point: a negative result must accumulate. gen-33 hit
+  ;; citation rot 26 times across all six branches, each rediscovering the
+  ;; same artifacts alone, because the detection was spent on one message and
+  ;; then dropped.
+  (with-db [c]
+    (let [rid (runs/start-run! c {:problem "p"})
+          b (state/new-branch {:id "B1" :problem "p"})]
+      (runs/open-branch! c rid {:branch-id "B1"})
+      (journal/record-artifact! c rid
+        {:branch-id "B1" :turn 1 :kind :lean :claim "a lemma that no longer compiles"
+         :code "theorem rotten_t : True := by\n  trivial" :claim-status :confirmed})
+      (let [aid (:id (first (db/fetch c ["SELECT id FROM artifacts WHERE run_id=?" rid])))
+            handle (str "a#" aid)
+            ran (atom 0)
+            call (fn [branch]
+                   (with-redefs [lean-repl/create-session (fn [& _] (swap! ran inc) {:id "s"})
+                                 lean-pool/checkout! (fn [& _] (swap! ran inc) {:id "s"})
+                                 lean-repl/run-command
+                                 (fn [& _] {:ok false :sorries [] :messages []
+                                            :errors [{:severity "error"
+                                                      :data "unsolved goals"
+                                                      :pos {:line 2 :column 1}}]})]
+                     (tools/run-tool
+                      {:branch branch :conn c :run-id rid :tool-name "verify_lean"
+                       :args {:claim "every integer n satisfies the derived bound"
+                              :cites [handle]
+                              :lean "theorem derived : True := by\n  trivial"}})))]
+
+        (testing "the first branch to hit it pays a turn, and the rot is recorded"
+          (let [r (call b)]
+            (is (not= :failure (:category r)) "the branch failed at nothing")
+            (is (= #{handle} (set (keys (artifacts/rotten c rid))))
+                "and what it discovered is written down, not just narrated")
+            (is (str/includes? (:reason ((artifacts/rotten c rid) handle)) "unsolved goals"))))
+
+        (testing "a SIBLING citing the same artifact is refused before Lean is opened"
+          (let [before @ran
+                sib (state/new-branch {:id "B2" :problem "p"})
+                r (call sib)]
+            (is (= :mechanics (:category r))
+                "a known-rotten citation is a call made wrong, not a verification")
+            (is (= before @ran) "no engine is spent rediscovering it")
+            (is (str/includes? (:result r) handle))
+            (is (str/includes? (:result r) "unsolved goals")
+                "and the branch is told what actually broke, not just that it did")))))))
+
+(deftest rot-is-pinned-to-the-artifact-that-owns-the-error
+  ;; With several citations the harness must not condemn all of them. Blocks
+  ;; are prepended in order, so each one's line range is known and an error
+  ;; belongs to exactly one.
+  (with-db [c]
+    (let [rid (runs/start-run! c {:problem "p"})
+          b (state/new-branch {:id "B1" :problem "p"})]
+      (runs/open-branch! c rid {:branch-id "B1"})
+      (journal/record-artifact! c rid
+        {:branch-id "B1" :turn 1 :kind :lean :claim "the sound one"
+         :code "theorem sound_t : True := by\n  trivial" :claim-status :confirmed})
+      (journal/record-artifact! c rid
+        {:branch-id "B1" :turn 2 :kind :lean :claim "the rotten one"
+         :code "theorem rotten_t : True := by\n  trivial" :claim-status :confirmed})
+      (let [ids (mapv :id (db/fetch c ["SELECT id FROM artifacts WHERE run_id=? ORDER BY id" rid]))
+            [good bad] (mapv #(str "a#" %) ids)]
+        ;; Block 1 is `-- cited:` + 2 lines = lines 1-3, blank at 4,
+        ;; block 2 is lines 5-7. An error at line 6 is the second artifact's.
+        (with-redefs [lean-repl/create-session (fn [& _] {:id "s"})
+                      lean-pool/checkout! (fn [& _] {:id "s"})
+                      lean-repl/run-command
+                      (fn [& _] {:ok false :sorries [] :messages []
+                                 :errors [{:severity "error" :data "boom"
+                                           :pos {:line 6 :column 1}}]})]
+          (tools/run-tool
+           {:branch b :conn c :run-id rid :tool-name "verify_lean"
+            :args {:claim "every integer n satisfies the derived bound"
+                   :cites [good bad]
+                   :lean "theorem derived : True := by\n  trivial"}}))
+        (is (= #{bad} (set (keys (artifacts/rotten c rid))))
+            "only the artifact whose lines carry the error is condemned")))))
 
 (deftest a-bad-citation-is-refused-before-an-engine-is-spent
   (with-db [c]

@@ -165,7 +165,8 @@
                                  ;; value of a ledger is that a branch can
                                  ;; trust the absence of a line.
                                  (artifacts/render-ledger
-                                  (journal/ledger conn run-id))
+                                  (assoc (journal/ledger conn run-id)
+                                         :rotten (artifacts/rotten conn run-id)))
                                  (failures/render fhits)
                                  (artifacts/render ahits)])]
       {:block (when (seq blocks) (str/join "\n\n" blocks))

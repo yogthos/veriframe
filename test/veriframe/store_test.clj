@@ -71,6 +71,102 @@
         (doseq [suffix ["" "-wal" "-shm"]]
           (.delete (java.io.File. (str f suffix))))))))
 
+(deftest the-ledger-moves-a-rotten-artifact-out-of-the-confirmed-sections
+  ;; Leaving it under "Inherited — confirmed" while the harness knows it does
+  ;; not compile is the contradiction seed-from-run! already argues against:
+  ;; the ledger is generated from the tables every turn and says CONFIRMED, so
+  ;; anything saying otherwise is something the branch has to adjudicate.
+  ;; It has to move, not be annotated in place.
+  (let [rendered (artifacts/render-ledger
+                  {:established [{:id 1 :branch_id "B1" :kind "lean" :tier "fast"
+                                  :claim "a lemma that still compiles"}
+                                 {:id 2 :branch_id "B1" :kind "lean" :tier "fast"
+                                  :claim "a lemma that rotted"}]
+                   :inherited [{:id 7 :branch_id "seed:B1" :kind "lean" :tier "slow"
+                                :claim "an inherited lemma that rotted"}]
+                   :rotten {"a#2" {:reason "unsolved goals"}
+                            "s#7" {:reason "unknown identifier"}}})]
+    (is (clojure.string/includes? rendered "a lemma that still compiles"))
+    (testing "the rotten ones are gone from the sections that mean verified"
+      (let [established (second (clojure.string/split rendered #"### "))]
+        (is (not (clojure.string/includes? established "a lemma that rotted")))))
+    (testing "and appear once, under a heading that says not to cite them"
+      (is (clojure.string/includes? rendered "a lemma that rotted"))
+      (is (clojure.string/includes? rendered "an inherited lemma that rotted"))
+      (is (re-find #"(?i)###[^\n]*(rotten|no longer compile)" rendered))
+      (is (clojure.string/includes? rendered "unsolved goals")
+          "with the error, so a branch can see whether it needs the statement"))
+    (testing "handles keep their id space"
+      (is (clojure.string/includes? rendered "a#2"))
+      (is (clojure.string/includes? rendered "s#7"))))
+
+  (testing "with nothing rotten the ledger is unchanged"
+    (let [r (artifacts/render-ledger
+             {:established [{:id 1 :branch_id "B1" :kind "lean" :tier "fast"
+                             :claim "a lemma"}]})]
+      (is (clojure.string/includes? r "a lemma"))
+      (is (not (re-find #"(?i)rotten" r))))))
+
+(deftest rot-is-recorded-once-and-stays-recorded
+  ;; vf-ppt. The harness detects rot precisely and then forgets: gen-33 hit it
+  ;; 26 times across all six branches, each rediscovering the same artifacts
+  ;; alone, and the journal recorded none of it. A negative result has to
+  ;; accumulate or every branch pays for it again.
+  (with-db [c]
+    (let [rid (runs/start-run! c {:problem "p"})]
+      (is (empty? (artifacts/rotten c rid)))
+      (is (true? (artifacts/mark-rotten! c rid "s#1835"
+                                         {:claim "the box bound"
+                                          :reason "unsolved goals"
+                                          :branch-id "B1" :turn 10})))
+      (let [r (artifacts/rotten c rid)]
+        (is (= #{"s#1835"} (set (keys r))))
+        (is (= "unsolved goals" (:reason (r "s#1835"))))
+        (is (= "B1" (:branch_id (r "s#1835")))))
+
+      (testing "the FIRST detection wins, so a later branch cannot overwrite the reason"
+        (is (false? (artifacts/mark-rotten! c rid "s#1835"
+                                            {:claim "the box bound"
+                                             :reason "something else"
+                                             :branch-id "B2" :turn 40})))
+        (is (= "unsolved goals" (:reason ((artifacts/rotten c rid) "s#1835"))))
+        (is (= "B1" (:branch_id ((artifacts/rotten c rid) "s#1835")))
+            "and the branch credited with finding it stays the one that did"))
+
+      (testing "it is journalled, so the record shows when the run learned"
+        (is (seq (db/fetch c ["SELECT id FROM events WHERE run_id=? AND kind='artifact-rot'" rid]))))
+
+      (testing "rot is per run, not global"
+        (let [other (runs/start-run! c {:problem "q"})]
+          (is (empty? (artifacts/rotten c other))))))))
+
+(deftest a-rotten-artifact-does-not-cross-a-generation-boundary
+  ;; seed-from-run! carries confirmed rows forward. A row this run PROVED does
+  ;; not compile must not be one the next run inherits as a confirmed lemma —
+  ;; that is how the campaign ended up with 32 rotten artifacts in an 83-row
+  ;; corpus and a chain it could not reassemble from its own parts.
+  (with-db [c]
+    (let [src (runs/start-run! c {:problem "p"})]
+      (runs/open-branch! c src {:branch-id "B1"})
+      (journal/record-artifact! c src
+        {:branch-id "B1" :turn 1 :kind :lean :claim "a sound lemma"
+         :code "theorem ok_t : True := by trivial" :claim-status :confirmed})
+      (journal/record-artifact! c src
+        {:branch-id "B1" :turn 2 :kind :lean :claim "a lemma that stopped compiling"
+         :code "theorem rot_t : True := by trivial" :claim-status :confirmed})
+      (let [rot-id (:id (first (db/fetch c ["SELECT id FROM artifacts
+                                             WHERE run_id=? AND claim LIKE '%stopped%'" src])))]
+        (artifacts/mark-rotten! c src (str "a#" rot-id)
+                                {:claim "a lemma that stopped compiling"
+                                 :reason "unknown identifier" :branch-id "B1" :turn 5})
+        (let [dst (runs/start-run! c {:problem "next gen"})]
+          (artifacts/seed-from-run! c dst src)
+          (let [claims (set (map :claim (db/fetch c ["SELECT claim FROM shared_artifacts
+                                                      WHERE run_id=?" dst])))]
+            (is (contains? claims "a sound lemma"))
+            (is (not (contains? claims "a lemma that stopped compiling"))
+                "a result the source run learned was void must not arrive confirmed")))))))
+
 (deftest migrations-apply
   (with-db [c]
     (is (= (count migrations/migrations) (db/schema-version c)))

@@ -88,6 +88,46 @@
           true)
         false))))
 
+(defn mark-rotten!
+  "Record that a cited artifact no longer elaborates (vf-ppt).
+
+  verify_lean detects this exactly and used to discard it: the cited block is
+  prepended, so its line range is known, and every error inside it means the
+  branch's own snippet was never reached. That was worth one message to one
+  branch. gen-33 rediscovered the same rotten artifacts 26 times across all
+  six branches — B1 nine times, B2 seven — and the run's 20 journalled event
+  kinds included none for it. What stopped it was a human auditing all 83
+  citable artifacts by hand and delivering the result as a note.
+
+  FIRST detection wins, and returns true; a later one is a no-op returning
+  false. The reason is the error text the branch actually saw, which is more
+  useful than a later branch's differently-worded encounter, and the branch
+  credited stays the one that paid for it.
+
+  Keyed on the handle: `a#12` and `s#7` are different tables, and this has to
+  cover both."
+  [conn run-id handle {:keys [claim reason branch-id turn]}]
+  (db/with-writer
+    (let [n (db/execute! conn
+                         ["INSERT OR IGNORE INTO artifact_rot
+                           (run_id, handle, claim, reason, branch_id, turn, created_at)
+                           VALUES (?, ?, ?, ?, ?, ?, ?)"
+                          run-id (str handle) (str claim) (str reason)
+                          (str branch-id) (or turn 0) (db/now)])]
+      (if (pos? (if (number? n) n 0))
+        (do (journal/note! conn run-id :artifact-rot
+                           {:branch-id branch-id :turn turn
+                            :data {:handle handle :claim claim :reason reason}})
+            true)
+        false))))
+
+(defn rotten
+  "Everything this run has learned does not compile, handle -> row."
+  [conn run-id]
+  (into {} (map (juxt :handle identity))
+        (db/fetch conn ["SELECT handle, claim, reason, branch_id, turn
+                         FROM artifact_rot WHERE run_id = ?" run-id])))
+
 (defn- normalize-claim
   "Spelling-level normalisation only — case and punctuation — matching
   claims/normalize and consensus/normalize-claim. Two phrasings that group
@@ -123,7 +163,13 @@
   boundary where they change is exactly the boundary this has to hold at."
   ([conn run-id source-run-id] (seed-from-run! conn run-id source-run-id nil))
   ([conn run-id source-run-id {:keys [quarantine]}]
-  (let [blocked (into #{} (map normalize-claim) quarantine)
+  (let [;; What the source run LEARNED was void, on top of what a human
+        ;; named. A row it proved does not elaborate must not arrive in the
+        ;; next generation marked confirmed — that is how an 83-row corpus
+        ;; came to hold 32 artifacts that no longer compile (vf-ppt, vf-6v7).
+        blocked (into (into #{} (map normalize-claim) quarantine)
+                      (comp (map :claim) (remove str/blank?) (map normalize-claim))
+                      (vals (rotten conn source-run-id)))
         own (db/fetch conn
                       ["SELECT branch_id, kind, tier, claim, code FROM artifacts
                         WHERE run_id = ? AND claim_status = 'confirmed' ORDER BY id"
@@ -337,8 +383,20 @@
 
   Ids are handles, not decoration — `a#12` is what `fetch_artifact` takes, so
   the encodings stay out of the block and cost a turn only when wanted."
-  [{:keys [established ruled-out sketches inherited]}]
-  (when (or (seq established) (seq ruled-out) (seq sketches) (seq inherited))
+  [{:keys [established ruled-out sketches inherited rotten]}]
+  ;; Anything the run has learned does not compile is pulled OUT of the
+  ;; sections that mean verified and shown once, under its own heading, with
+  ;; the error (vf-ppt). Annotating it in place would leave the branch a
+  ;; contradiction to adjudicate — the same argument seed-from-run! makes
+  ;; about prose that disagrees with a table saying CONFIRMED. A branch that
+  ;; can see the line is rotten never spends the turn finding out.
+  (let [rot? (fn [prefix e] (get rotten (str prefix (:id e))))
+        rot-entries (concat (map #(assoc % ::prefix "a#") (filter #(rot? "a#" %) established))
+                            (map #(assoc % ::prefix "s#") (filter #(rot? "s#" %) inherited)))
+        established (remove #(rot? "a#" %) established)
+        inherited (remove #(rot? "s#" %) inherited)]
+  (when (or (seq established) (seq ruled-out) (seq sketches) (seq inherited)
+            (seq rot-entries))
     (str message/ledger-open "\n"
          ;; NOT "what this run has settled": a sketch is precisely what it has
          ;; not settled, and a heading is what a model skimming reads. The
@@ -367,8 +425,19 @@
          (when (seq inherited)
            (str "### Inherited — confirmed by the run this one was seeded from\n"
                 (str/join "\n" (map (partial ledger-line "s#") (dedupe-claims inherited))) "\n\n"))
+         (when (seq rot-entries)
+           (str "### No longer compiles — DO NOT CITE; the harness has checked\n"
+                (str/join "\n"
+                          (for [e rot-entries]
+                            (str (ledger-line (::prefix e) e) "\n      ↳ "
+                                 (str/replace
+                                  (str (:reason (get rotten (str (::prefix e) (:id e)))))
+                                  #"\s*\n\s*" " / "))))
+                "\n\nEach was cited and Lean rejected it before the citing branch's own"
+                " snippet was reached. The statements may well be true; only the proofs"
+                " have decayed. Citing one is refused, so prove what you need yourself.\n\n"))
          "Fetch any encoding with `fetch_artifact` and its id, e.g. `a#12`, `s#7` or `p#3`.\n"
-         message/ledger-close)))
+         message/ledger-close))))
 
 (defn prefer-in-run
   "In-run artifacts first, seeded ones after, order preserved within each.
