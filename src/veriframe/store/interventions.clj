@@ -27,7 +27,8 @@
 (def kinds
   "What a human may ask for. Each is applied by the arbiter or the scheduler at
   a boundary; nothing here mutates a branch directly."
-  {"message" "Inject text into a branch's next turn."
+  {"message" "Inject text into a branch's next turn. One-shot: it lands in the turn stream and decays out of it at compaction, which is right for \"do this now\" and wrong for a fact the branch must keep."
+   "note" "Append a durable fact to a branch's problem statement. Survives compaction, unlike `message`, because compact preserves the frame exactly."
    "review" "Tell a branch to cross-check and ship what it has."
    "cull" "Stop a branch. Refused if it is the last one running."
    "fork" "Open a sibling branch on a stated thesis."

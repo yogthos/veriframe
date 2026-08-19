@@ -474,8 +474,36 @@
          ("message" "review")
          (do (interventions/resolve! conn run-id (:id d) :applied nil turn)
              ;; Delivered as a directive on the branch, which the arbiter puts
-             ;; at priority zero — above every machine gate.
+             ;; at priority zero — above every machine gate. One-shot: it lands
+             ;; in the turn stream and decays out of it at compaction, which is
+             ;; right for "do this now" and wrong for a durable fact. See
+             ;; "note".
              (mapv #(if (matches? %) (assoc % :pending-directive d) %) bs))
+
+         ;; A fact the branch must not forget, appended to its PROBLEM message
+         ;; rather than queued as a steer. message/compact preserves the frame
+         ;; exactly — "the system prompt survives, the problem survives" — so
+         ;; this outlives the turn stream, while a "message" directive does
+         ;; not.
+         ;;
+         ;; Built because every operator directive was one-shot. gen-33 B1 was
+         ;; told at turn 29 exactly which 32 inherited artifacts do not
+         ;; compile, and was citing four of them again by turn 52: it had
+         ;; accumulated 678,696 characters against a 50,000 compaction
+         ;; threshold, so the map had been unloaded to a digest line. It was
+         ;; not ignoring the instruction; the instruction was gone. Six
+         ;; directives across two runs decayed the same way before anyone
+         ;; noticed, because a message that has expired looks exactly like a
+         ;; message that was skimmed.
+         "note"
+         (do (interventions/resolve! conn run-id (:id d) :applied nil turn)
+             (mapv (fn [b]
+                     (if (and (matches? b) (>= (count (:messages b)) 2))
+                       (update-in b [:messages 1 :content]
+                                  #(str % "\n\n## Standing note from the operator\n\n"
+                                        (:payload d)))
+                       b))
+                   bs))
 
          ;; pause / resume / extend / fork are recognized but not yet wired to
          ;; a scheduler action. Rejecting explicitly beats accepting silently.

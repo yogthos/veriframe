@@ -36,6 +36,7 @@
             [veriframe.engine.octave :as octave]
             [veriframe.engine.smt :as smt]
             [veriframe.llm.client :as llm]
+            [veriframe.llm.message :as message]
             [clojure.data.json :as json]
             [veriframe.store.artifacts :as artifacts]
             [veriframe.store.db :as db]
@@ -2042,6 +2043,43 @@
                 "the cited artifact is named, so the branch can tell whose code broke")
             (is (str/includes? (:result r) "may be in")
                 "and told the error need not be in its own snippet")))))))
+
+(deftest a-note-directive-survives-compaction
+  ;; Every operator directive is delivered as an ordinary turn message, and
+  ;; compaction keeps only the frame plus the last ten turn-pairs. So a
+  ;; DURABLE fact — which inherited artifacts are rotten, say — decays out of
+  ;; the branch's context after about ten turns and it goes back to the
+  ;; behaviour the directive was meant to stop.
+  ;;
+  ;; Measured on gen-33 B1: told at turn 29 exactly which 32 artifacts do not
+  ;; compile, it was citing four of them again by turn 52, having accumulated
+  ;; 678,696 characters against a 50,000 threshold. It was not ignoring the
+  ;; instruction; the instruction was gone.
+  ;;
+  ;; `note` appends to the PROBLEM message instead, which compact preserves
+  ;; exactly — "the system prompt survives, the problem survives".
+  (with-db [c]
+    (let [rid (runs/start-run! c {:problem "p"})
+          b (assoc (state/new-branch {:id "B1" :problem "p"})
+                   :messages [{:role "system" :content "sys"}
+                              {:role "user" :content "the problem"}])
+          d {:id 1 :kind "note" :branch_id "B1"
+             :payload "s#1835 does not compile. Do not cite it."}
+          [after] (#'beam/drain-directives! {:conn c :run-id rid} [b] [d] 7)]
+      (is (str/includes? (:content (second (:messages after))) "s#1835")
+          "the fact is in the problem message, which compaction preserves")
+      (is (nil? (:pending-directive after))
+          "and not queued as a one-shot steer that decays with the turn stream")
+      (testing "and it really survives a compaction that drops the turn stream"
+        (let [long-turns (vec (for [n (range 40)]
+                                {:turn n :tool "verify_lean" :category :failure}))
+              msgs (into (:messages after)
+                         (mapcat (fn [n] [{:role "assistant" :content (apply str (repeat 2000 "x"))}
+                                          {:role "user" :content (apply str (repeat 2000 "y"))}])
+                                 (range 40)))
+              compacted (message/compact msgs long-turns)]
+          (is (some #(str/includes? (str (:content %)) "s#1835") compacted)
+              "still there after the older turns are unloaded"))))))
 
 (deftest an-error-inside-cited-code-is-not-the-branch-s-failure
   ;; gen-33 B2 was culled after three consecutive failures. All three were
