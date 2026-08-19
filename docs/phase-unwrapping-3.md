@@ -558,3 +558,62 @@ fine, which says nothing about the artifact as stored.
 Citation is what made it visible, by forcing inherited code through the
 elaborator unchanged. The mechanism built to save typing turned out to be the
 first thing that ever checked the corpus.
+
+## gen-33: the first half of the correctness chain closed by citation
+
+Run `368188de`, deepseek-v4-pro, 200 turns, beam 2, seeded from gen-32 with
+136 artifacts. Two results, both verified independently — re-elaborated in a
+fresh Lean session and checked with `#print axioms`, not trusted from the
+label.
+
+**a#904 `acyclic_support_flow_bound_fixed`** (B1.3, turn 96, slow tier). In a
+finite directed graph with a nonnegative integer flow `f`, divergence `b`, and
+an acyclic relation `r` containing every supported arc, every supported edge
+satisfies `f e0 ≤ ∑ v, max (b v) 0`. The cut argument: `R` is the set
+reachable from `head e0`, `tail e0 ∉ R` by acyclicity, no supported edge
+leaves `R`, and the divergence sum over `R` telescopes to the flow across the
+cut. Axioms: `propext, Classical.choice, Quot.sound`.
+
+**a#905 `stage2_optimal_support_bound`** (B1.3.3, turn 98). If `k` is stage-1
+C-minimal and stage-2 Q-minimal among integer flows with its divergence, then
+every supported edge satisfies `|k e0| ≤ ∑ v, max (div_k v) 0`. Same axioms.
+
+a#905 is a real composition rather than the conditional kind gen-31 produced
+four of. Its hypotheses are only the problem's own — nonnegative weights,
+C-minimality, Q-minimality, `k e0 ≠ 0`. Acyclicity is not assumed but derived
+by applying lemma (A); the box bound is not assumed but derived by applying
+a#904 to the magnitude flow on the sign-oriented arc maps; and the bridge
+between them goes through `support_div_eq`.
+
+It was closed by CITATION — three artifacts named by id, source supplied by
+the harness. gen-31 proved every component of lemma (A) and then spent its
+last 180 turns failing to reassemble them by retyping, which is what the
+citation mechanism was built for.
+
+### What the run needed that it did not have
+
+The plan was sketched at turn 58, one turn after the compile map was
+re-delivered as a durable `note`; six earlier deliveries as `message`
+interventions had been erased by compaction, and an expired message looks
+exactly like one that was skimmed.
+
+Executing it needed tooling the harness lacked. Branches spent 24 of the first
+267 turns — every branch, 9.4% of the run — asking what a cited declaration's
+type was, by inventing claims for `verify_lean` because no tool took the
+question. `lean_check` was added mid-run; probe-shaped calls went to zero the
+turn it arrived. `proof_start` could not cite at all, so the interactive path
+— the one the prompt recommends for a proof you do not yet know — could not
+build on anything.
+
+And the delivery itself was broken: `initial-messages` runs once per branch,
+so the system prompt was frozen at turn 0 and every mid-run prompt edit
+reached nothing. `lean_check` sat unused for eight turns after being deployed
+and verified, because no branch could see it.
+
+### What remains
+
+The steps after the box bound. Of the ten artifacts covering them, seven do
+not elaborate — 70%, against 39% across the corpus. `s#1862`, `s#1870` and
+`s#1887` survive. `s#1883` is rotten while `s#1887`, a re-verification of the
+same result on another branch, is sound: the result exists in one copy because
+a branch happened to redo it.
