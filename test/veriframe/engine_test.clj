@@ -28,6 +28,30 @@
 
 ;; --- lint -------------------------------------------------------------------
 
+(deftest lint-refuses-an-axiom
+  ;; An axiom is `sorry` with no warning attached. gen-31 B1.2 probed this
+  ;; directly (a#885) — `axiom inherited_one_eq_one : (1:Z) = 1` followed by
+  ;; `theorem probe_axiom_use : (1:Z) = 1 := inherited_one_eq_one` — and the
+  ;; harness recorded it CONFIRMED. The branch was looking for a way to stand
+  ;; in for inherited components it could not cheaply retype (vf-vw4), and this
+  ;; would have let it "close" lemma (A) by assuming it.
+  ;;
+  ;; Worse than sorry, which IS caught, and worse than a conditional
+  ;; composition, whose assumptions at least appear in the theorem's
+  ;; hypotheses. An axiom is invisible in the statement it supports.
+  (let [r (lint/lint-lean "axiom foo : (1 : Int) = 1\ntheorem t : (1 : Int) = 1 := foo")]
+    (is (false? (:ok r)))
+    (is (some #(re-find #"(?i)axiom" %) (:warnings r))))
+
+  (testing "refused in sketch mode too — a sketch's placeholder is sorry, not an axiom"
+    (let [r (lint/lint-lean "axiom foo : (1 : Int) = 1\ntheorem t : (1 : Int) = 1 := by sorry"
+                            {:allow-sorry? true})]
+      (is (false? (:ok r)))))
+
+  (testing "the word in a comment or an identifier is not a declaration"
+    (is (:ok (lint/lint-lean "-- this follows from the axiom of choice\ntheorem t : True := trivial")))
+    (is (:ok (lint/lint-lean "theorem axiomatic_t : True := trivial")))))
+
 (deftest smt-lint
   (testing "a clean body passes"
     (is (:ok (lint/lint-smt "(declare-const x Int)\n(assert (> x 2))"))))

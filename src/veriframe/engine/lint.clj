@@ -307,8 +307,33 @@
                (conj! ws (str "Snippet contains `sorry` or `admit` — placeholder tactics"
                               " that compile but do NOT prove anything (Lean only emits a"
                               " warning). Replace them with real tactics, or split the work:"
-                              " `lean_define` adds the goal as an axiom you can use"
-                              " elsewhere, and `proof_start` develops the closed proof step"
-                              " by step.")))))
+                              " `sketch` banks a skeleton WITH its sorries as a plan, and"
+                              " `proof_start`/`proof_step` develop the closed proof step by"
+                              " step.")))
+             ;; An axiom is `sorry` with no warning attached, and it is worse in
+             ;; two ways: nothing in the output marks it, and it does not appear
+             ;; in the hypotheses of the theorem it supports, so a reader of the
+             ;; STATEMENT cannot tell. `axiom lemma_A : <the goal>` followed by
+             ;; `theorem closed : <the goal> := lemma_A` would be banked as
+             ;; confirmed.
+             ;;
+             ;; Not hypothetical: gen-31 B1.2 probed exactly this and the
+             ;; harness accepted it (a#885). It was looking for a way to stand
+             ;; in for inherited components it could not cheaply retype
+             ;; (vf-vw4), which is the pressure that makes this attractive
+             ;; precisely when the stakes are highest — assembling a final
+             ;; composition.
+             ;;
+             ;; Refused in sketch mode too: a sketch's sanctioned placeholder is
+             ;; `sorry`, which the engine can see and count.
+             (when (re-find #"(?m)^\s*(@\[[^\]]*\]\s*)?axiom\b" stripped)
+               (conj! ws (str "Snippet declares an `axiom`. An axiom is assumed, not"
+                              " proved — it is `sorry` with no warning, and unlike a"
+                              " hypothesis it does not appear in the statement of the"
+                              " theorem that uses it, so nothing downstream can tell the"
+                              " result rests on it. To build on an earlier result, restate"
+                              " and reprove it in this snippet, or take it as an explicit"
+                              " HYPOTHESIS of your theorem so the dependency is visible in"
+                              " the statement.")))))
 
          (result (persistent! ws)))))))
