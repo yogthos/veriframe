@@ -502,3 +502,59 @@ One incidental confirmation: the elaboration emits nineteen
 campaign's entire corpus is written against a deprecated alias whose lemmas
 are indexed under the new name, which is exactly the retrieval failure
 `vf-i5q` describes.
+
+## The ledger does not hold what it says it holds
+
+Every citable Lean artifact in gen-33's inheritance was elaborated, one at a
+time, in a fresh session (`docs/corpus-audit-2026-08-19.edn`):
+
+| | |
+| --- | --- |
+| citable Lean artifacts | 83 |
+| compile | 51 |
+| **do not compile** | **32 (39%)** |
+
+By cause: 8 unsolved goals, 8 tactics that no longer close (`linarith`,
+`omega`, `introN`), 6 that do not parse, 5 other, 3 that call an identifier
+they never define, 2 whose lemma signatures moved.
+
+**a#718 and a#774 are both in the failing set**, and both are load-bearing:
+a#718 is the cancellation core the acyclicity argument terminates in, a#774 the
+box bound. So while every arrow of the correctness chain was engine-verified
+*when it was checked*, **the chain cannot today be reassembled from its
+recorded parts**.
+
+Lemma (A) is unaffected. `a#887` elaborates and `#print axioms` reports only
+propext, Classical.choice and Quot.sound. It survives because it carries its
+own proof of every step rather than citing the corpus.
+
+### Three causes, all now closed
+
+**The interactive path banked a reconstruction it never elaborated.**
+`proof_step` assembled `theorem <stmt> := by <tactics>` and recorded it; each
+tactic had been checked against a proof state, the assembled declaration never
+was. It now re-elaborates before banking.
+
+**Multi-line tactics had their indentation destroyed.** The assembly used
+`(str/join "\n  " tactics)`, which indents only where tactics meet, so a
+tactic's continuation lines stayed at the column the branch wrote them in —
+column 0 relative to the tactic. That is why a#718 has `have hCeq` at column 0.
+Every line of every tactic is now indented as a block.
+
+**`axiom` was accepted by the Lean lint.** An axiom is `sorry` with no warning,
+and unlike a hypothesis it does not appear in the statement of the theorem that
+uses it. A branch probed exactly this and the probe was recorded as confirmed.
+The lint now refuses axioms in both normal and sketch mode.
+
+### Why it took ten generations to notice
+
+Nothing ever re-elaborated a banked artifact. `seed-from-run!` copies claim and
+code forward as text, and the only way to build on a result was to reproduce it
+by hand — where a branch naturally re-indents as it types and never sees the
+corruption. The same thing happened here while checking whether the weight
+restriction was removable: a#718 was retyped, properly indented, and elaborated
+fine, which says nothing about the artifact as stored.
+
+Citation is what made it visible, by forcing inherited code through the
+elaborator unchanged. The mechanism built to save typing turned out to be the
+first thing that ever checked the corpus.
