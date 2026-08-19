@@ -2132,6 +2132,38 @@
             (is (= :failure (:category r))
                 "line 5 is the branch's own first line, not the citation's")))))))
 
+(deftest a-branch-sees-the-current-system-prompt-not-the-one-it-was-born-with
+  ;; initial-messages runs ONCE, at branch creation, so messages[0] froze the
+  ;; system prompt at turn 0 and compaction faithfully preserved the stale
+  ;; copy for the rest of the run. Every prompt edit deployed over nREPL —
+  ;; the mechanism CLAUDE.md documents as the way to fix a running server —
+  ;; reached prompt-digest and the judges and nothing else.
+  ;;
+  ;; Found the expensive way. lean_check was built for a question gen-33 had
+  ;; asked 24 times, hot-deployed mid-run, verified rendering correctly out of
+  ;; loop/system-prompt, and then not called once — because no branch could
+  ;; see it. B1 went on probing with dummy declarations six turns later.
+  ;;
+  ;; The prompt is a pure function of files on disk, so re-rendering it per
+  ;; turn is free and makes the documented deploy path actually work.
+  (let [msgs [{:role "system" :content "STALE PROMPT"}
+              {:role "user" :content "## Problem\n\nsomething"}
+              {:role "assistant" :content "a turn"}]
+        out (#'aloop/refresh-frame msgs)]
+    (is (= "STALE PROMPT" (:content (first msgs)))
+        "the branch's own list is untouched — a resume replays what was sent")
+    (is (str/includes? (:content (first out)) "lean_check")
+        "and what goes to the wire is the prompt as it is on disk now")
+    (is (= :system (keyword (:role (first out)))))
+    (is (= (rest msgs) (rest out)) "nothing else is disturbed"))
+
+  (testing "a message list with no system frame is left alone"
+    (let [msgs [{:role "user" :content "hi"}]]
+      (is (= msgs (#'aloop/refresh-frame msgs)))))
+
+  (testing "and an empty list does not blow up"
+    (is (= [] (vec (#'aloop/refresh-frame []))))))
+
 (deftest lean-check-answers-what-a-declaration-is-without-claiming-anything
   ;; vf-66l. gen-33 spent 24 of 267 turns, across all six branches, asking
   ;; what the type of a cited declaration was. There was no tool for it, so

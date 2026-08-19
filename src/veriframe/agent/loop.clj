@@ -92,6 +92,29 @@
   [{:role "system" :content (system-prompt)}
    {:role "user" :content (str "## Problem\n\n" problem "\n\nIssue your first tool call.")}])
 
+(defn- refresh-frame
+  "Re-render the system message from disk on the way to the wire.
+
+  `initial-messages` runs once, at branch creation, so messages[0] froze the
+  system prompt at turn 0 and `compact` — which preserves the frame exactly —
+  faithfully carried that stale copy for the rest of the run. Every prompt
+  edit deployed over nREPL, which is the mechanism this project documents as
+  the way to fix a running server, reached `prompt-digest` and the judges and
+  no branch at all.
+
+  Found the expensive way on gen-33: `lean_check` was built for a question the
+  run had asked 24 times, hot-deployed, verified rendering correctly out of
+  `system-prompt`, and never called once, because no branch could see it.
+
+  The prompt is a pure function of files on disk, so re-rendering costs a
+  slurp. Applied on the way out like compaction, so the branch's own list is
+  untouched and a resume still replays what was really sent."
+  [messages]
+  (let [messages (vec messages)]
+    (if (= "system" (some-> (first messages) :role name))
+      (assoc-in messages [0 :content] (system-prompt))
+      messages)))
+
 (defn- context-block
   "What the harness adds to the branch's view before its next turn: the
   failures most like what it just tried, and — when sharing is on — the
@@ -194,8 +217,9 @@
                                    ;; so the journal and a resume still hold
                                    ;; everything. Below the threshold this
                                    ;; returns the messages unchanged.
-                                   (message/compact (:messages branch)
-                                                    (:turns branch))
+                                   (refresh-frame
+                                    (message/compact (:messages branch)
+                                                     (:turns branch)))
                                    (cond-> {}
                                      budget (assoc :max-tokens budget)
                                      ;; Set by the previous turn's steer. The

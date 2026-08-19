@@ -1038,6 +1038,26 @@ sidon(S) :- sums(S, Sums), sort(Sums, Sorted), length(Sums, N), length(Sorted, N
     (is (not (lint/vacuous-lean-statement? "theorem t (x : Nat) : x = x := by rfl")))
     (is (not (lint/vacuous-lean-statement? "theorem t : 1 = 1 := by rfl"))))
 
+  (testing "a declaration whose signature spans lines is still vacuous"
+    ;; The check was line-based: it filtered lines matching theorem/lemma and
+    ;; demanded `: True :=` on that same line. gen-30 a#832 was caught only
+    ;; because it was a one-liner. gen-33 a#903 wrapped its binders across
+    ;; three lines and banked CONFIRMED — a dummy declaration concluding True,
+    ;; written deliberately to read a cited lemma's type, sitting in the
+    ;; artifact pool as a result later runs can inherit and cite.
+    (is (lint/vacuous-lean-statement?
+         (str "theorem probe_signature\n"
+              "    {V E : Type*} [Fintype V] [Fintype E] [DecidableEq V]\n"
+              "    (tail head : E → V) (w k : E → ℤ) : True := by\n"
+              "  have h := sign_oriented_support_acyclic tail head w k\n"
+              "  trivial")))
+    (is (not (lint/vacuous-lean-statement?
+              (str "theorem real_one\n"
+                   "    {V : Type*} [Fintype V]\n"
+                   "    (f : V → ℤ) : ∑ v, f v = ∑ v, f v := by\n"
+                   "  rfl")))
+        "a wrapped signature with a real conclusion is untouched"))
+
   (testing "True appearing inside a real statement is not vacuous"
     ;; The conclusion is what matters, not whether the word occurs.
     (is (not (lint/vacuous-lean-statement?

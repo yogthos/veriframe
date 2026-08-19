@@ -231,15 +231,21 @@
   The CONCLUSION, not the presence of the word: `(h : True)` as a hypothesis is
   ordinary, and `True ∧ False ∨ 1 = 1` concludes something real. So this looks
   only at the text between the last top-level `:` and the `:=`, which is where
-  a Lean conclusion lives."
+  a Lean conclusion lives.
+
+  Matched over the whole snippet rather than line by line. The line-based
+  version only ever saw single-line declarations: it filtered lines containing
+  `theorem`, then demanded `: True :=` on that same line, so wrapping the
+  binders defeated it completely. gen-33 a#903 did exactly that — three lines
+  of `{V E : Type*} [Fintype V] …` with `: True := by` at the end — and banked
+  CONFIRMED, a dummy declaration written to read a cited lemma's type, sitting
+  in the pool for later runs to inherit and cite. Non-greedy to the first
+  `:=`, which is where the signature ends."
   [snippet]
-  (let [decls (->> (str/split-lines (strip-lean-comments (or snippet "")))
-                   (filter #(re-find #"\b(theorem|lemma|example)\b" %)))]
+  (let [decls (re-seq #"(?s)\b(?:theorem|lemma|example)\b.*?:="
+                      (strip-lean-comments (or snippet "")))]
     (and (seq decls)
-         (every? (fn [line]
-                   (when-let [m (re-find #":\s*True\s*:=" line)]
-                     (boolean m)))
-                 decls))))
+         (every? #(boolean (re-find #":\s*True\s*:=\z" %)) decls))))
 
 (defn lint-lean
   "Lint a Lean declaration before it reaches the engine.
