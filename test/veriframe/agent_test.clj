@@ -1771,6 +1771,46 @@
     (is (= :active (:status (#'beam/cull-or-keep {:turn 10} at-stuck 2 [])))
         "and the branch is not yet cullable when it does")))
 
+(deftest a-closed-proof-is-re-elaborated-before-it-is-banked
+  ;; The interactive path banks `theorem <stmt> := by <tactics>` — a
+  ;; RECONSTRUCTION. The tactics were checked one at a time against a proof
+  ;; state; the assembled text never was. So the slow tier, this campaign's
+  ;; highest evidence standard, could record code that does not compile.
+  ;;
+  ;; a#774 is exactly that: confirmed, slow tier, seeded forward through nine
+  ;; generations, and it does not elaborate standalone — its proof calls
+  ;; `dag_has_rank`, which it never defines. gen-33 B1 cited it, hit
+  ;; `Unknown identifier`, and the fault was not the branch's.
+  (with-db [c]
+    (let [rid (runs/start-run! c {:problem "p"})
+          b (assoc (state/new-branch {:id "B1" :problem "p"})
+                   :lean {:id "s"}
+                   :proof {:claim "the bound holds on every supported edge"
+                           :theorem "theorem bound_t : True"
+                           :state 1 :tactics ["intro h"]})]
+      (runs/open-branch! c rid {:branch-id "B1"})
+      (testing "a reconstruction that does not elaborate is not banked"
+        (with-redefs [lean-repl/apply-tactic (fn [& _] {:ok true :closed? true
+                                                        :sorries [] :proof-state 2})
+                      lean-repl/run-command (fn [& _] {:ok false :sorries []
+                                                       :errors [{:data "Unknown identifier `dag_has_rank`"}]
+                                                       :messages []})]
+          (let [r (tools/run-tool {:branch b :conn c :run-id rid
+                                   :tool-name "proof_step" :args {:tactic "exact trivial"}})]
+            (is (nil? (:artifact r))
+                "nothing is recorded when the assembled proof does not compile")
+            (is (str/includes? (:result r) "dag_has_rank")
+                "and the branch is shown why"))))
+      (testing "a reconstruction that does elaborate is banked as before"
+        (with-redefs [lean-repl/apply-tactic (fn [& _] {:ok true :closed? true
+                                                        :sorries [] :proof-state 2})
+                      lean-repl/run-command (fn [& _] {:ok true :sorries [] :errors [] :messages []})
+                      tools/encoding-faithful? (fn [& _] {:ok? true})]
+          (let [r (tools/run-tool {:branch b :conn c :run-id rid
+                                   :tool-name "proof_step" :args {:tactic "exact trivial"}})]
+            (is (= :confirmed (get-in r [:artifact :claim-status])))
+            (is (= :slow (get-in r [:artifact :tier])))))))))
+
 (deftest a-failed-tactic-does-not-count-against-the-branch
   ;; The harness tells the model, in system.md and in its own result text, that
   ;; "a tactic that fails leaves the goal UNCHANGED, so trying another costs
@@ -5734,8 +5774,16 @@
   ;; Two layers, because they fail differently: the text check catches it
   ;; before a session is spent, and the REPL's own report catches a sorry that
   ;; arrives some other way (`exact sorry`, a macro, an abbreviation).
+  ;; run-command is mocked ok because closing a proof now RE-ELABORATES the
+  ;; assembled `theorem <stmt> := by <tactics>` before banking it — the tactics
+  ;; were each checked against a proof state, the reconstruction never was. See
+  ;; a-closed-proof-is-re-elaborated-before-it-is-banked. These cases are about
+  ;; the sorry guards, which fire before that check.
   (let [step (fn [branch tactic reply]
-               (with-redefs [lean-repl/apply-tactic (fn [& _] reply)]
+               (with-redefs [lean-repl/apply-tactic (fn [& _] reply)
+                             lean-repl/run-command (fn [& _] {:ok true :sorries []
+                                                              :errors [] :messages []})
+                             tools/encoding-faithful? (fn [& _] {:ok? true})]
                  (tools/run-tool {:branch branch :turn 1
                                   :tool-name "proof_step"
                                   :args {:tactic tactic}})))

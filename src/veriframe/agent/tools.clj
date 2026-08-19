@@ -2788,11 +2788,36 @@
             (fail branch (sorry-refusal "a `sorry` left open earlier in this proof")
                   :failure {:claim (:claim p)
                             :reason "the assembled proof contained sorry"})
-            {:branch (assoc branch :proof (assoc p :state (:proof-state r) :closed? true))
-             :category :success :progress? true
-             :result (str "No goals remain — the proof is CLOSED.\n\n" code)
-             :artifact {:kind :lean :claim (:claim p) :code code
-                        :claim-status :confirmed :tier :slow}}))
+            ;; The assembled text is a RECONSTRUCTION: each tactic was checked
+            ;; against a proof state, but `theorem <stmt> := by <tactics>` as a
+            ;; whole never was. Elaborate it before banking, or the artifact is
+            ;; not the thing that was verified.
+            ;;
+            ;; a#774 is what that costs. Confirmed on the SLOW tier in gen-24,
+            ;; seeded forward through nine generations, and it does not
+            ;; elaborate: its proof calls `dag_has_rank`, which it never
+            ;; defines. gen-33 B1 cited it, hit `Unknown identifier`, and the
+            ;; fault was not the branch's. One extra elaboration per closed
+            ;; proof is nothing beside the proof itself, and it is what makes
+            ;; the banked artifact mean what it says.
+            (let [check (lean-repl/run-command s code)]
+              (if-not (:ok check)
+                (fail branch
+                      (str "Every tactic was accepted against the proof state, but the"
+                           " assembled proof does not elaborate as a declaration:\n"
+                           (lean-error-text (:errors check))
+                           "\n\nThat usually means the proof leaned on something not"
+                           " present in the declaration itself. Nothing was recorded."
+                           " Make the proof self-contained — a result that only"
+                           " typechecks inside the session that built it cannot be"
+                           " cited, inherited, or re-checked later.")
+                      :failure {:claim (:claim p)
+                                :reason "the assembled proof did not elaborate"})
+                {:branch (assoc branch :proof (assoc p :state (:proof-state r) :closed? true))
+                 :category :success :progress? true
+                 :result (str "No goals remain — the proof is CLOSED.\n\n" code)
+                 :artifact {:kind :lean :claim (:claim p) :code code
+                            :claim-status :confirmed :tier :slow}}))))
 
         :else
         (ok (assoc branch :proof (-> p
