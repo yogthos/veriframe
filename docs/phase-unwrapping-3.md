@@ -1,4 +1,4 @@
-# Q-1: nine runs, and one step from lemma (A)
+# Q-1: ten runs, and lemma (A) closed
 
 A follow-on to [phase-unwrapping-2.md](phase-unwrapping-2.md). Those four runs
 established the three-stage rule and proved it well defined. These nine —
@@ -439,3 +439,66 @@ queries — `Finset.sum_filter`, `List.toFinset sum Nodup`,
 Before turn 46: four artifacts, all drift. After: nine, all on target. That is
 n=1 and confounded — three harness fixes landed in the same window — so it is
 a sequence, not a measurement.
+
+## gen-32: lemma (A), proved
+
+Run `d7a1a740`, first artifact, turn 54. `a#887`:
+
+```lean
+theorem sign_oriented_support_acyclic
+    {V E : Type*} [Fintype V] [Fintype E] [DecidableEq V] [DecidableEq E]
+    (tail head : E → V) (w k : E → ℤ)
+    (hw : ∀ e : E, 0 ≤ w e)
+    (hCmin : ∀ y, sameDivergence y k → Ccost w k ≤ Ccost w y)
+    (hQmin : ∀ y, sameDivergence y k → Ccost w y = Ccost w k → Qcost k ≤ Qcost y) :
+    ∀ x : V, ¬ Relation.TransGen
+      (fun x y => ∃ e, signTail tail head k e = x ∧ signHead tail head k e = y ∧ k e ≠ 0)
+      x x
+```
+
+No component is a hypothesis — only nonnegative weights and the two
+optimality conditions, which are what the problem gives. Verified three ways:
+re-elaborated from the database in a fresh Lean session outside the run
+(24,091 characters, no errors, no sorries); the source contains no `axiom` and
+no `sorry`; and
+
+    #print axioms sign_oriented_support_acyclic
+    'sign_oriented_support_acyclic' depends on axioms:
+      [propext, Classical.choice, Quot.sound]
+
+which is Lean's standard three and nothing else. That last check is the one
+that would have caught every void artifact this campaign has banked, and it is
+worth making routine.
+
+**THE CORRECTNESS CHAIN IS COMPLETE.** Every arrow from "stage-2 optimal"
+down to "each prefix subproblem is separable convex" is now engine-verified.
+
+**Q-1 IS NOT SETTLED.** What closes is correctness, not complexity. The
+remaining arrow is (C), polynomial time, and that is where the
+instance-class/arbitrary-instance distinction lives: arc subdivision is
+polynomial in the numeric VALUE of S, hence pseudo-polynomial when b is
+written in binary, so the arbitrary-instance case still needs a convex
+min-cost-flow subroutine polynomial in log S, or a hardness result. Neither
+exists in any run so far.
+
+The weight hypothesis is `w : E → ℤ`. That restriction is removable and is not
+mathematics — see `vf-a1f`, where the same cancellation core is verified over
+an arbitrary ordered ring.
+
+### What it took, and what that says about the harness
+
+gen-31 proved every component and could not assemble them, spending its last
+180 turns producing conditional compositions that assumed what they were meant
+to prove. The obstacle was `vf-vw4`: artifacts cannot cite each other, so
+composing meant fetching five of them and retyping 19,000 characters. gen-32
+was given those sources verbatim in its problem statement and closed the lemma
+in 54 turns.
+
+So the binding constraint on the final step was not mathematical. It was that
+the harness had no way to let a proof stand on a proof.
+
+One incidental confirmation: the elaboration emits nineteen
+`List.Chain' has been deprecated: Use List.IsChain instead` warnings. The
+campaign's entire corpus is written against a deprecated alias whose lemmas
+are indexed under the new name, which is exactly the retrieval failure
+`vf-i5q` describes.
