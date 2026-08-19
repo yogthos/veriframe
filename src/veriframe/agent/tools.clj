@@ -529,13 +529,22 @@
   text, so the indentation cannot be put back. They have to be reproved.
 
   Blank lines are left alone rather than padded, so trailing whitespace does
-  not appear in a banked result."
-  [theorem tactics]
-  (str theorem " := by\n"
-       (str/join "\n"
-                 (for [t tactics
-                       line (str/split-lines (str t))]
-                   (if (str/blank? line) line (str "  " line))))))
+  not appear in a banked result.
+
+  `cited` is the source of any artifact the proof stands on, and it goes in
+  FRONT. Everything downstream assumes a banked artifact elaborates on its
+  own — independent re-elaboration, `#print axioms`, and seed-from-run!
+  copying `code` into the next generation — so a proof that cited a lemma and
+  banked only its own tactics would be a#774 all over again: a declaration
+  calling `dag_has_rank` that never defines it."
+  ([theorem tactics] (assemble-proof-code theorem tactics nil))
+  ([theorem tactics cited]
+   (str (when (seq cited) (str cited "\n\n"))
+        theorem " := by\n"
+        (str/join "\n"
+                  (for [t tactics
+                        line (str/split-lines (str t))]
+                    (if (str/blank? line) line (str "  " line)))))))
 
 (defn- lean-declared-names
   "Every top-level name a Lean snippet declares. Comments stripped first, so
@@ -2767,22 +2776,44 @@
                  " you. Drop everything from `:=` onwards and call it again as:"
                  "\n\n  " cut
                  "\n\nThen apply tactics one at a time with proof_step."))
+      ;; Citations resolve BEFORE a session is opened, exactly as verify_lean
+      ;; does: a handle that cannot be built on costs nothing and holds
+      ;; nothing shut. An interactive proof needs `cites` more than a one-shot
+      ;; one does — system.md sends a branch here precisely when it does not
+      ;; yet know the whole proof, which is when it most needs to lean on what
+      ;; earlier runs established (vf-vw4 shipped without it; gen-33 B1.3.3
+      ;; lost two turns to `unknown identifier` before working out why).
+      (let [cited (resolve-citations ctx (arg ctx :cites))]
+      (if-not (:ok cited)
+        (malformed branch (:reason cited))
       (try
       (let [[s branch] (lean-session! ctx)
-            stmt (str (arg ctx :theorem) " := by sorry")
+            stmt (str (when (:code cited) (str (:code cited) "\n\n"))
+                      (arg ctx :theorem) " := by sorry")
             r (lean-repl/run-command s stmt)]
         (if-let [sorry (first (:sorries r))]
           (ok (assoc branch :proof {:claim (arg ctx :claim)
                                     :theorem (arg ctx :theorem)
                                     :state (:proofState sorry)
+                                    :cites (:handles cited)
+                                    :cited-code (:code cited)
                                     :tactics []})
-              (str "Proof opened. Goal:\n\n" (:goal sorry)
+              (str "Proof opened"
+                   (when (seq (:handles cited))
+                     (str ", standing on " (str/join ", " (:handles cited))))
+                   ". Goal:\n\n" (:goal sorry)
                    "\n\nApply one tactic at a time with proof_step."))
           (fail branch
                 (str "The theorem statement did not elaborate:\n"
-                     (lean-error-text (:errors r))))))
+                     (lean-error-text (:errors r))
+                     (when (seq (:handles cited))
+                       (str "\n\nYou cited " (str/join ", " (:handles cited))
+                            ", whose source was elaborated ahead of your"
+                            " statement — so the error may be in THEM. A result"
+                            " confirmed by an earlier run was checked against the"
+                            " Mathlib of that day and can stop compiling since."))))))
         (catch Throwable e
-          (unavailable branch "Lean" e))))))
+          (unavailable branch "Lean" e))))))))
 
 (def ^:private placeholder-tactic-re
   "`sorry` and `admit` DISCHARGE a goal — Lean only warns — so a step using one
@@ -2850,7 +2881,7 @@
 
         (:closed? r)
         (let [p (update p :tactics conj (arg ctx :tactic))
-              code (assemble-proof-code (:theorem p) (:tactics p))]
+              code (assemble-proof-code (:theorem p) (:tactics p) (:cited-code p))]
           ;; Two ways a placeholder reaches here despite the text check above:
           ;; the REPL reports a sorry the tactic introduced some other way
           ;; (`exact sorry`, a macro), or an EARLIER tactic carried one and

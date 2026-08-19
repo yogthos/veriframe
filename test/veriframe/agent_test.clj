@@ -2123,6 +2123,100 @@
           (let [r (call 99)]
             (is (= :failure (:category r)))))))))
 
+(deftest an-interactive-proof-can-stand-on-a-cited-one
+  ;; vf-vw4 gave `cites` to verify_lean and not to proof_start, so a chain
+  ;; could be assembled only by a branch that already knew the whole proof.
+  ;; Every hard lemma in this campaign is developed interactively — system.md
+  ;; says so in as many words, "reach for proof_start over verify_lean when
+  ;; you do not already know the whole proof" — and four lines later it says a
+  ;; chain of lemmas is assembled with cites. gen-33 B1.3.3 followed both,
+  ;; got `unknown identifier sign_oriented_support_acyclic` from proof_step,
+  ;; and spent two turns working out that the harness had contradicted itself.
+  (with-db [c]
+    (let [rid (runs/start-run! c {:problem "p"})
+          b (state/new-branch {:id "B1" :problem "p"})]
+      (runs/open-branch! c rid {:branch-id "B1"})
+      (journal/record-artifact! c rid
+        {:branch-id "B1" :turn 1 :kind :lean :claim "an inherited lemma"
+         :code "theorem inherited_t : True := by\n  trivial" :claim-status :confirmed})
+      (let [aid (:id (first (db/fetch c ["SELECT id FROM artifacts WHERE run_id=?" rid])))
+            saw (atom nil)]
+
+        (testing "the cited source is elaborated ahead of the statement"
+          (let [r (with-redefs [lean-repl/create-session (fn [& _] {:id "s"})
+                                lean-pool/checkout! (fn [& _] {:id "s"})
+                                lean-repl/run-command
+                                (fn [_ code & _]
+                                  (reset! saw code)
+                                  {:ok true :errors [] :messages []
+                                   :sorries [{:proofState 1 :goal "True"}]})]
+                    (tools/run-tool
+                     {:branch b :conn c :run-id rid :tool-name "proof_start"
+                      :args {:claim "every integer n satisfies the derived bound"
+                             :cites [(str "a#" aid)]
+                             :theorem "theorem derived : True"}}))]
+            (is (= :neutral (:category r)))
+            (is (str/includes? @saw "inherited_t")
+                "the cited declaration must be in scope before the goal opens")
+            (is (str/includes? @saw "derived"))
+            (is (= [(str "a#" aid)] (get-in r [:branch :proof :cites]))
+                "and the proof remembers what it stands on, for the close")))
+
+        (testing "a citation that does not resolve costs no Lean session"
+          (let [ran (atom false)
+                r (with-redefs [lean-repl/create-session (fn [& _] (reset! ran true) {:id "s"})
+                                lean-pool/checkout! (fn [& _] (reset! ran true) {:id "s"})]
+                    (tools/run-tool
+                     {:branch b :conn c :run-id rid :tool-name "proof_start"
+                      :args {:claim "every integer n satisfies the derived bound"
+                             :cites ["a#4242"] :theorem "theorem derived : True"}}))]
+            (is (= :mechanics (:category r))
+                "a bad handle is a call made wrong, not a failed proof")
+            (is (false? @ran))))))))
+
+(deftest a-closed-cited-proof-banks-something-that-elaborates-alone
+  ;; The banked artifact must carry its citations. Everything downstream
+  ;; assumes an artifact elaborates on its own: independent re-elaboration,
+  ;; the `#print axioms` check, and seed-from-run! copying `code` forward.
+  ;; Banking only theorem-plus-tactics would produce exactly the a#774 defect
+  ;; the close path was hardened against — a proof calling `dag_has_rank`
+  ;; which it never defines.
+  (with-db [c]
+    (let [rid (runs/start-run! c {:problem "p"})
+          b (state/new-branch {:id "B1" :problem "p"})]
+      (runs/open-branch! c rid {:branch-id "B1"})
+      (journal/record-artifact! c rid
+        {:branch-id "B1" :turn 1 :kind :lean :claim "an inherited lemma"
+         :code "theorem inherited_t : True := by\n  trivial" :claim-status :confirmed})
+      (let [aid (:id (first (db/fetch c ["SELECT id FROM artifacts WHERE run_id=?" rid])))
+            reelaborated (atom nil)
+            opened (with-redefs [lean-repl/create-session (fn [& _] {:id "s"})
+                                 lean-pool/checkout! (fn [& _] {:id "s"})
+                                 lean-repl/run-command
+                                 (fn [& _] {:ok true :errors [] :messages []
+                                            :sorries [{:proofState 1 :goal "True"}]})]
+                     (tools/run-tool
+                      {:branch b :conn c :run-id rid :tool-name "proof_start"
+                       :args {:claim "every integer n satisfies the derived bound"
+                              :cites [(str "a#" aid)]
+                              :theorem "theorem derived : True"}}))
+            r (with-redefs [lean-repl/create-session (fn [& _] {:id "s"})
+                            lean-pool/checkout! (fn [& _] {:id "s"})
+                            lean-repl/run-command
+                            (fn [_ code & _] (reset! reelaborated code)
+                              {:ok true :errors [] :messages [] :sorries []})
+                            lean-repl/apply-tactic
+                            (fn [& _] {:ok true :closed? true :sorries []
+                                       :proof-state 2 :goals []})]
+                (tools/run-tool
+                 {:branch (:branch opened) :conn c :run-id rid
+                  :tool-name "proof_step" :args {:tactic "trivial"}}))]
+        (is (= :success (:category r)))
+        (is (str/includes? (get-in r [:artifact :code]) "inherited_t")
+            "the banked code carries the lemma the proof stood on")
+        (is (str/includes? @reelaborated "inherited_t")
+            "and the pre-bank re-elaboration checked the whole assembly")))))
+
 (deftest an-inspection-shows-its-own-output-not-the-cited-sources-noise
   ;; A branch that cites an artifact and asks `#check` for its type gets back
   ;; the linter output of the CITED proof body and nothing else. gen-33 B1

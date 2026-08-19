@@ -147,9 +147,14 @@ stop counting toward the cull while you do. Everything else stays open,
 including a smaller piece of the same goal. If the failures were Lean ones you
 are also returned to EXPLORE, so a fresh `sketch` is the fastest way back.
 
-proof_start({claim, theorem}) Open an interactive proof. `theorem` is the
+proof_start({claim, theorem, cites})
+                              Open an interactive proof. `theorem` is the
                               STATEMENT ONLY — no `:= by`, no proof body; the
                               harness opens the goal for you. Returns the goal.
+                              `cites` works here as it does on `verify_lean`:
+                              the named artifacts are put in scope before the
+                              goal opens, so your tactics can apply them by
+                              name, and the closed proof banks with them.
 proof_step({tactic})          Apply one tactic. A tactic that fails leaves the
                               goal UNCHANGED, so trying another costs nothing
                               but the turn. Closing the last goal records the
@@ -173,7 +178,8 @@ fetch_artifact({id})          The full encoding behind a settled-state entry.
 
 A chain of lemmas is assembled with `cites`, not by reproducing each one. If a
 composition needs five earlier results, name their ids — the harness supplies
-the source. A "composition" that instead takes those results as HYPOTHESES has
+the source. This works on `verify_lean` and on `proof_start` alike, so needing
+to build on earlier work is never a reason to avoid the interactive path. A "composition" that instead takes those results as HYPOTHESES has
 assumed what it set out to prove and closes nothing.
 
 Reach for `proof_start` over `verify_lean` when you do not already know the whole proof. Developing it a tactic at a time shows you the goal as it changes, and it is the only way to get slow-tier evidence out of Lean.
