@@ -191,7 +191,12 @@
   (db/with-writer
     (db/execute! conn
                    ["UPDATE branches SET thesis = ? WHERE run_id = ? AND id = ?"
-                    (json/write-str thesis) run-id branch-id]))
+                    ;; journal/js, not json/write-str: a value data.json cannot
+                    ;; express must not be able to kill the branch whose plan
+                    ;; it is. The journal was hardened for exactly this after
+                    ;; gen-31 lost two branches; this writer was missed, and
+                    ;; gen-33 B1.5 died here at turn 104.
+                    (journal/js thesis) run-id branch-id]))
   (journal/note! conn run-id :thesis {:branch-id branch-id :data thesis}))
 
 (defn branches [conn run-id]

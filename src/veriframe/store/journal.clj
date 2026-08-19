@@ -25,8 +25,8 @@
             [veriframe.events :as events]
             [veriframe.store.db :as db]))
 
-(defn- js
-  "A value as JSON text for a journal column.
+(defn js
+  "A value as JSON text for a column that stores JSON.
 
   Falls back to pr-str when the value holds something data.json cannot write.
   The journal is a RECORD of the run; it must not be able to destroy the work

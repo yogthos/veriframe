@@ -509,6 +509,25 @@
   work and points at the second occurrence rather than at the pair."
   #"(?m)^\s*(?:@\[[^\]]*\]\s*)?(?:private\s+|protected\s+|noncomputable\s+|partial\s+)*(?:theorem|lemma|def|abbrev|instance|structure|class|inductive|axiom)\s+([A-Za-z_][A-Za-z0-9_.'!?]*)")
 
+(defn- as-list
+  "A tool argument that should be a list, as one.
+
+  A model routinely sends a single item where an array is documented, and
+  `vec` on a String is a vector of CHARACTERS — which data.json cannot write,
+  so it surfaces far from the mistake, as a serialization failure while
+  persisting the turn. gen-31 lost two branches that way and gen-33 lost B1.5
+  at turn 104 on `subClaims`. One string is one item.
+
+  `cites` and `lean_check`'s `names` already do this inline; this is the same
+  rule where the older tools missed it."
+  [v]
+  (->> (cond (sequential? v) v
+             (nil? v) []
+             :else [v])
+       (map #(if (string? %) % (str %)))
+       (remove str/blank?)
+       vec))
+
 (defn- assemble-proof-code
   "The closed interactive proof as a declaration: the theorem, then every
   tactic indented under `:= by`.
@@ -1414,7 +1433,12 @@
   (if-let [m (missing ctx :goal :technique)]
     (malformed branch m)
     (let [thesis {:goal (arg ctx :goal)
-                  :subClaims (vec (or (arg ctx :subClaims) []))
+                  ;; NOT (vec ...): a model that sends subClaims as a string —
+                  ;; gen-33 B1.5 sent "[s#1912 is a confirmed Lean artifact …" —
+                  ;; would have it seq'd into a vector of Characters, which
+                  ;; data.json cannot write and which killed the branch when
+                  ;; the thesis was persisted. One string is one sub-claim.
+                  :subClaims (as-list (arg ctx :subClaims))
                   :technique (arg ctx :technique)
                   :nonFiniteJustification (arg ctx :nonFiniteJustification)
                   :set-at-turn (:turn ctx)}

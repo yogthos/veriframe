@@ -2443,6 +2443,48 @@
         (is (not (str/includes? (:result r) "simp argument"))
             "nor is style advice on code an earlier generation wrote")))))
 
+(deftest a-string-where-a-list-was-expected-does-not-kill-the-branch
+  ;; gen-31 lost two branches to this and journal/js was hardened for it; the
+  ;; thesis writer was not, and gen-33 B1.5 died the same way at turn 104 with
+  ;; `subClaims` sent as the STRING "[s#1912 is a confirmed Lean artifact ...".
+  ;; (vec "abc") is [\a \b \c], data.json cannot write a Character, and the
+  ;; exception left the turn writer and abandoned the branch.
+  (with-db [c]
+    (let [rid (runs/start-run! c {:problem "p"})
+          b (state/new-branch {:id "B1" :problem "p"})
+          r (tools/run-tool
+             {:branch b :conn c :run-id rid :turn 4 :tool-name "thesis"
+              :args {:goal "prove the bound" :technique "cut argument"
+                     :subClaims "[s#1912 composes a#904 and s#1772]"}})]
+      (is (= :neutral (:category r)))
+      (let [subs (get-in r [:branch :thesis :subClaims])]
+        (is (every? string? subs)
+            "a string is one sub-claim, never a sequence of characters")
+        (is (= 1 (count subs)))
+        (is (str/includes? (first subs) "s#1912")))))
+
+  (testing "a real list still passes through"
+    (with-db [c]
+      (let [rid (runs/start-run! c {:problem "p"})
+            b (state/new-branch {:id "B1" :problem "p"})
+            r (tools/run-tool
+               {:branch b :conn c :run-id rid :turn 4 :tool-name "thesis"
+                :args {:goal "g" :technique "t" :subClaims ["one" "two"]}})]
+        (is (= ["one" "two"] (get-in r [:branch :thesis :subClaims]))))))
+
+  (testing "and the thesis writer itself survives what JSON cannot express"
+    ;; Defence in depth: the record of a run must not be able to destroy the
+    ;; run. Same argument journal/js already makes.
+    (with-db [c]
+      (let [rid (runs/start-run! c {:problem "p"})]
+        (runs/open-branch! c rid {:branch-id "B1"})
+        (is (nil? (try (runs/set-thesis! c rid "B1" {:goal "g" :subClaims [\a \b]})
+                       nil
+                       (catch Throwable e e)))
+            "it must not throw")
+        (is (some? (runs/get-branch c rid "B1"))
+            "and the branch survives to keep working")))))
+
 (deftest a-rotten-citation-is-recorded-once-and-refused-after
   ;; vf-ppt, the whole point: a negative result must accumulate. gen-33 hit
   ;; citation rot 26 times across all six branches, each rediscovering the
