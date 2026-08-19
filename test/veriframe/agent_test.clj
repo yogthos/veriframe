@@ -1806,6 +1806,193 @@
                  progress-stalled remains the guard against grinding tactics")
             (is (str/includes? (:result r) "goal is unchanged"))))))))
 
+
+;; --- citing a proved artifact instead of retyping it (vf-vw4) ---------------
+
+(deftest verify-lean-can-cite-a-confirmed-artifact
+  ;; gen-31 proved every component of lemma (A) and then spent its last 180
+  ;; turns failing to assemble them, because artifacts cannot cite each other:
+  ;; composing meant fetching five of them and retyping 19,000 characters
+  ;; perfectly. It produced four CONDITIONAL compositions instead — assuming
+  ;; what they were meant to prove — because that is the cheap move when
+  ;; reassembly is expensive. The binding constraint on the last step of a
+  ;; nine-generation problem was not mathematical.
+  (with-db [c]
+    (let [rid (runs/start-run! c {:problem "p"})
+          b (state/new-branch {:id "B1" :problem "p"})]
+      (runs/open-branch! c rid {:branch-id "B1"})
+      (journal/record-artifact! c rid
+        {:branch-id "B1" :turn 1 :kind :lean :claim "one equals one"
+         :code "theorem base_one : (1:Int) = 1 := rfl" :claim-status :confirmed})
+      (let [aid (:id (first (db/fetch c ["SELECT id FROM artifacts WHERE run_id=?" rid])))
+            r (#'tools/resolve-citations {:conn c :run-id rid :branch b} [(str "a#" aid)])]
+        (is (:ok r))
+        (is (str/includes? (:code r) "base_one")
+            "the cited source is supplied, so the branch never retypes it")
+        (is (= [(str "a#" aid)] (:handles r)))))))
+
+(deftest an-inherited-artifact-can-be-cited
+  ;; The shared pool has no claim_status column — seed-from-run! copies only
+  ;; confirmed rows, so everything there is confirmed by construction. Reading
+  ;; the absent column made every INHERITED lemma look uncitable, which is
+  ;; precisely the case a campaign needs: gen-31's composition required two
+  ;; artifacts from earlier generations. Caught end-to-end against real data,
+  ;; not by the unit tests above, which only ever built `artifacts` rows.
+  (with-db [c]
+    (let [rid (runs/start-run! c {:problem "p"})
+          b (state/new-branch {:id "B1" :problem "p"})]
+      (runs/open-branch! c rid {:branch-id "B1"})
+      (artifacts/record! c rid
+        {:branch-id "seed:B2" :turn 0 :kind :lean :tier :slow
+         :claim "an inherited lemma" :code "theorem inherited_t : True := trivial"})
+      (let [sid (:id (first (db/fetch c ["SELECT id FROM shared_artifacts WHERE run_id=?" rid])))
+            r (#'tools/resolve-citations {:conn c :run-id rid :branch b} [(str "s#" sid)])]
+        (is (:ok r) (str "inherited lemma must be citable, got: " (:reason r)))
+        (is (str/includes? (:code r) "inherited_t"))))))
+
+(deftest citation-refuses-what-cannot-be-built-on
+  (with-db [c]
+    (let [rid (runs/start-run! c {:problem "p"})
+          b (state/new-branch {:id "B1" :problem "p"})
+          ctx {:conn c :run-id rid :branch b}]
+      (runs/open-branch! c rid {:branch-id "B1"})
+      (journal/record-artifact! c rid
+        {:branch-id "B1" :turn 1 :kind :lean :claim "a plan"
+         :code "theorem plan_t : True := by sorry" :claim-status :sketch})
+      (let [sid (:id (first (db/fetch c ["SELECT id FROM artifacts WHERE run_id=?" rid])))]
+        (testing "a sketch is a plan, not a result"
+          (let [r (#'tools/resolve-citations ctx [(str "a#" sid)])]
+            (is (false? (:ok r)))
+            (is (str/includes? (:reason r) "sketch"))))
+        (testing "an id that is not there"
+          (let [r (#'tools/resolve-citations ctx ["a#99999"])]
+            (is (false? (:ok r)))
+            (is (str/includes? (:reason r) "99999"))))))))
+
+(deftest citation-refuses-a-name-declared-twice
+  ;; a#871 and a#876 both declare signTail. Concatenating them fails in Lean
+  ;; with "already declared", far from the cause. Catch it before an
+  ;; elaboration is spent and name both sides.
+  (with-db [c]
+    (let [rid (runs/start-run! c {:problem "p"})
+          b (state/new-branch {:id "B1" :problem "p"})]
+      (runs/open-branch! c rid {:branch-id "B1"})
+      (doseq [n [1 2]]
+        (journal/record-artifact! c rid
+          {:branch-id "B1" :turn n :kind :lean :claim (str "claim " n)
+           :code "def shared_helper : Int := 1\ntheorem t : True := trivial"
+           :claim-status :confirmed}))
+      (let [ids (map :id (db/fetch c ["SELECT id FROM artifacts WHERE run_id=? ORDER BY id" rid]))
+            r (#'tools/resolve-citations {:conn c :run-id rid :branch b}
+                                         (map #(str "a#" %) ids))]
+        (is (false? (:ok r)))
+        (is (str/includes? (:reason r) "shared_helper"))
+        (is (every? #(str/includes? (:reason r) (str "a#" %)) ids)
+            "both sides of the collision are named, or the branch cannot act on it")))))
+
+(deftest a-citation-carrying-an-axiom-is-refused
+  ;; Artifacts confirmed before the axiom guard existed are still in the
+  ;; ledger. Citing one would import the hole into a fresh proof, and the
+  ;; result would depend on it invisibly.
+  (with-db [c]
+    (let [rid (runs/start-run! c {:problem "p"})
+          b (state/new-branch {:id "B1" :problem "p"})]
+      (runs/open-branch! c rid {:branch-id "B1"})
+      (journal/record-artifact! c rid
+        {:branch-id "B1" :turn 1 :kind :lean :claim "assumed"
+         :code "axiom cheat : (1:Int) = 2\ntheorem t : (1:Int) = 2 := cheat"
+         :claim-status :confirmed})
+      (let [aid (:id (first (db/fetch c ["SELECT id FROM artifacts WHERE run_id=?" rid])))
+            r (#'tools/resolve-citations {:conn c :run-id rid :branch b} [(str "a#" aid)])]
+        (is (false? (:ok r)))
+        (is (str/includes? (:reason r) "axiom"))))))
+
+(deftest verify-lean-elaborates-and-banks-the-cited-source-with-the-snippet
+  ;; The banked artifact stays SELF-CONTAINED. That property is load-bearing:
+  ;; independent re-elaboration is how a#818 was caught, `#print axioms` on a
+  ;; finished result needs the whole proof present, and seed-from-run! copies
+  ;; `code` into the next generation so an inherited lemma can be re-confirmed
+  ;; cheaply. Citing must remove the RETYPING, not the self-containment — which
+  ;; is why the cited source is prepended rather than elaborated into a shared
+  ;; environment the artifact would then depend on.
+  (with-db [c]
+    (let [rid (runs/start-run! c {:problem "p"})
+          b (state/new-branch {:id "B1" :problem "p"})]
+      (runs/open-branch! c rid {:branch-id "B1"})
+      (journal/record-artifact! c rid
+        {:branch-id "B1" :turn 1 :kind :lean :claim "the base identity holds"
+         :code "theorem base_one : (1:Int) = 1 := rfl" :claim-status :confirmed})
+      (let [aid (:id (first (db/fetch c ["SELECT id FROM artifacts WHERE run_id=?" rid])))
+            seen (atom nil)]
+        (with-redefs [lean-repl/create-session (fn [& _] {:id "s"})
+                      lean-pool/checkout! (fn [& _] {:id "s"})
+                      lean-repl/run-command (fn [_ code & _]
+                                              (reset! seen code)
+                                              {:ok true :sorries [] :errors [] :messages []})
+                      tools/encoding-faithful? (fn [& _] {:ok? true})]
+          (let [r (tools/run-tool
+                   {:branch b :conn c :run-id rid :tool-name "verify_lean"
+                    :args {:claim "one plus one is greater than one"
+                           :cites [(str "a#" aid)]
+                           :lean "theorem derived : (1:Int) = 1 := base_one"}})]
+            (is (= :success (:category r)))
+            (is (str/includes? @seen "base_one : (1:Int) = 1 := rfl")
+                "the cited source reached the elaborator")
+            (is (str/includes? @seen "theorem derived")
+                "and so did the branch's own snippet")
+            (is (str/includes? (get-in r [:artifact :code]) "base_one : (1:Int) = 1 := rfl")
+                "and the BANKED artifact carries it, so it still stands alone")))))))
+
+(deftest a-failed-elaboration-says-when-cited-material-may-be-at-fault
+  ;; a#777 was confirmed in gen-24 and no longer elaborates — Mathlib moved
+  ;; under it. So `confirmed` in the ledger means "was checkable against the
+  ;; Mathlib of that day", not "is checkable now", and citing such an artifact
+  ;; fails in code the branch did not write. Without saying so the branch reads
+  ;; Lean's error as a fault in its own snippet and rewrites the wrong thing —
+  ;; which is plausibly part of why gen-31's branches, retyping the same stale
+  ;; proof, kept retreating to conditional composition.
+  (with-db [c]
+    (let [rid (runs/start-run! c {:problem "p"})
+          b (state/new-branch {:id "B1" :problem "p"})]
+      (runs/open-branch! c rid {:branch-id "B1"})
+      (journal/record-artifact! c rid
+        {:branch-id "B1" :turn 1 :kind :lean :claim "an older result"
+         :code "theorem older_t : True := trivial" :claim-status :confirmed})
+      (let [aid (:id (first (db/fetch c ["SELECT id FROM artifacts WHERE run_id=?" rid])))]
+        (with-redefs [lean-repl/create-session (fn [& _] {:id "s"})
+                      lean-pool/checkout! (fn [& _] {:id "s"})
+                      lean-repl/run-command (fn [& _]
+                                              {:ok false :sorries []
+                                               :errors [{:data "unsolved goals"}] :messages []})]
+          (let [r (tools/run-tool
+                   {:branch b :conn c :run-id rid :tool-name "verify_lean"
+                    :args {:claim "every integer n satisfies the derived bound"
+                           :cites [(str "a#" aid)]
+                           :lean "theorem derived : True := older_t"}})]
+            (is (str/includes? (:result r) (str "a#" aid))
+                "the cited artifact is named, so the branch can tell whose code broke")
+            (is (str/includes? (:result r) "may be in")
+                "and told the error need not be in its own snippet")))))))
+
+(deftest a-bad-citation-is-refused-before-an-engine-is-spent
+  (with-db [c]
+    (let [rid (runs/start-run! c {:problem "p"})
+          b (state/new-branch {:id "B1" :problem "p"})
+          ran (atom false)]
+      (runs/open-branch! c rid {:branch-id "B1"})
+      (with-redefs [lean-repl/create-session (fn [& _] (reset! ran true) {:id "s"})
+                    lean-pool/checkout! (fn [& _] (reset! ran true) {:id "s"})]
+        (let [r (tools/run-tool
+                 {:branch b :conn c :run-id rid :tool-name "verify_lean"
+                  :args {:claim "some statement about every integer n"
+                         :cites ["a#4242"]
+                         :lean "theorem t : True := trivial"}})]
+          (is (= :mechanics (:category r))
+              "a citation that does not resolve is a call made wrong, not a failed
+               verification — it must not reach the counter that culls the branch")
+          (is (str/includes? (:result r) "4242"))
+          (is (false? @ran) "and no Lean session was opened"))))))
+
 (deftest a-lookup-miss-is-not-a-mathematical-failure
   ;; gen-31 B1, turn 25 (2026-08-18). B1 was the only branch attempting the
   ;; run's actual target. It failed verify_lean on a wrong lemma name, then

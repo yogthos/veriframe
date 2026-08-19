@@ -109,11 +109,22 @@ What it is not is a proof, and nothing will let it become one: an empirical arti
 lean_search({query, top_k?})  Search Mathlib by name or by what a lemma says
                               ("commutativity of addition"). Do this before
                               proving something Mathlib already contains.
-verify_lean({claim, lean})    Check a complete Lean declaration in one shot.
-                              Needs a real `theorem` / `lemma` / `example` /
+verify_lean({claim, lean,     Check a complete Lean declaration in one shot.
+             cites?})         Needs a real `theorem` / `lemma` / `example` /
                               `def`. `sorry` and `admit` are rejected before
-                              anything runs, so a snippet that proves nothing
-                              cannot be recorded as confirmed.
+                              anything runs, and so is `axiom`, so a snippet
+                              that proves nothing cannot be recorded as
+                              confirmed.
+
+                              `cites` is a list of artifact ids —
+                              `["a#876", "s#777"]` — whose source the harness
+                              PREPENDS to your snippet before elaborating. Use
+                              it to build on a proved result instead of
+                              retyping it: cite the lemma and apply it by name.
+                              Only CONFIRMED Lean artifacts can be cited, and
+                              two that declare the same name cannot be cited
+                              together. What gets recorded is the assembly, so
+                              your result still stands on its own.
 
 sketch({claim, lean})         State an approach as a Lean skeleton whose
                               unproved steps are `sorry`. The harness checks
@@ -159,6 +170,11 @@ fetch_artifact({id})          The full encoding behind a settled-state entry.
                               useful direction: the encoding shows why the line
                               is closed. Establishes nothing on its own.
 ```
+
+A chain of lemmas is assembled with `cites`, not by reproducing each one. If a
+composition needs five earlier results, name their ids — the harness supplies
+the source. A "composition" that instead takes those results as HYPOTHESES has
+assumed what it set out to prove and closes nothing.
 
 Reach for `proof_start` over `verify_lean` when you do not already know the whole proof. Developing it a tactic at a time shows you the goal as it changes, and it is the only way to get slow-tier evidence out of Lean.
 

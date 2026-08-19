@@ -501,6 +501,145 @@
     (str "\n\nRetrieved candidate premises to draft FROM (Mathlib search, not"
          " results):\n  " (str/join "\n  " lines))))
 
+(def ^:private lean-decl-re
+  "A Lean declaration and the name it binds.
+
+  Used to catch a name declared by two cited artifacts before an elaboration
+  is spent on it. Lean's own error — `already declared` — arrives after the
+  work and points at the second occurrence rather than at the pair."
+  #"(?m)^\s*(?:@\[[^\]]*\]\s*)?(?:private\s+|protected\s+|noncomputable\s+|partial\s+)*(?:theorem|lemma|def|abbrev|instance|structure|class|inductive|axiom)\s+([A-Za-z_][A-Za-z0-9_.'!?]*)")
+
+(defn- lean-declared-names
+  "Every top-level name a Lean snippet declares. Comments stripped first, so
+  a declaration discussed in prose is not mistaken for one made."
+  [code]
+  (->> (re-seq lean-decl-re (lint/strip-lean-comments (str code)))
+       (map second)
+       (remove str/blank?)
+       vec))
+
+(defn- artifact-by-handle
+  "Resolve `a#12`, `p#3`, `s#7` or a bare number to an artifact row, or nil.
+
+  Same id spaces as fetch_artifact: `a#`/`p#` are this run's own artifacts,
+  `s#` the shared pool a seed was copied into, and a bare number tries this
+  run's own first and falls back to the shared pool."
+  [conn run-id raw]
+  (let [raw (str/trim (str raw))
+        shared? (str/starts-with? raw "s#")
+        own? (or (str/starts-with? raw "a#") (str/starts-with? raw "p#"))
+        id (parse-long (str/replace raw #"^[aps]#" ""))]
+    (when (and conn run-id id)
+      ;; Tagged with which pool it came from. shared_artifacts has no
+      ;; claim_status column — seed-from-run! copies only rows already
+      ;; confirmed, so every row there is confirmed by construction — and
+      ;; reading the missing column made every inherited lemma look
+      ;; uncitable.
+      (or (when-not shared?
+            (some-> (journal/artifact-by-id conn run-id id)
+                    (assoc ::shared? false)))
+          (when-not own?
+            (some-> (journal/shared-artifact-by-id conn run-id id)
+                    (assoc ::shared? true)))))))
+
+(defn- resolve-citations
+  "Resolve artifact handles to Lean source a new proof can stand on (vf-vw4).
+
+  Returns {:ok true :code <source or nil> :handles [...]} or
+  {:ok false :reason <what to tell the branch>}.
+
+  WHY THIS EXISTS. Every artifact elaborates standalone, so the only way to
+  build on a proved result was to reproduce it verbatim. gen-31 proved every
+  component of lemma (A) and then spent its last 180 turns failing to assemble
+  them: composing meant fetching five artifacts one at a time and retyping
+  19,000 characters without a slip. It produced four CONDITIONAL compositions
+  instead — taking the components' statements as hypotheses, which assumes
+  what it set out to prove — because that is the rational move when
+  reassembly is that expensive. The binding constraint on the last step of a
+  nine-generation problem was a missing citation mechanism.
+
+  WHY PREPEND RATHER THAN SHARE A LEAN ENVIRONMENT, which is what vf-vw4
+  originally proposed. An env would make the banked artifact depend on state
+  outside itself, and three things here rely on an artifact being
+  self-contained: independent re-elaboration (how a#818 was caught), the
+  `#print axioms` check on a finished result, and seed-from-run!, which copies
+  `code` into the next generation so an inherited lemma can be re-confirmed in
+  one cheap turn. Prepending keeps all three and needs no cross-branch session
+  sharing, so the isolation lean-pool deliberately preserves is untouched.
+
+  Only CONFIRMED Lean artifacts may be cited. A sketch is a plan, a refuted or
+  unfaithful one is not a result, and a retracted one is a result the harness
+  has since learned was not. Each is re-linted on the way in, which is what
+  stops an artifact confirmed before the axiom guard existed from importing
+  its hole into a fresh proof.
+
+  Inherited rows carry no status of their own: seed-from-run! copies only
+  confirmed ones, so a row in the shared pool is confirmed by construction.
+  The gap that leaves is a row seeded before its source was later retracted;
+  `quarantine` at seed time is what handles that, and it is the reason a
+  retraction must be recorded rather than only noticed."
+  [{:keys [conn run-id]} handles]
+  (let [handles (->> (cond (sequential? handles) handles
+                           (nil? handles) []
+                           :else [handles])
+                     (map #(str/trim (str %)))
+                     (remove str/blank?)
+                     distinct
+                     vec)]
+    (if (empty? handles)
+      {:ok true :code nil :handles []}
+      (loop [[h & more] handles, blocks [], owners {}]
+        (if (nil? h)
+          {:ok true :handles handles
+           :code (str/join "\n\n" blocks)}
+          (if-let [a (artifact-by-handle conn run-id h)]
+            (let [status (if (::shared? a) "confirmed" (str (:claim_status a)))
+                  kind (str (:kind a))
+                  code (str (:code a))]
+              (cond
+                (not= "confirmed" status)
+                {:ok false
+                 :reason (str "`" h "` is " status ", so it cannot be cited. Only a"
+                              " CONFIRMED Lean artifact can be built on: a sketch is a"
+                              " plan, a refuted or unfaithful one is not a result, and a"
+                              " retracted one is a result this harness has since learned"
+                              " was not.")}
+
+                (not= "lean" kind)
+                {:ok false
+                 :reason (str "`" h "` is a " kind " artifact. Only Lean declarations can"
+                              " be cited into a Lean snippet; a cross-check in another"
+                              " engine is evidence about a claim, not a lemma this proof"
+                              " can apply.")}
+
+                (not (:ok (lint/lint-lean code)))
+                {:ok false
+                 :reason (str "`" h "` does not pass the current Lean lint, so citing it"
+                              " would carry that into your proof:\n  • "
+                              (str/join "\n  • " (:warnings (lint/lint-lean code)))
+                              "\nArtifacts confirmed before a check existed are still in"
+                              " the ledger. Restate and reprove what you need from it.")}
+
+                :else
+                (let [names (lean-declared-names code)
+                      clash (some #(when-let [o (owners %)] [% o]) names)]
+                  (if clash
+                    (let [[nm owner] clash]
+                      {:ok false
+                       :reason (str "`" h "` and `" owner "` both declare `" nm "`, so they"
+                                    " cannot be cited together — Lean rejects the second as"
+                                    " already declared. Cite whichever one you actually need,"
+                                    " or inline the part you want.")})
+                    (recur more
+                           (conj blocks (str "-- cited: " h " — "
+                                             (str/replace (str (:claim a)) #"\s+" " ")
+                                             "\n" (lint/strip-lean-imports code)))
+                           (into owners (map (fn [n] [n h])) names))))))
+            {:ok false
+             :reason (str "No artifact `" h "` to cite. Ids come from the settled-state"
+                          " block: `a#12` for something this run established, `s#7` for"
+                          " something it inherited.")}))))))
+
 (defn- reframe-refusal
   "Refuse a call that re-runs the approach the stuck gate told this branch to
   abandon (vf-9wx, vf-49o).
@@ -2227,6 +2366,13 @@
 (defmethod run-tool "verify_lean" [{:keys [branch] :as ctx}]
   (if-let [m (or (missing ctx :claim :lean) (vague-claim ctx))]
     (malformed branch m)
+    ;; Citations resolve BEFORE the claim is taken, so a call naming an
+    ;; artifact that cannot be built on costs nothing and holds nothing shut.
+    ;; A bad handle is a call made wrong — :mechanics — not a failed
+    ;; verification.
+    (let [cited (resolve-citations ctx (arg ctx :cites))]
+    (if-not (:ok cited)
+      (malformed branch (:reason cited))
     (if-let [served (claim-dedup ctx (arg ctx :claim))]
       served
       ;; Every exit below except a confirmation releases the claim. Lean has no
@@ -2249,7 +2395,13 @@
         (try
           (let [[s branch] (lean-session! ctx)
                 claim (arg ctx :claim)
-                r (lean-repl/run-command s (arg ctx :lean))]
+                ;; What Lean sees, and what gets banked: the cited proofs
+                ;; followed by this snippet. The branch names ids; the harness
+                ;; supplies the source (vf-vw4).
+                source (if (:code cited)
+                         (str (:code cited) "\n\n" (lint/strip-lean-imports (arg ctx :lean)))
+                         (arg ctx :lean))
+                r (lean-repl/run-command s source)]
             (cond
               (:error r)
               ;; An outage, not a failed verification. `unavailable` already
@@ -2294,13 +2446,17 @@
                            " conclusion is the claim itself.")))
 
               (:ok r)
-              (let [code (arg ctx :lean)
+              ;; `code` is the ASSEMBLY, so the artifact still elaborates on
+              ;; its own; the faithfulness judge below is handed the snippet
+              ;; instead, because the claim describes the theorem the branch
+              ;; wrote, not the lemmas it stood on.
+              (let [code source
                     ;; The whole verdict, not just its boolean. Dropping the
                     ;; reason here left the branch a paragraph of generic
                     ;; advice — check your quantifiers — when the reviewer had
                     ;; already said which quantifier (vf-9p2).
                     faithful? (encoding-faithful?
-                               ctx claim code
+                               ctx claim (arg ctx :lean)
                                {:engine "a Lean 4 declaration"
                                 :outcome "Lean accepted it with no goals left open"
                                 :direction :confirms
@@ -2343,6 +2499,25 @@
                 (fail branch (str "Lean rejected it:\n" etext
                                   "\n\nThat is a problem with the proof, not evidence"
                                   " about the claim."
+                                  ;; When citations were used the error may be in
+                                  ;; code the branch never wrote. `confirmed` in
+                                  ;; the ledger means a result was checkable
+                                  ;; against the Mathlib of ITS day: a#777 was
+                                  ;; confirmed in gen-24 and no longer
+                                  ;; elaborates. Unsaid, the branch reads the
+                                  ;; error as its own and rewrites the wrong
+                                  ;; thing.
+                                  (when (seq (:handles cited))
+                                    (str "\n\nYou cited "
+                                         (str/join ", " (:handles cited))
+                                         ", and their source was elaborated ahead of"
+                                         " your snippet — so the error may be in THEM"
+                                         " rather than in what you wrote. A result"
+                                         " confirmed by an earlier run was checked"
+                                         " against the Mathlib of that day and can stop"
+                                         " compiling since. If the failing goal is not"
+                                         " one of yours, drop that citation and reprove"
+                                         " what you need from it, and say so."))
                                   (when-let [h (lean-hint etext)]
                                     (str "\n\n" h)))
                       :failure {:claim claim
@@ -2351,7 +2526,7 @@
                                                               (subs 0 (min 160 (count (str (:data (first (:errors r)))))))))}))))
           (catch Throwable e
             (settle-claim! ctx (arg ctx :claim) :released nil)
-            (unavailable branch "Lean" e))))))))
+            (unavailable branch "Lean" e))))))))))
 
 (defmethod run-tool "sketch" [{:keys [branch] :as ctx}]
   ;; Draft-Sketch-Prove (Jiang et al., NeurIPS 2022): the draft is worth
