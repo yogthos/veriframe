@@ -509,6 +509,34 @@
   work and points at the second occurrence rather than at the pair."
   #"(?m)^\s*(?:@\[[^\]]*\]\s*)?(?:private\s+|protected\s+|noncomputable\s+|partial\s+)*(?:theorem|lemma|def|abbrev|instance|structure|class|inductive|axiom)\s+([A-Za-z_][A-Za-z0-9_.'!?]*)")
 
+(defn- assemble-proof-code
+  "The closed interactive proof as a declaration: the theorem, then every
+  tactic indented under `:= by`.
+
+  EVERY LINE of each tactic, not just the first. The old assembly was
+  (str/join \"\\n  \" tactics), which puts two spaces only where tactics MEET —
+  so a multi-line tactic (`induction l with` and its `| nil =>` arms) had its
+  first line indented and its continuations left at the column the branch
+  wrote them in, which is column 0 relative to the tactic. Lean answers
+  `expected '{' or indented tactic sequence` and the declaration does not
+  parse.
+
+  That is the largest single source of rot in this corpus. Of 83 citable Lean
+  artifacts, 32 do not compile, and this parse error is the commonest cause —
+  a#718, the cancellation core the whole acyclicity argument ends in, has
+  `have hCeq` sitting at column 0. Those artifacts cannot be repaired
+  mechanically: the tactic boundaries are not recoverable from the stored
+  text, so the indentation cannot be put back. They have to be reproved.
+
+  Blank lines are left alone rather than padded, so trailing whitespace does
+  not appear in a banked result."
+  [theorem tactics]
+  (str theorem " := by\n"
+       (str/join "\n"
+                 (for [t tactics
+                       line (str/split-lines (str t))]
+                   (if (str/blank? line) line (str "  " line))))))
+
 (defn- lean-declared-names
   "Every top-level name a Lean snippet declares. Comments stripped first, so
   a declaration discussed in prose is not mistaken for one made."
@@ -2777,7 +2805,7 @@
 
         (:closed? r)
         (let [p (update p :tactics conj (arg ctx :tactic))
-              code (str (:theorem p) " := by\n  " (str/join "\n  " (:tactics p)))]
+              code (assemble-proof-code (:theorem p) (:tactics p))]
           ;; Two ways a placeholder reaches here despite the text check above:
           ;; the REPL reports a sorry the tactic introduced some other way
           ;; (`exact sorry`, a macro), or an EARLIER tactic carried one and

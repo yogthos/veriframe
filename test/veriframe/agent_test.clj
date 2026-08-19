@@ -1771,6 +1771,35 @@
     (is (= :active (:status (#'beam/cull-or-keep {:turn 10} at-stuck 2 [])))
         "and the branch is not yet cullable when it does")))
 
+(deftest a-multi-line-tactic-is-indented-as-a-block
+  ;; The assembled proof was built with (str/join "\n  " tactics), which puts
+  ;; two spaces only WHERE TACTICS MEET. A multi-line tactic — `induction l
+  ;; with` and its `| nil =>` arms — got its first line indented and every
+  ;; continuation left at the column the branch wrote it in, which is column 0
+  ;; relative to the tactic. Lean then reports `expected '{' or indented tactic
+  ;; sequence` and the declaration does not parse.
+  ;;
+  ;; This is the single largest source of rot in the corpus: of 83 citable Lean
+  ;; artifacts, 32 do not compile, and that parse error is the most common
+  ;; cause. a#718 — the cancellation core the whole acyclicity argument ends in
+  ;; — is one of them, with `have hCeq` sitting at column 0.
+  ;;
+  ;; Existing artifacts cannot be repaired mechanically: the tactic boundaries
+  ;; are not recoverable from the stored text, so the indentation cannot be
+  ;; put back. They have to be reproved. This stops it happening again.
+  (let [assemble #'tools/assemble-proof-code]
+    (is (= (str "theorem t : True := by\n"
+                "  induction l with\n"
+                "  | nil => simp\n"
+                "  | cons a rest ih =>\n"
+                "      exact ih\n"
+                "  trivial")
+           (assemble "theorem t : True"
+                     ["induction l with\n| nil => simp\n| cons a rest ih =>\n    exact ih"
+                      "trivial"]))
+        "every line of every tactic is indented, and relative nesting inside a
+         tactic is preserved")))
+
 (deftest a-closed-proof-is-re-elaborated-before-it-is-banked
   ;; The interactive path banks `theorem <stmt> := by <tactics>` — a
   ;; RECONSTRUCTION. The tactics were checked one at a time against a proof
