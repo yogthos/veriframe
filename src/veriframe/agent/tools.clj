@@ -2429,6 +2429,11 @@
                 source (if (:code cited)
                          (str (:code cited) "\n\n" (lint/strip-lean-imports (arg ctx :lean)))
                          (arg ctx :lean))
+                ;; How many lines the prepended citations occupy. Lean reports
+                ;; a line per error, so an error at or below this is in code
+                ;; the branch did not write.
+                cited-lines (when (:code cited)
+                              (+ 2 (count (str/split-lines (:code cited)))))
                 r (lean-repl/run-command s source)]
             (cond
               (:error r)
@@ -2515,13 +2520,35 @@
                           :artifact {:kind :lean :claim claim :code code
                                      :claim-status :unfaithful :tier :fast}))))
 
-              :else
+              ;; Every error inside the cited prefix: the branch's own snippet
+              ;; was never reached, so it has failed at nothing and must not
+              ;; spend cull budget on a rotten inherited artifact. gen-33 B2
+              ;; was culled by exactly this — three consecutive citation calls,
+              ;; every error a corpus-rot signature, its own code never
+              ;; elaborated. The vf-jki mistake by a route `cites` opened.
+              (and cited-lines
+                   (seq (:errors r))
+                   (every? #(when-let [l (get-in % [:pos :line])] (<= l cited-lines))
+                           (:errors r)))
+              (let [etext (lean-error-text (:errors r))]
+                (settle-claim! ctx claim :released nil)
+                (ok branch
+                    (str "The CITED source failed to elaborate, so your snippet was"
+                         " never reached:\n" etext
+                         "\n\nEvery error is inside " (str/join ", " (:handles cited))
+                         ", not in what you wrote. A result confirmed by an earlier run"
+                         " was checked against the Mathlib of that day and can stop"
+                         " compiling since. Nothing here counts against you.\n\nDrop that"
+                         " citation. If you need what it stated, prove it yourself and"
+                         " say which artifact you found rotten.")))
+
               ;; No artifact. A snippet Lean rejects is a failed proof ATTEMPT,
               ;; which says nothing about whether the claim is true — this used
               ;; to record it with claim-status :refuted, so a type error read
               ;; as evidence against the claim. The failure log keeps the
               ;; record; the artifact table should not, and neither should the
               ;; claim registry.
+              :else
               (let [etext (lean-error-text (:errors r))]
                 (settle-claim! ctx claim :released nil)
                 (fail branch (str "Lean rejected it:\n" etext

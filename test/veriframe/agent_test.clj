@@ -2043,6 +2043,48 @@
             (is (str/includes? (:result r) "may be in")
                 "and told the error need not be in its own snippet")))))))
 
+(deftest an-error-inside-cited-code-is-not-the-branch-s-failure
+  ;; gen-33 B2 was culled after three consecutive failures. All three were
+  ;; citation calls, and all three errors are corpus-rot signatures from the
+  ;; audit — `unexpected token 'in'`, `expected '{' or indented tactic
+  ;; sequence`, `Tactic introN failed`. The cited source is elaborated FIRST,
+  ;; so its failure means the branch's own snippet was never reached. It died
+  ;; for code it did not write, which is the vf-jki mistake by a route `cites`
+  ;; itself opened.
+  ;;
+  ;; The cited block is prepended, so its line count is known exactly and Lean
+  ;; reports a line per error. An error inside that prefix is not evidence
+  ;; about this branch's line of inquiry.
+  (with-db [c]
+    (let [rid (runs/start-run! c {:problem "p"})
+          b (state/new-branch {:id "B1" :problem "p"})]
+      (runs/open-branch! c rid {:branch-id "B1"})
+      (journal/record-artifact! c rid
+        {:branch-id "B1" :turn 1 :kind :lean :claim "a rotten inherited lemma"
+         :code "theorem rotten_t : True := by\n  trivial" :claim-status :confirmed})
+      (let [aid (:id (first (db/fetch c ["SELECT id FROM artifacts WHERE run_id=?" rid])))
+            call (fn [err-line]
+                   (with-redefs [lean-repl/create-session (fn [& _] {:id "s"})
+                                 lean-pool/checkout! (fn [& _] {:id "s"})
+                                 lean-repl/run-command
+                                 (fn [& _] {:ok false :sorries [] :messages []
+                                            :errors [{:severity "error" :data "boom"
+                                                      :pos {:line err-line :column 1}}]})]
+                     (tools/run-tool
+                      {:branch b :conn c :run-id rid :tool-name "verify_lean"
+                       :args {:claim "every integer n satisfies the derived bound"
+                              :cites [(str "a#" aid)]
+                              :lean "theorem derived : True := by\n  trivial"}})))]
+        (testing "an error inside the cited prefix does not count against the branch"
+          (let [r (call 2)]
+            (is (not= :failure (:category r))
+                "the branch's snippet was never reached, so it failed at nothing")
+            (is (str/includes? (:result r) (str "a#" aid))
+                "and the rotten artifact is named")))
+        (testing "an error in the branch's own snippet still counts"
+          (let [r (call 99)]
+            (is (= :failure (:category r)))))))))
+
 (deftest a-bad-citation-is-refused-before-an-engine-is-spent
   (with-db [c]
     (let [rid (runs/start-run! c {:problem "p"})
