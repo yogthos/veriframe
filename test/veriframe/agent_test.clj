@@ -2123,6 +2123,49 @@
           (let [r (call 99)]
             (is (= :failure (:category r)))))))))
 
+(deftest an-inspection-shows-its-own-output-not-the-cited-sources-noise
+  ;; A branch that cites an artifact and asks `#check` for its type gets back
+  ;; the linter output of the CITED proof body and nothing else. gen-33 B1
+  ;; turn 75 asked for the signatures of Ccost and Qcost and received 3,076
+  ;; characters of `List.Chain' has been deprecated`, unused-simp-arg hints and
+  ;; `<;>` style advice from a lemma an earlier generation wrote — its own
+  ;; `#check` output nowhere in the reply. Six branches tried this 24 times.
+  ;;
+  ;; Errors are already attributed by line, because the cited block is
+  ;; prepended and its length is known. Messages were not, and the vacuous
+  ;; path exists precisely so `#print` and `#check` work — so it was the one
+  ;; path where the noise had nothing to compete with.
+  (with-db [c]
+    (let [rid (runs/start-run! c {:problem "p"})
+          b (state/new-branch {:id "B1" :problem "p"})]
+      (runs/open-branch! c rid {:branch-id "B1"})
+      (journal/record-artifact! c rid
+        {:branch-id "B1" :turn 1 :kind :lean :claim "an inherited lemma"
+         :code "theorem inherited_t : True := by\n  trivial" :claim-status :confirmed})
+      (let [aid (:id (first (db/fetch c ["SELECT id FROM artifacts WHERE run_id=?" rid])))
+            r (with-redefs [lean-repl/create-session (fn [& _] {:id "s"})
+                            lean-pool/checkout! (fn [& _] {:id "s"})
+                            lean-repl/run-command
+                            (fn [& _]
+                              {:ok true :sorries [] :errors []
+                               :messages [{:severity "warning" :pos {:line 2 :column 1}
+                                           :data "`List.Chain'` has been deprecated"}
+                                          {:severity "warning" :pos {:line 3 :column 1}
+                                           :data "This simp argument is unused"}
+                                          {:severity "info" :pos {:line 9 :column 1}
+                                           :data "inherited_t : True"}]})]
+                (tools/run-tool
+                 {:branch b :conn c :run-id rid :tool-name "verify_lean"
+                  :args {:claim "Inspection only: print the type of the cited declaration."
+                         :cites [(str "a#" aid)]
+                         :lean "#check inherited_t\ntheorem probe : True := by trivial"}}))]
+        (is (str/includes? (:result r) "inherited_t : True")
+            "the output the branch asked for is what it must get back")
+        (is (not (str/includes? (:result r) "deprecated"))
+            "a warning about the cited proof body is not this branch's business")
+        (is (not (str/includes? (:result r) "simp argument"))
+            "nor is style advice on code an earlier generation wrote")))))
+
 (deftest a-bad-citation-is-refused-before-an-engine-is-spent
   (with-db [c]
     (let [rid (runs/start-run! c {:problem "p"})

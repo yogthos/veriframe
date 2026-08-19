@@ -36,3 +36,5 @@ PLAN.md
 
 # jolt classpath cache, regenerated on every run
 .jolt/cpcache/
+veriframe.sqlite3-wal
+veriframe.sqlite3-shm

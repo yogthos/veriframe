@@ -2464,19 +2464,37 @@
               ;; and the claim is RELEASED rather than settled, leaving it open
               ;; to a branch that can actually prove it.
               (and (:ok r) (lint/vacuous-lean-statement? (arg ctx :lean)))
-              (do (settle-claim! ctx claim :released nil)
-                  (ok branch
-                      (str "Lean accepted it, and it asserts nothing: the"
-                           " declaration concludes `True`, which `trivial`"
-                           " closes for any input. Nothing was recorded"
-                           " against the claim.\n\n"
-                           (if-let [msgs (seq (:messages r))]
-                             (str "Output:\n"
-                                  (str/join "\n" (map #(str "  " (:data %)) msgs)))
-                             "The snippet produced no output.")
-                           "\n\nUse this for `#print` and `#check` freely. To"
-                           " settle the claim, state it as a theorem whose"
-                           " conclusion is the claim itself.")))
+              ;; Only the snippet's OWN output. Errors were already attributed
+              ;; by line — the cited block is prepended, so its length is
+              ;; known — and messages need the same treatment for the same
+              ;; reason. gen-33 B1 asked `#check` for two signatures and got
+              ;; 3,076 characters of deprecation and simp-lint advice about a
+              ;; lemma gen-24 wrote, with its own answer nowhere in the reply.
+              ;; Warnings on cited code are not actionable by this branch:
+              ;; it cannot edit the artifact, and citing is the whole point.
+              (let [own (if cited-lines
+                          (remove #(when-let [l (get-in % [:pos :line])]
+                                     (<= l cited-lines))
+                                  (:messages r))
+                          (:messages r))
+                    hidden (- (count (:messages r)) (count own))]
+                (settle-claim! ctx claim :released nil)
+                (ok branch
+                    (str "Lean accepted it, and it asserts nothing: the"
+                         " declaration concludes `True`, which `trivial`"
+                         " closes for any input. Nothing was recorded"
+                         " against the claim.\n\n"
+                         (if (seq own)
+                           (str "Output:\n"
+                                (str/join "\n" (map #(str "  " (:data %)) own)))
+                           "The snippet produced no output.")
+                         (when (pos? hidden)
+                           (str "\n\n(" hidden " further message(s) came from the"
+                                " cited source rather than from your snippet, and"
+                                " are not shown.)"))
+                         "\n\nUse this for `#print` and `#check` freely. To"
+                         " settle the claim, state it as a theorem whose"
+                         " conclusion is the claim itself.")))
 
               (:ok r)
               ;; `code` is the ASSEMBLY, so the artifact still elaborates on
