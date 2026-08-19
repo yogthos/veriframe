@@ -610,6 +610,25 @@ so the system prompt was frozen at turn 0 and every mid-run prompt edit
 reached nothing. `lean_check` sat unused for eight turns after being deployed
 and verified, because no branch could see it.
 
+### The answer of record overclaims
+
+gen-33 shipped `Q-1 is settled.` It is not. Q-1 asks for a polynomial-time
+algorithm on an arbitrary instance or a proof that none exists; what the run
+proved is one lemma of the correctness chain. That was exactly the job it was
+set — its problem statement says THIS RUN HAS ONE JOB and names that theorem —
+and it did it. The mathematics is sound and independently verified. Only the
+framing is wrong, and the framing is what a later generation reads first.
+
+It is wrong twice over: the chain is not complete, and S is the total positive
+divergence, which can be exponential in the binary encoding length, so even a
+complete chain gives a pseudo-polynomial bound rather than polynomial time.
+
+The audit judge was handed the answer beginning `Q-1 is settled.` and returned
+GAPS: none, PASS — while writing, in the same reply, an ESTABLISHED summary
+scoped strictly to the bound. It composed the correct narrower statement and
+approved the broader one. Every rung that checks EVIDENCE fired correctly
+during this run; none checks SCOPE. Tracked as vf-mnd.
+
 ### What remains
 
 The steps after the box bound. Of the ten artifacts covering them, seven do
@@ -617,3 +636,9 @@ not elaborate — 70%, against 39% across the corpus. `s#1862`, `s#1870` and
 `s#1887` survive. `s#1883` is rotten while `s#1887`, a re-verification of the
 same result on another branch, is sound: the result exists in one copy because
 a branch happened to redo it.
+
+Nothing here is the answer to Q-1. The honest statement of where the campaign
+stands after gen-33 is: the first half of the correctness chain is proved and
+independently verified end to end, by citation rather than by retyping; the
+second half rests on three surviving artifacts and seven rotten ones; and the
+complexity question the problem actually asks has not been touched.
