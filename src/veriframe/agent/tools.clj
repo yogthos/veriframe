@@ -2441,8 +2441,13 @@
                 ;; How many lines the prepended citations occupy. Lean reports
                 ;; a line per error, so an error at or below this is in code
                 ;; the branch did not write.
+                ;; The cited block, plus the blank line separating it from
+                ;; the snippet. NOT +2: that is the snippet's FIRST line, so
+                ;; `<= cited-lines` excused an error the branch really did
+                ;; make there — telling it "nothing here counts against you"
+                ;; about its own opening line.
                 cited-lines (when (:code cited)
-                              (+ 2 (count (str/split-lines (:code cited)))))
+                              (inc (count (str/split-lines (:code cited)))))
                 r (lean-repl/run-command s source)]
             (cond
               (:error r)
@@ -2695,6 +2700,101 @@
           (catch Throwable e
             (settle-claim! ctx (arg ctx :claim) :released nil)
             (unavailable branch "Lean" e)))))))
+
+(def ^:private max-check-names
+  "Names one `lean_check` may ask about.
+
+  Generous — the point is to answer the whole question in one turn, and the
+  cost is one elaboration however many names ride on it. A cap at all exists
+  only so a branch cannot paste a module."
+  12)
+
+(defmethod run-tool "lean_check" [{:keys [branch] :as ctx}]
+  ;; vf-66l. Inspection, and nothing else: no claim, no faithfulness judge, no
+  ;; artifact, :neutral throughout. gen-33 spent 24 of its 267 turns — every
+  ;; branch, 9.4% of the run — asking what a cited declaration's type was, by
+  ;; inventing claims for verify_lean so there would be somewhere to put the
+  ;; question. The judge failed them, correctly, twelve times; eight were
+  ;; charged :failure, the counter that culls.
+  ;;
+  ;; `cites` is what made the gap urgent rather than merely annoying. A branch
+  ;; can stand on an inherited result now, but all the ledger records about
+  ;; one is its PROSE CLAIM, and prose does not carry implicit binders or
+  ;; instance arguments. Composing with a lemma you cannot see the type of is
+  ;; guesswork, and the run has the failed guesses to prove it.
+  ;;
+  ;; Deliberately NOT in state/lean-verification-tools, so explore does not
+  ;; withhold it: the way out of explore is a sketch, and a sketch cannot
+  ;; stand in for knowing what a name means. Withholding it there would be the
+  ;; vf-2vi mistake — a gate whose substitute does not cover what it gates.
+  ;; Deliberately NOT in state/verification-tools either: this is not an
+  ;; attempt, so it must not clear the search counter, or a branch could
+  ;; alternate searching and checking forever without ever trying anything.
+  (let [names (let [n (arg ctx :names)]
+                (->> (cond (sequential? n) n (nil? n) [] :else [n])
+                     (map #(str/trim (str %)))
+                     (remove str/blank?)
+                     distinct vec))]
+    (cond
+      (empty? names)
+      (malformed branch
+                 (str "`names` must be a non-empty array of declaration names to"
+                      " look up, e.g. {\"names\": [\"Finset.sum_congr\"]}. Add"
+                      " `cites` to put an artifact's declarations in scope first."))
+
+      (> (count names) max-check-names)
+      (malformed branch
+                 (str "At most " max-check-names " names per call; you asked for "
+                      (count names) "."))
+
+      :else
+      (let [cited (resolve-citations ctx (arg ctx :cites))]
+        (if-not (:ok cited)
+          (malformed branch (:reason cited))
+          (try
+            (let [[s branch] (lean-session! ctx)
+                  prefix (when (:code cited) (str (:code cited) "\n\n"))
+                  ;; `@` rather than a bare name. `#check foo` elaborates foo
+                  ;; as a term, so implicit and instance arguments become
+                  ;; metavariables and a lemma with a DecidableEq binder
+                  ;; answers "typeclass instance problem is stuck DecidableEq
+                  ;; ?m.3" — which is what gen-33 B2 got on the run's first
+                  ;; probe, and it says nothing about the signature. `@foo`
+                  ;; shows every binder as written.
+                  checks (map #(str "#check @" %) names)
+                  source (str prefix (str/join "\n" checks))
+                  ;; Which line each name's answer will arrive on, so a reply
+                  ;; can be attributed to the name that asked for it. The
+                  ;; prefix is the cited source plus a blank separator, so the
+                  ;; first check sits one line below the cited block; with no
+                  ;; citation it is line 1.
+                  base (if (:code cited)
+                         (inc (count (str/split-lines (:code cited))))
+                         0)
+                  line->name (into {} (map-indexed (fn [i n] [(+ base i 1) n]) names))
+                  r (lean-repl/run-command s source)]
+              (if (:error r)
+                (unavailable branch "Lean" (ex-info (str (:error r)) {}))
+                (let [replies (->> (concat (:messages r) (:errors r))
+                                   (keep (fn [m]
+                                           (when-let [nm (line->name (get-in m [:pos :line]))]
+                                             [nm (str/trim (str (:data m)))])))
+                                   (reduce (fn [acc [nm d]]
+                                             (update acc nm (fnil conj []) d)) {}))]
+                  (ok branch
+                      (str/join
+                       "\n\n"
+                       (concat
+                        (when (seq (:handles cited))
+                          [(str "In scope from " (str/join ", " (:handles cited)) ".")])
+                        (for [n names]
+                          (if-let [ds (seq (replies n))]
+                            (str/join "\n" ds)
+                            (str n ": no reply — the name may be in scope but"
+                                 " produced no output.")))
+                        ["Nothing was recorded: this establishes no claim."]))))))
+            (catch Throwable e
+              (unavailable branch "Lean" e))))))))
 
 (def ^:private max-searches-without-attempt
   "Consecutive `lean_search` calls allowed before the branch has to try

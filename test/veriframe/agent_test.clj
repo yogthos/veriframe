@@ -1103,7 +1103,7 @@
   ;; failing test instead of a mid-run crash.
   (is (= #{"add_rule" "retract_rule" "verify" "verify_smt" "verify_template"
            "thesis" "branch_theses" "review" "audit" "done" "give_up"
-           "verify_lean" "lean_search" "proof_start" "proof_step"
+           "verify_lean" "lean_search" "lean_check" "proof_start" "proof_step"
            "proof_state" "proof_abandon" "sketch"
            "octave_eval" "verify_octave" "measure" "fetch_artifact" "fetch_turn"}
          (set (tools/tool-names))))
@@ -2121,7 +2121,112 @@
                 "and the rotten artifact is named")))
         (testing "an error in the branch's own snippet still counts"
           (let [r (call 99)]
-            (is (= :failure (:category r)))))))))
+            (is (= :failure (:category r)))))
+        (testing "and the boundary is the blank line, not the snippet's first line"
+          ;; resolve-citations prepends a `-- cited:` line, so the block is
+          ;; three lines: 1-3 cited, 4 the blank separator, 5 the branch's
+          ;; opening line. Shipped as (+ 2 lines) = 5, which excused an error
+          ;; the branch really did make on its own first line.
+          (is (= :neutral (:category (call 4))) "the separator is still theirs")
+          (let [r (call 5)]
+            (is (= :failure (:category r))
+                "line 5 is the branch's own first line, not the citation's")))))))
+
+(deftest lean-check-answers-what-a-declaration-is-without-claiming-anything
+  ;; vf-66l. gen-33 spent 24 of 267 turns, across all six branches, asking
+  ;; what the type of a cited declaration was. There was no tool for it, so
+  ;; every branch routed the question through verify_lean with an invented
+  ;; claim — "Inspection only: print the signatures of Ccost and Qcost, no
+  ;; theorem is being claimed" — and the faithfulness judge rightly failed it:
+  ;; 12 of the run's 67 judge verdicts are the reviewer explaining that a
+  ;; typing probe is not a mathematical statement. Eight of the 24 were
+  ;; charged :failure, the counter that culls.
+  ;;
+  ;; `cites` made this urgent. A branch can now stand on an inherited result,
+  ;; but the only thing the ledger records about one is its PROSE CLAIM, and
+  ;; prose does not carry implicit binders or instance arguments.
+  (with-db [c]
+    (let [rid (runs/start-run! c {:problem "p"})
+          b (state/new-branch {:id "B1" :problem "p"})]
+      (runs/open-branch! c rid {:branch-id "B1"})
+      (journal/record-artifact! c rid
+        {:branch-id "B1" :turn 1 :kind :lean :claim "an inherited lemma"
+         :code "theorem inherited_t : True := by\n  trivial" :claim-status :confirmed})
+      (let [aid (:id (first (db/fetch c ["SELECT id FROM artifacts WHERE run_id=?" rid])))
+            saw (atom nil)
+            ;; The cited block is two lines, so the checks start below it.
+            run! (fn [args msgs]
+                   (with-redefs [lean-repl/create-session (fn [& _] {:id "s"})
+                                 lean-pool/checkout! (fn [& _] {:id "s"})
+                                 lean-repl/run-command
+                                 (fn [_ code & _] (reset! saw code)
+                                   {:ok true :sorries [] :errors []
+                                    :messages msgs})]
+                     (tools/run-tool {:branch b :conn c :run-id rid
+                                      :tool-name "lean_check" :args args})))]
+
+        (testing "each name comes back with its signature"
+          (let [r (run! {:names ["inherited_t" "Nat.succ"] :cites [(str "a#" aid)]}
+                        ;; 1-3 are the cited block (resolve-citations adds a
+                        ;; `-- cited:` line), 4 is blank, so the checks are 5-6.
+                        [{:severity "info" :pos {:line 5 :column 1}
+                          :data "inherited_t : True"}
+                         {:severity "info" :pos {:line 6 :column 1}
+                          :data "Nat.succ : Nat -> Nat"}])]
+            (is (= :neutral (:category r))
+                "an inspection establishes nothing and must not reach the cull counter")
+            (is (nil? (:artifact r)) "and banks nothing")
+            (is (str/includes? (:result r) "inherited_t : True"))
+            (is (str/includes? (:result r) "Nat.succ : Nat -> Nat"))
+            (is (str/includes? @saw "theorem inherited_t")
+                "the cited source is put in scope first")
+            (is (str/includes? @saw "#check @inherited_t")
+                "`@` so implicit binders show instead of being elaborated away —
+                 a bare #check on a lemma with instance arguments answers
+                 `typeclass instance problem is stuck`, which is what gen-33 B2
+                 got on its very first probe")))
+
+        (testing "an unknown name is reported without sinking the other names"
+          (let [r (run! {:names ["inherited_t" "no_such_lemma"]}
+                        [{:severity "info" :pos {:line 1 :column 1}
+                          :data "inherited_t : True"}
+                         {:severity "error" :pos {:line 2 :column 1}
+                          :data "unknown identifier 'no_such_lemma'"}])]
+            (is (= :neutral (:category r))
+                "a name that does not exist is a fact about the name, not a failure")
+            (is (str/includes? (:result r) "inherited_t : True"))
+            (is (str/includes? (:result r) "no_such_lemma"))))
+
+        (testing "it is open in EXPLORE, where the question is most often asked"
+          (let [explored (assoc b :phase :explore :phase-entered-turn 1)
+                r (with-redefs [lean-repl/create-session (fn [& _] {:id "s"})
+                                lean-pool/checkout! (fn [& _] {:id "s"})
+                                lean-repl/run-command
+                                (fn [& _] {:ok true :sorries [] :errors []
+                                           :messages [{:severity "info"
+                                                       :pos {:line 1 :column 1}
+                                                       :data "inherited_t : True"}]})]
+                    (tools/run-tool {:branch explored :conn c :run-id rid
+                                     :tool-name "lean_check"
+                                     :args {:names ["inherited_t"]}}))]
+            (is (= :neutral (:category r))
+                "gen-33 B1.3.3 asked exactly this in explore and was told to go
+                 and sketch — but a sketch cannot stand in for knowing what a
+                 name means, so the substitute does not cover the withholding")
+            (is (str/includes? (:result r) "inherited_t : True"))))
+
+        (testing "a citation that does not resolve costs no Lean session"
+          (let [ran (atom false)
+                r (with-redefs [lean-repl/create-session (fn [& _] (reset! ran true) {:id "s"})
+                                lean-pool/checkout! (fn [& _] (reset! ran true) {:id "s"})]
+                    (tools/run-tool {:branch b :conn c :run-id rid
+                                     :tool-name "lean_check"
+                                     :args {:names ["inherited_t"] :cites ["a#4242"]}}))]
+            (is (= :mechanics (:category r)))
+            (is (false? @ran))))
+
+        (testing "names is required"
+          (is (= :mechanics (:category (run! {} [])))))))))
 
 (deftest an-interactive-proof-can-stand-on-a-cited-one
   ;; vf-vw4 gave `cites` to verify_lean and not to proof_start, so a chain

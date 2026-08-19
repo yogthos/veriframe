@@ -147,6 +147,15 @@ stop counting toward the cull while you do. Everything else stays open,
 including a smaller piece of the same goal. If the failures were Lean ones you
 are also returned to EXPLORE, so a fresh `sketch` is the fastest way back.
 
+lean_check({names, cites})    What a declaration actually IS: the signature
+                              of each name, with every binder shown. Add
+                              `cites` to put an artifact's declarations in
+                              scope first — the ledger records a result's
+                              CLAIM, which is prose, and prose does not carry
+                              implicit binders or instance arguments. Check
+                              before you compose. Establishes nothing on its
+                              own, and costs nothing but the turn.
+
 proof_start({claim, theorem, cites})
                               Open an interactive proof. `theorem` is the
                               STATEMENT ONLY — no `:= by`, no proof body; the
