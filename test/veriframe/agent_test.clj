@@ -2257,6 +2257,39 @@
             (is (= :mechanics (:category r)))
             (is (false? @ran))))
 
+        (testing "an error is not reported twice"
+          ;; lean_repl builds :errors by FILTERING :messages, so collecting
+          ;; from both counted every error twice. gen-33 B1.3's first call came
+          ;; back with `Unknown identifier acyclic_support_flow_bound_fixed`
+          ;; printed twice per name.
+          (let [r (with-redefs [lean-repl/create-session (fn [& _] {:id "s"})
+                                lean-pool/checkout! (fn [& _] {:id "s"})
+                                lean-repl/run-command
+                                (fn [& _]
+                                  (let [errs [{:severity "error" :pos {:line 1 :column 1}
+                                               :data "unknown identifier 'nope'"}]]
+                                    {:ok false :sorries [] :errors errs :messages errs}))]
+                    (tools/run-tool {:branch b :conn c :run-id rid
+                                     :tool-name "lean_check" :args {:names ["nope"]}}))]
+            (is (= 1 (count (re-seq #"unknown identifier" (:result r))))
+                "once per name, not once per list it appears in")))
+
+        (testing "an unknown name says how to bring it into scope"
+          ;; B1.3 asked lean_check about its OWN artifact and passed no cites,
+          ;; so nothing beyond Mathlib was in scope and it got a bare "unknown
+          ;; identifier" with no hint of the fix. A turn, for a missing word.
+          (let [r (with-redefs [lean-repl/create-session (fn [& _] {:id "s"})
+                                lean-pool/checkout! (fn [& _] {:id "s"})
+                                lean-repl/run-command
+                                (fn [& _]
+                                  (let [errs [{:severity "error" :pos {:line 1 :column 1}
+                                               :data "unknown identifier 'nope'"}]]
+                                    {:ok false :sorries [] :errors errs :messages errs}))]
+                    (tools/run-tool {:branch b :conn c :run-id rid
+                                     :tool-name "lean_check" :args {:names ["nope"]}}))]
+            (is (str/includes? (:result r) "cites")
+                "the tool knows nothing was cited and should say so")))
+
         (testing "names is required"
           (is (= :mechanics (:category (run! {} [])))))))))
 

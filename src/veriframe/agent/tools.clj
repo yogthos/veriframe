@@ -2775,12 +2775,19 @@
                   r (lean-repl/run-command s source)]
               (if (:error r)
                 (unavailable branch "Lean" (ex-info (str (:error r)) {}))
+                ;; `distinct`, because lean_repl builds :errors by FILTERING
+                ;; :messages — so every error appears in both lists, and
+                ;; concatenating them reported each one twice.
                 (let [replies (->> (concat (:messages r) (:errors r))
+                                   distinct
                                    (keep (fn [m]
                                            (when-let [nm (line->name (get-in m [:pos :line]))]
                                              [nm (str/trim (str (:data m)))])))
                                    (reduce (fn [acc [nm d]]
-                                             (update acc nm (fnil conj []) d)) {}))]
+                                             (update acc nm (fnil conj []) (str d))) {})
+                                   (reduce-kv (fn [acc k v] (assoc acc k (distinct v))) {}))
+                      unknown? (fn [n] (some #(str/includes? % "unknown identifier")
+                                             (replies n)))]
                   (ok branch
                       (str/join
                        "\n\n"
@@ -2792,6 +2799,20 @@
                             (str/join "\n" ds)
                             (str n ": no reply — the name may be in scope but"
                                  " produced no output.")))
+                        ;; A name Mathlib does not have is usually one this run
+                        ;; PROVED, and nothing is in scope but Mathlib unless it
+                        ;; was cited. gen-33 B1.3 asked about its own artifact
+                        ;; with no `cites` and lost the turn to a bare "unknown
+                        ;; identifier".
+                        (when (some unknown? names)
+                          [(if (seq (:handles cited))
+                             (str "A name reported unknown is not in "
+                                  (str/join ", " (:handles cited))
+                                  " or in Mathlib. Cite the artifact that declares it.")
+                             (str "Nothing was cited, so only Mathlib is in scope."
+                                  " If one of these is a result THIS campaign proved,"
+                                  " pass its id in `cites` — e.g."
+                                  " {\"names\": [...], \"cites\": [\"s#1772\"]}."))])
                         ["Nothing was recorded: this establishes no claim."]))))))
             (catch Throwable e
               (unavailable branch "Lean" e))))))))
