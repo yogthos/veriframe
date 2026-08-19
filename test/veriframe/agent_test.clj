@@ -2145,6 +2145,32 @@
             (is (= :failure (:category r))
                 "line 5 is the branch's own first line, not the citation's")))))))
 
+(deftest a-fork-inherits-the-notes-appended-to-its-parent-s-problem
+  ;; `note` exists because `message` decays at compaction: it appends to the
+  ;; problem message, which compact preserves exactly. A fork threw that away —
+  ;; open-branch! rebuilt the frame from the RUN's original problem, so every
+  ;; correction applied to the parent vanished for the child.
+  ;;
+  ;; gen-34 forked four branches past a note saying the inherited complexity
+  ;; artifacts do not prove what they claim. All four carried the uncorrected
+  ;; statement, and nothing said so — a note that never arrived reads exactly
+  ;; like one that was ignored, which is the failure `note` was built to end.
+  (let [parent {:messages [{:role "system" :content "SYS"}
+                           {:role "user"
+                            :content "## Problem\n\nthe original\n\n[note] a correction"}]}
+        forked (#'beam/fork-messages "the original" parent)]
+    (is (= 2 (count forked)))
+    (is (str/includes? (:content (second forked)) "a correction")
+        "the child starts from the parent's problem message, notes and all")
+    (is (str/includes? (:content (second forked)) "the original"))
+    (is (str/includes? (:content (first forked)) "lean_check")
+        "and the system frame is rendered fresh, not copied from the parent"))
+
+  (testing "a root branch with no parent is unaffected"
+    (let [m (#'beam/fork-messages "the original" nil)]
+      (is (= 2 (count m)))
+      (is (str/includes? (:content (second m)) "the original")))))
+
 (deftest a-branch-sees-the-current-system-prompt-not-the-one-it-was-born-with
   ;; initial-messages runs ONCE, at branch creation, so messages[0] froze the
   ;; system prompt at turn 0 and compaction faithfully preserved the stale

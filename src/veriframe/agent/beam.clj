@@ -64,14 +64,34 @@
                      (for [a (take-last 8 confirmed)]
                        (str "- [" (:branch_id a) " " (:kind a) "] " (:claim a))))))))
 
+(defn- fork-messages
+  "A new branch's opening messages: a fresh system frame, and the PARENT's
+  problem message verbatim when there is a parent.
+
+  `note` interventions append to the problem message precisely because
+  `compact` preserves the frame exactly and a plain `message` decays out of the
+  turn stream. Rebuilding a fork's frame from the run's original `problem`
+  discarded every note the parent had been given, so a branch opened after a
+  correction was handed the uncorrected statement — and said nothing, because a
+  note that never arrived reads exactly like one that was ignored.
+
+  The SYSTEM half is re-rendered rather than copied: it is a pure function of
+  files on disk and the parent's copy may predate a deploy (see refresh-frame)."
+  [problem parent]
+  (let [base (vec (branch-loop/initial-messages problem))]
+    (if-let [pm (get-in parent [:messages 1])]
+      (assoc base 1 pm)
+      base)))
+
 (defn- open-branch!
-  [{:keys [conn run-id config problem sessions]} id parent-id thesis turn]
+  ([ctx id parent-id thesis turn] (open-branch! ctx id parent-id thesis turn nil))
+  ([{:keys [conn run-id config problem sessions]} id parent-id thesis turn parent]
   (let [session (prolog/create-session (get-in config [:engines :swipl]))
         _ (when sessions (swap! sessions conj session))
         b (state/new-branch
            {:id id :parent-id parent-id :problem problem :prolog session
             :created-at-turn turn
-            :messages (branch-loop/initial-messages problem)})]
+            :messages (fork-messages problem parent)})]
     (runs/open-branch! conn run-id {:branch-id id :parent-id parent-id
                                     :created-at-turn turn})
     (if thesis
@@ -86,7 +106,7 @@
                     (crossover-block conn run-id parent-id)
                     "\n\nOther branches are pursuing the alternatives, so commit to"
                     " this one rather than hedging. Issue your first tool call."))))
-      b)))
+      b))))
 
 (defn- cull-or-keep
   "Apply the retention rule to a branch that just failed.
@@ -391,7 +411,7 @@
             ids (child-ids taken (:id parent) (count spawning))
             ;; mapv, not map: these INSERT. A lazy seq of side effects is only
             ;; correct for as long as every caller keeps realising it.
-            children (mapv (fn [id t] (open-branch! ctx id (:id parent) t turn))
+            children (mapv (fn [id t] (open-branch! ctx id (:id parent) t turn parent))
                            ids spawning)
             parent (cond-> parent
                      (< take-n (count pending))
