@@ -1720,17 +1720,41 @@
                         " carry an assertion the evidence does not support, or is"
                         " it framing, or a term from the problem statement the"
                         " answer is entitled to use in saying what it did NOT"
-                        " settle? Only the first is a gap."))
+                        " settle? Only the first is a gap."
+                        "\n\nOne exception to that: a sentence saying the PROBLEM"
+                        " is settled, solved or resolved is never mere framing. It"
+                        " is the largest claim an answer can make, and it is the"
+                        " one this list will not catch, because its words all come"
+                        " from the problem statement."))
                  "\n\nAnswer FAIL if the artifacts verify only instances of a claim"
                  " stated universally, if the proposed answer asserts anything no"
                  " artifact covers, or if the thesis and the evidence are about"
                  " different things. Answer PASS only if the evidence establishes"
                  " the answer as stated."
+                 ;; gen-33 shipped "Q-1 is settled." on evidence for one lemma of
+                 ;; the correctness chain. The judge passed it GAPS: none and then
+                 ;; wrote an ESTABLISHED line scoped strictly to that lemma — it
+                 ;; knew the difference and was never asked (vf-mnd). Every other
+                 ;; rung here checks EVIDENCE; this is the one that checks SCOPE.
+                 "\n\nCheck the answer's SCOPE separately from its content. If it"
+                 " says or implies that the PROBLEM is settled, solved, resolved or"
+                 " answered, ask what the problem actually asked for and whether the"
+                 " artifacts deliver that — not a component of it, however hard the"
+                 " component was. A problem asking for an algorithm is not settled"
+                 " by a bound; one asking for a proof or a refutation is not settled"
+                 " by proving a lemma the proof would need. Overstating scope is a"
+                 " FAIL even when every mathematical sentence in the answer is"
+                 " individually supported, because the reader takes the scope claim"
+                 " first and the later runs inherit it."
                  "\n\nThen declare what the evidence actually establishes. On a line"
                  " reading `ESTABLISHED: <text>`, restate it fully self-contained —"
                  " no anaphora. Never write \"the claim\", \"the problem above\", or"
                  " \"as stated\": the ESTABLISHED line must stand alone with the"
                  " THESIS goal and the artifacts both in the room."
+                 "\nBefore you answer, read your own ESTABLISHED line back against"
+                 " the PROPOSED ANSWER. If the answer claims more than your"
+                 " restatement does, your verdict is FAIL and the difference is the"
+                 " gap."
                  "\nOn a line reading `RELAXATION: yes` or `RELAXATION: no`, declare"
                  " whether that ESTABLISHED claim is strictly weaker than the THESIS"
                  " goal: fewer cases, extra hypotheses, a weaker bound, existence"
