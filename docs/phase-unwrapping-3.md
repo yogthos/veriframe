@@ -695,3 +695,47 @@ the node count, arc count and bit lengths by scaling. Naming that result and
 checking its hypotheses against the objective already built is what finishes
 Q-1. Branches repeatedly treated it as another Lean lemma to find; a Lean
 proof of a running time needs a model of computation Lean does not have.
+
+## The literature check, and what it retired
+
+Done 2026-08-20, after gen-36 shipped an affirmative answer to Q-1. It should
+have been done before gen-22.
+
+**Q-1's mathematics is not novel.** Costantini (1998, IEEE TGRS) established
+phase unwrapping's L1 problem as a minimum-cost flow, polynomial-time solvable.
+This project's own `phase-unwrapping.md` cites him and calls it "the
+polynomial-time L1 minimum-cost-flow unwrapper" — as background, in the first
+run's framing. What gen-33 through gen-36 added is the lexicographic
+three-stage refinement, assembled from textbook parts: big-M scalarisation, a
+greedy prefix sweep, and Hochbaum–Shanthikumar's totally-unimodular corollary.
+A network-flow specialist would likely call the derivation routine.
+
+What may be new is the ARTIFACT: a machine-checked, axiom-clean formalisation
+of the reduction, ten theorems re-elaborated independently in fresh Lean
+sessions. That is worth something, and it is not what "solving an open problem"
+means.
+
+**The odd-covering thread is dead too.** Simpson–Zeilberger proved a distinct
+covering system of odd square-free moduli needs ≥ 18 primes; Guo–Sun improved
+it to ≥ 22. This project proved ≥ 4. Its other pillar — that 3 divides some
+modulus — is Hough–Nielsen. Every open item there was subsumed and has been
+closed.
+
+**What survived.** The unwrapping literature is empirical throughout; repeated
+searches found no theoretical recovery guarantee, which corroborates the
+original note that nothing bridges the applied and theoretical bodies of work.
+The tractable form of that gap is not the probabilistic threshold σ_MCF — that
+needs measure theory the engines cannot reach — but a deterministic
+certificate: a combinatorial, polynomial-time-checkable condition for the
+returned flow to be the unique L1 optimum. That is Q-2, and gen-37 onward.
+
+### The process lesson
+
+The memory on the covering thread read, verbatim, "NOT yet checked against the
+literature — this may well be a known result; needs review before any claim of
+novelty." It sat unactioned while thirty-six generations ran elsewhere. The
+check that retired the whole thread took ten minutes.
+
+A harness that verifies proofs cannot tell you whether the theorem is already
+known. That check is cheap, it is external, and it belongs at the START of a
+campaign — before the compute, not after the answer.
