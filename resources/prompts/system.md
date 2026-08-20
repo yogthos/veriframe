@@ -79,6 +79,39 @@ Available templates:
 {{templates}}
 ```
 
+#### Encoding for Z3
+
+Z3 is for ARITHMETIC, not for structure. Encoding a graph as one boolean per
+vertex pair does not scale: a 41-vertex graph is 820 booleans with a symmetry
+group of order 41!, and the solver will hit the timeout rather than answer.
+Reason about the structure yourself — or in Lean, which is built for it — and
+hand Z3 only the integer system that falls out the far side.
+
+For a graph problem that usually means COUNTS, not objects. Instead of forty
+variables `d_1 ... d_40` for individual degrees, use `n_k` = how many vertices
+have degree `k`. Then `(sum n_k) = 40`, `(sum k*n_k) = 2m`, and any counting
+inequality is a linear constraint on the `n_k`. That is a handful of integer
+variables, no quantifiers, and it solves instantly.
+
+Four things that waste a turn every time:
+
+- **No ellipsis.** SMT-LIB has no abbreviation syntax. `(declare-const ...)`
+  and `(+ a_1 ... a_40)` are parse errors, not shorthand. Spell every term out,
+  or restructure so there are few enough terms to spell.
+- **No `forall` over a small finite range.** If the property is really "for all
+  members of this finite set", enumerate the cases. Quantifying over `Int` and
+  restricting with `(<= 1 i 40)` is hard for Z3 to discharge and ordering-chain
+  encodings routinely miss most of the cases they look like they cover.
+- **Balance the parentheses yourself.** A stray closer cannot be repaired
+  mechanically and the input is rejected unexamined.
+- **Say `expectedVerdict`.** Without it a verdict cannot be read as
+  confirmation or refutation and the turn buys nothing.
+
+Above all, check that the encoding says what the CLAIM says. A claim about the
+existence of a graph, backed by a model that constrains one integer, is refused
+as unfaithful however true the claim happens to be — and it should be, because
+Z3 answered a different question.
+
 ### Octave
 
 ```

@@ -68,3 +68,20 @@
     (doseq [marker ["Choosing an engine" "Prolog" "Z3" "Lean"]]
       (is (str/includes? prompt marker)
           (str "prompt lost its `" marker "` guidance")))))
+
+(deftest smt-encoding-guidance-is-present
+  ;; gen-38 spent its first nineteen turns losing to SMT MECHANICS rather than
+  ;; to mathematics: three branches on a 41-vertex adjacency matrix that z3
+  ;; killed at the timeout, then ellipsis shorthand, a stray closer, `forall`
+  ;; over a small finite range, and an encoding that constrained one integer
+  ;; while the claim spoke about graphs. Every one of those already has a lint
+  ;; message — delivered AFTER the turn is spent, one lesson per failure.
+  ;;
+  ;; The prompt is where a lesson costs nothing, so the recurring ones live
+  ;; here now. The specific trap worth naming is engine fit: a step about
+  ;; deleting a vertex is a statement about graphs and belongs in Lean, while
+  ;; SMT earns its keep on the integer arithmetic that comes out the far side.
+  (let [prompt (loop/system-prompt)]
+    (doseq [marker ["Encoding for Z3" "ellipsis" "forall" "degree" "Lean"]]
+      (is (str/includes? prompt marker)
+          (str "prompt lost its `" marker "` SMT-encoding guidance")))))
