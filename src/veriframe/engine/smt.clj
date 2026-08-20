@@ -129,14 +129,18 @@
                  (not (re-find benign-error l))))
           lines))
 
-(defn run-smt
-  "Check `smtlib` with Z3.
-
-  Returns {:status :ok :verdict :sat|:unsat|:unknown :output s :model m} or
-  {:status :error :error s}."
-  ([smtlib] (run-smt smtlib nil))
+(defn- run-smt*
+  ([smtlib] (run-smt* smtlib nil))
   ([smtlib {:keys [bin timeout-ms] :or {bin "z3" timeout-ms default-timeout-ms}}]
-   (let [{:keys [ok warnings]} (lint/lint-smt smtlib)]
+   (let [{:keys [ok warnings repaired repair-note]} (lint/lint-smt smtlib)
+         ;; A delimiter imbalance the scanner can close mechanically is not
+         ;; worth a turn. 20 of the 31 historical lint rejections here were
+         ;; openers left unclosed at EOF; the other 11 were misplaced closers,
+         ;; which the scanner refuses to guess at and reports by line and
+         ;; column instead. The repair is re-scanned before it is used, and
+         ;; the note is surfaced so nothing is silently rewritten.
+         smtlib (or repaired smtlib)
+         ok (or ok (some? repaired))]
      (if-not ok
        {:status :error
         :error (str "SMT lint rejected the input — execution skipped:\n  • "
@@ -209,6 +213,25 @@
                         :verdict :sat
                         :output (str/trim out)
                         :model model}))))))))))))
+
+(defn run-smt
+  "Check `smtlib` with Z3.
+
+  Returns {:status :ok :verdict :sat|:unsat|:unknown :output s :model m} or
+  {:status :error :error s}, plus `:repair-note` when a delimiter imbalance
+  was closed mechanically on the way in.
+
+  A snippet whose only fault is unclosed parentheses is balanced and run
+  rather than refused: of the 31 lint rejections in this project's history,
+  20 were openers left open at EOF. The other 11 were MISPLACED closers,
+  which `repair-delimiters` refuses to guess at — appending never fixes one,
+  and a wrong guess would hand Z3 something that parses and means what the
+  branch did not write. Those still reject, now with a line and column."
+  ([smtlib] (run-smt smtlib nil))
+  ([smtlib opts]
+   (let [{:keys [repaired repair-note]} (lint/lint-smt smtlib)
+         res (run-smt* (or repaired smtlib) opts)]
+     (cond-> res repair-note (assoc :repair-note repair-note)))))
 
 ;; --- templates --------------------------------------------------------------
 

@@ -34,6 +34,175 @@
 (defn- paren-delta [s]
   (reduce (fn [d c] (case c \( (inc d) \) (dec d) d)) 0 s))
 
+;; --- delimiters --------------------------------------------------------------
+;;
+;; Ported from dirge's semantic/syntax_validator.rs. Two ideas carry over and
+;; both matter more than the counting itself.
+;;
+;; ONE PASS THAT KNOWS ABOUT COMMENTS AND STRINGS. The check this replaces was
+;; a net count over comment-stripped text, and it was wrong in both
+;; directions: `(assert (= s "a (b"))` is valid SMT-LIB and was rejected as
+;; depth 1 with the engine never run, while `(assert true))((assert false)`
+;; nets to zero and was passed through to fail inside Z3 with a worse message.
+;;
+;; UNCLOSED IS NOT THE SAME AS STRAY. Openers still on the stack at EOF can be
+;; closed mechanically by appending. A closer that arrives with nothing open
+;; cannot — appending never fixes a misplaced delimiter, and guessing would
+;; hand the engine a snippet that parses and means something the branch never
+;; wrote. dirge draws that line and so does this.
+
+(defn- skip-line-comment
+  "Index just past the newline ending a `;` comment at `i`, or the end."
+  [s i n]
+  (let [nl (str/index-of s "\n" i)]
+    (if nl nl n)))
+
+(defn- skip-string
+  "Index just past the closing quote of the string literal starting at `i`,
+  or nil when it never closes. SMT-LIB escapes a quote by doubling it."
+  [s i n]
+  (loop [j (inc i)]
+    (cond
+      (>= j n) nil
+      (not= (nth s j) \") (recur (inc j))
+      (and (< (inc j) n) (= (nth s (inc j)) \")) (recur (+ j 2))
+      :else (inc j))))
+
+(defn- skip-quoted-symbol
+  "Index just past the closing `|`, or nil. Raw: no escapes, may span lines."
+  [s i n]
+  (when-let [close (str/index-of s "|" (inc i))]
+    (when (< close n) (inc close))))
+
+(defn- newlines-in [s a b]
+  (count (filter #(= % \newline) (subs s a b))))
+
+(defn scan-delimiters
+  "One comment-, string- and quoted-symbol-aware pass over s-expression text.
+
+  Returns `{:balance :balanced}`, `{:balance :unclosed :depth n}`,
+  `{:balance :stray :line l :col c}` for a closer arriving with nothing open,
+  or `{:balance :unterminated :what :string|:symbol :line l}`.
+
+  SMT-LIB lexical rules: `;` to end of line, `\"…\"` with a doubled quote as
+  the escape, and `|…|` quoted symbols, which are raw and may span lines."
+  [s]
+  (let [s (str s)
+        n (count s)]
+    (loop [i 0, line 1, col 1, depth 0, swallowed []]
+      (if (>= i n)
+        (if (pos? depth)
+          {:balance :unclosed :depth depth :swallowed swallowed}
+          {:balance :balanced})
+        (let [c (nth s i)]
+          (cond
+            (= c \newline) (recur (inc i) (inc line) 1 depth swallowed)
+
+            (= c \;) (let [j (skip-line-comment s i n)]
+                       (recur j line (+ col (- j i)) depth swallowed))
+
+            (= c \")
+            (if-let [j (skip-string s i n)]
+              (let [nls (newlines-in s i j)]
+                (recur j (+ line nls) (if (pos? nls) 1 (+ col (- j i))) depth swallowed))
+              {:balance :unterminated :what :string :line line})
+
+            (= c \|)
+            (if-let [j (skip-quoted-symbol s i n)]
+              (let [nls (newlines-in s i j)]
+                (recur j (+ line nls) (if (pos? nls) 1 (+ col (- j i))) depth swallowed))
+              {:balance :unterminated :what :symbol :line line})
+
+            (= c \()
+            (recur (inc i) line (inc col) (inc depth)
+                   ;; A top-level form starts at column 1 by universal
+                   ;; s-expression convention, so a `(` there while something
+                   ;; is still open is a form an earlier one swallowed. This
+                   ;; is where a missing closer belongs — dirge-u05r.
+                   (if (and (= col 1) (pos? depth))
+                     (conj swallowed {:index i :line line :depth depth})
+                     swallowed))
+
+            (= c \)) (if (zero? depth)
+                       {:balance :stray :line line :col col}
+                       (recur (inc i) line (inc col) (dec depth) swallowed))
+
+            :else (recur (inc i) line (inc col) depth swallowed)))))))
+
+(defn repair-delimiters
+  "Balance `s` mechanically, or nil when that cannot be done safely.
+
+  Two conservative moves, each re-scanned before being returned: append the
+  missing closers when openers are left at EOF, or drop trailing closers when
+  the text over-closes at the end. A MISPLACED closer, an unterminated string
+  or symbol, and already-balanced text all return nil — there is nothing safe
+  to do, and a wrong guess is worse than a refusal because the result would
+  parse."
+  [s]
+  (let [s (str s)
+        scan (scan-delimiters s)]
+    (case (:balance scan)
+      :unclosed
+      ;; Prefer closing at the point a top-level form was swallowed. Appending
+      ;; at the end balances the text and can change what it MEANS: with
+      ;; `(assert (> x 5)` left open, a closer at the end turns the following
+      ;; `(check-sat)` into an argument of the assert. Z3 then errors on text
+      ;; the harness produced, which is worse than the original refusal.
+      (let [raw (:swallowed scan)
+            ;; Each recorded depth is CUMULATIVE, so closing `depth` at every
+            ;; point would over-close: the second swallow at depth 2 needs one
+            ;; closer, not two, because the first already shut one. Successive
+            ;; differences give what each point actually owes.
+            ins (->> raw
+                     (reduce (fn [{:keys [prev out]} sw]
+                               {:prev (:depth sw)
+                                :out (conj out (assoc sw :close (- (:depth sw) prev)))})
+                             {:prev 0 :out []})
+                     :out
+                     (filter #(pos? (:close %)))
+                     vec)
+            ;; Right to left, so earlier offsets stay valid.
+            patched (reduce (fn [t {:keys [index close]}]
+                              (str (str/trimr (subs t 0 index))
+                                   (str/join (repeat close ")"))
+                                   "\n"
+                                   (subs t index)))
+                            s
+                            (reverse ins))
+            closed (fn [t] (let [d (:depth (scan-delimiters t))]
+                             (if d (str (str/trimr t) (str/join (repeat d ")"))) t)))
+            candidates (cond-> [(closed patched)]
+                         (empty? ins) (conj (closed s)))
+            fixed (first (filter #(= :balanced (:balance (scan-delimiters %)))
+                                 candidates))]
+        (when fixed
+          {:text fixed
+           :note (if (seq ins)
+                   (str "auto-closed " (count ins) " form(s) that had swallowed the"
+                        " top-level form beginning on line "
+                        (str/join ", " (map :line ins))
+                        ". If that placement is wrong, resend the corrected text.")
+                   (str "auto-closed " (:depth scan) " unclosed parenthesis(es) at the"
+                        " end. If that placement is wrong, resend the corrected text."))}))
+
+      :stray
+      ;; Only a TRAILING over-close is safe to trim: peel `)` and whitespace
+      ;; off the end and see whether that balances it. A stray closer in the
+      ;; middle survives this and correctly yields nil.
+      (loop [t (str/trimr s), removed 0]
+        (cond
+          (or (str/blank? t) (> removed 64)) nil
+          (= :balanced (:balance (scan-delimiters t)))
+          (when (pos? removed)
+            {:text t
+             :note (str "auto-removed " removed " extra trailing closing"
+                        " parenthesis(es) to balance the input."
+                        " If that placement is wrong, resend the corrected text.")})
+          (str/ends-with? t ")") (recur (str/trimr (subs t 0 (dec (count t)))) (inc removed))
+          :else nil))
+
+      nil)))
+
 ;; --- SMT-LIB ----------------------------------------------------------------
 
 (defn strip-smt-comments
@@ -47,7 +216,13 @@
 (def ^:private smt-decl-tokens
   ["assert" "declare-fun" "declare-const" "declare-sort" "define-fun"])
 
-(defn lint-smt [smtlib]
+(defn lint-smt
+  "Lint an SMT-LIB snippet.
+
+  `{:ok bool :warnings [...]}`, plus `:repaired <text>` when the ONLY thing
+  wrong is a mechanically closable delimiter imbalance. The caller decides
+  whether to use it; the lint never silently rewrites what a branch wrote."
+  [smtlib]
   (let [trimmed (str/trim (or smtlib ""))]
     (if (str/blank? trimmed)
       (result ["SMT-LIB input is empty."])
@@ -66,10 +241,23 @@
                              " ignored by Z3. Put each statement on its own line, or end"
                              " the comment with a newline before further code.")))))
 
-        (let [d (paren-delta stripped)]
-          (when-not (zero? d)
-            (conj! ws (str "Unbalanced parentheses after stripping comments (depth "
-                           d "). Open and close counts don't match."))))
+        ;; scan-delimiters, not a net count over comment-stripped text: the
+        ;; latter rejected `(assert (= s "a (b"))` — valid, the paren is
+        ;; inside a string — and passed `(assert true))((assert false)`,
+        ;; which nets to zero and is broken. Ported from dirge.
+        (let [scan (scan-delimiters smtlib)]
+          (case (:balance scan)
+            :unclosed
+            (conj! ws (str (:depth scan) " parenthesis(es) are never closed."))
+            :stray
+            (conj! ws (str "A `)` at line " (:line scan) ", column " (:col scan)
+                           " closes nothing. A misplaced closer cannot be repaired"
+                           " mechanically — appending never fixes one — so check the"
+                           " nesting there yourself."))
+            :unterminated
+            (conj! ws (str "An unterminated " (name (:what scan)) " starts on line "
+                           (:line scan) "."))
+            nil))
 
         (if (str/blank? (str/trim stripped))
           (conj! ws "All SMT-LIB content was inside comments; nothing to check.")
@@ -120,7 +308,15 @@
                                  " (i <= j <= k <= l) routinely miss most cases. Enumerate"
                                  " the pairs explicitly with (distinct ...) instead.")))))))
 
-        (result (persistent! ws))))))
+        (let [warnings (persistent! ws)
+              ;; Offered only when the imbalance is the ONE thing wrong. If a
+              ;; `;` also ate a form, balancing the parens would hide it
+              ;; behind a snippet that now parses.
+              repair (when (= 1 (count warnings))
+                       (when (re-find #"never closed|extra trailing" (first warnings))
+                         (repair-delimiters smtlib)))]
+          (cond-> (result warnings)
+            repair (assoc :repaired (:text repair) :repair-note (:note repair))))))))
 
 ;; --- Prolog -----------------------------------------------------------------
 

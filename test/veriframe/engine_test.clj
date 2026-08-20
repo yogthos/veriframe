@@ -1010,6 +1010,109 @@ sidon(S) :- sums(S, Sums), sort(Sums, Sorted), length(Sums, N), length(Sorted, N
     (is (not (:ok (lint/lint-lean "theorem t : True := by sorry")))
         "and sorry is still refused")))
 
+(deftest delimiters-are-scanned-not-counted
+  ;; Ported from dirge's syntax_validator. The old check was
+  ;; (reduce (fn [d c] (case c \( (inc d) \) (dec d) d)) 0 s) over
+  ;; comment-stripped text, which is wrong in both directions.
+  (testing "a paren inside a string literal is not a delimiter"
+    ;; The old net count rejected this valid snippet as depth 1 and the
+    ;; engine was never run.
+    (is (= :balanced (:balance (lint/scan-delimiters "(assert (= s \"a (b\"))"))))
+    (is (= :balanced (:balance (lint/scan-delimiters "(assert (= s \"b)\"))")))))
+
+  (testing "SMT-LIB escapes a quote by doubling it"
+    (is (= :balanced (:balance (lint/scan-delimiters "(assert (= s \"a\"\"b\"))")))))
+
+  (testing "a paren inside a |quoted symbol| is not a delimiter"
+    (is (= :balanced (:balance (lint/scan-delimiters "(declare-const |odd (x)| Int)")))))
+
+  (testing "a paren inside a ; comment is not a delimiter"
+    (is (= :balanced (:balance (lint/scan-delimiters "(assert true) ; ((( unclosed\n")))))
+
+  (testing "openers left at EOF are reported with their count"
+    (let [r (lint/scan-delimiters "(assert (= 1 1)")]
+      (is (= :unclosed (:balance r)))
+      (is (= 1 (:depth r))))
+    (is (= 3 (:depth (lint/scan-delimiters "(a (b (c")))))
+
+  (testing "a stray closer is NOT the same as unclosed, however the net comes out"
+    ;; The old net count called this balanced and passed it to Z3, which
+    ;; failed with a worse message.
+    (let [r (lint/scan-delimiters "(assert true))((assert false)")]
+      (is (= :stray (:balance r))))
+    (is (= :stray (:balance (lint/scan-delimiters ")(")))))
+
+  (testing "an unterminated string or symbol is reported, not silently balanced"
+    (is (= :unterminated (:balance (lint/scan-delimiters "(assert \"open"))))
+    (is (= :unterminated (:balance (lint/scan-delimiters "(assert |open"))))))
+
+(deftest an-imbalance-that-can-be-closed-mechanically-is
+  (testing "missing closers are appended"
+    (let [r (lint/repair-delimiters "(assert (= 1 1)")]
+      (is (= "(assert (= 1 1))" (:text r)))
+      (is (re-find #"(?i)clos" (:note r)))
+      (is (= :balanced (:balance (lint/scan-delimiters (:text r)))))))
+
+  (testing "several missing closers"
+    (is (= "(a (b (c)))" (:text (lint/repair-delimiters "(a (b (c")))))
+
+  (testing "the closer goes where the swallowed form starts, not at the end"
+    ;; Appending blindly balances the text and changes its meaning: with
+    ;; `(assert (> x 5)` left open, a closer at the end makes `(check-sat)`
+    ;; an ARGUMENT of the assert. A `(` at column 1 while already nested is
+    ;; a top-level form something earlier swallowed — dirge's signal.
+    (let [src "(declare-const x Int)\n(assert (> x 5)\n(check-sat)\n"
+          r (lint/repair-delimiters src)]
+      (is (= :balanced (:balance (lint/scan-delimiters (:text r)))))
+      (is (str/includes? (:text r) "(assert (> x 5))")
+          "the assert is closed on its own line")
+      (is (not (str/includes? (:text r) "(check-sat))"))
+          "and check-sat is not swallowed into it")))
+
+  (testing "two swallowed forms are each closed in place"
+    (let [r (lint/repair-delimiters
+             "(assert (> x 5)\n(assert (< y 2)\n(check-sat)\n")]
+      (is (= :balanced (:balance (lint/scan-delimiters (:text r)))))
+      (is (str/includes? (:text r) "(assert (> x 5))"))
+      (is (str/includes? (:text r) "(assert (< y 2))"))))
+
+  (testing "trailing over-close is trimmed"
+    (let [r (lint/repair-delimiters "(assert true)))")]
+      (is (= "(assert true)" (:text r)))
+      (is (= :balanced (:balance (lint/scan-delimiters (:text r)))))))
+
+  (testing "a MISPLACED closer is refused — appending cannot fix it"
+    ;; This is the line dirge draws and the reason the scan distinguishes
+    ;; stray from unclosed: guessing here would produce a snippet that
+    ;; parses and means something the branch never wrote.
+    (is (nil? (lint/repair-delimiters "(assert true))((assert false)"))))
+
+  (testing "balanced text is left alone"
+    (is (nil? (lint/repair-delimiters "(assert true)"))))
+
+  (testing "an unterminated string is not repaired by adding parens"
+    (is (nil? (lint/repair-delimiters "(assert \"open"))))
+
+  (testing "the repair never invents content inside a string or comment"
+    (let [r (lint/repair-delimiters "(assert true) ; trailing ((( comment\n(check-sat")]
+      (is (= :balanced (:balance (lint/scan-delimiters (:text r)))))
+      (is (str/includes? (:text r) "((( comment")))))
+
+(deftest a-repairable-smt-imbalance-does-not-block-the-engine
+  (testing "lint reports it as repairable and says what it would do"
+    (let [r (lint/lint-smt "(assert (= 1 1)\n(check-sat)")]
+      (is (false? (:ok r)))
+      (is (some? (:repaired r)) "the balanced text comes back with the verdict")
+      (is (= :balanced (:balance (lint/scan-delimiters (:repaired r)))))))
+
+  (testing "a misplaced closer stays a hard reject with no repair offered"
+    (let [r (lint/lint-smt "(assert true))((assert false)\n(check-sat)")]
+      (is (false? (:ok r)))
+      (is (nil? (:repaired r)))))
+
+  (testing "a paren in a string no longer trips the lint at all"
+    (is (:ok (lint/lint-smt "(assert (= s \"a (b\"))\n(check-sat)")))))
+
 (deftest a-statement-that-asserts-True-proves-nothing
   ;; gen-30 a#832, banked CONFIRMED:
   ;;
