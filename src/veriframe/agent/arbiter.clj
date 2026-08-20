@@ -142,10 +142,17 @@
                    ;; that had not happened. A settling that can be wrong in
                    ;; THIS direction is worse than one that is blind, because
                    ;; the met-rate is the only evidence the reframe works.
-                   ;; Known soft spot: octave_eval carries no claim and is
-                   ;; never refused, so it reads as compliance on its own.
+                   ;; That soft spot was octave_eval, which carries no claim
+                   ;; and is never refused; it is excluded below, and the set
+                   ;; is named for the property rather than the exception so
+                   ;; the next claim-less tool inherits the reasoning.
+                   ;; refusable-verification-tools, not verification-tools:
+                   ;; the clause's whole argument is that an accepted call must
+                   ;; be on a different claim BECAUSE the withheld one would
+                   ;; have been refused. A call carrying no claim cannot be
+                   ;; refused, so its acceptance argues nothing (vf-7uy).
                    (and (:reframe-entered-turn branch-after)
-                        (some (set tools-called) state/verification-tools)
+                        (some (set tools-called) state/refusable-verification-tools)
                         (zero? (or (:consecutive-mechanics-failures branch-after) 0))))
         ;; Its prediction is "the branch retracts, changes technique, or ships
         ;; what it has", and each of those is a tool the harness can see.

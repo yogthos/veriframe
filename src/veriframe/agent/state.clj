@@ -285,6 +285,30 @@
   #{"verify" "verify_smt" "verify_lean" "verify_octave" "verify_template"
     "proof_start" "proof_step" "measure" "octave_eval"})
 
+(def refusable-verification-tools
+  "The verification tools a reframe can actually refuse: the ones that carry a
+  CLAIM.
+
+  `reframe-refusal` withholds a claim, not a tool, so a call with no claim
+  cannot be declined however long the reframe stands. `octave_eval` is the
+  only such tool — `measure` takes a claim, and `proof_step` inherits the open
+  proof's, which reframe-refusal reads explicitly.
+
+  This exists because the stuck gate's settle credits compliance when a
+  verification call gets through while the reframe stands, on the reasoning
+  that the withheld claim would have been refused so anything accepted must be
+  a different one. That reasoning is sound for a refusable call and vacuous
+  for the rest. tools.clj carried the hole as a comment — \"known soft spot:
+  octave_eval carries no claim and is never refused, so it reads as compliance
+  on its own\" — and gen-35 B1 then settled met twice on precisely it, turns
+  50 and 52, each a bare octave_eval with no progress, no retraction and no
+  change of technique, while it reworded the withheld claim and retried it
+  (vf-7uy).
+
+  The general principle, and the one the agent-evaluation literature states
+  directly: never credit a step that could not have failed."
+  (disj verification-tools "octave_eval"))
+
 (def lean-verification-tools
   "The subset of `verification-tools` that a Lean sketch can stand in for.
 

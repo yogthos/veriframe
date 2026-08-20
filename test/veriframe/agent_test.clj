@@ -2145,6 +2145,47 @@
             (is (= :failure (:category r))
                 "line 5 is the branch's own first line, not the citation's")))))))
 
+(deftest a-call-that-could-not-have-been-refused-is-not-compliance
+  ;; vf-7uy. The stuck clause credits compliance when a verification call gets
+  ;; through while the reframe stands, reasoning that the withheld claim would
+  ;; have been refused, so anything accepted is a different one. That holds
+  ;; only for a call the reframe COULD refuse — one carrying a claim.
+  ;; `octave_eval` carries none, so it is never refused and its acceptance
+  ;; proves nothing. tools.clj flagged this in a comment as a known soft spot;
+  ;; gen-35 B1 then settled met twice on exactly it, at turns 50 and 52, both
+  ;; a bare octave_eval with no progress, no retraction and no change of
+  ;; technique — while the withheld claim was reworded and retried.
+  (let [after {:reframe-entered-turn 40 :consecutive-mechanics-failures 0}
+        fire (fn [tools]
+               (arbiter/settle {:gate :stuck :turn 41 :window 3}
+                               {:current-turn 42 :tools-called tools
+                                :branch-before {} :branch-after after}))]
+    (testing "a bare octave_eval no longer reads as compliance"
+      (is (not= :met (fire ["octave_eval"]))))
+
+    (testing "a claim-carrying verification still does"
+      (is (= :met (fire ["verify_octave"])))
+      (is (= :met (fire ["verify_lean"])))
+      (is (= :met (fire ["verify_smt"]))))
+
+    (testing "proof_step counts — its claim is the open proof's, and the
+              reframe refuses it on that basis"
+      (is (= :met (fire ["proof_step"]))))
+
+    (testing "measure counts — it takes a claim and is refusable"
+      (is (= :met (fire ["measure"]))))
+
+    (testing "octave_eval alongside a refusable call is still compliance"
+      (is (= :met (fire ["octave_eval" "verify_octave"]))))
+
+    (testing "the other routes to met are untouched"
+      (is (= :met (arbiter/settle {:gate :stuck :turn 41 :window 3}
+                                  {:current-turn 42 :tools-called ["thesis"]
+                                   :branch-before {} :branch-after {}})))
+      (is (= :met (arbiter/settle {:gate :stuck :turn 41 :window 3}
+                                  {:current-turn 42 :tools-called ["retract_rule"]
+                                   :branch-before {} :branch-after {}}))))))
+
 (deftest a-proof-can-step-back-to-any-earlier-state
   ;; vf-w8e. The only retreat was proof_abandon, which drops the whole proof.
   ;; A FAILED tactic is harmless — the state is unchanged — but a SUCCESSFUL
