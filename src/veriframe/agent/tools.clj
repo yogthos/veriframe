@@ -1674,6 +1674,43 @@
                           :reason (str "review returned " (name (:verdict j))
                                        (patchable-suffix (:minors j)))}}))))))))
 
+(def audit-verdict-rules
+  "What the audit judge is told to fail on, and the one exception.
+
+  The exception exists because the rung 'FAIL if the answer asserts anything
+  no artifact covers' is unsatisfiable for an attributed step: an external
+  theorem has no artifact, which is what makes it external. gen-36 B2.2 was
+  refused with 'rests on a cited external algorithm that no confirmed artifact
+  proves or verifies' — correct under that rung, and fatal to a problem
+  statement that explicitly authorises attribution. Three generations reached
+  that point and none could get past it (vf-zk2).
+
+  Written narrowly on purpose. The difference between 'polynomial time, by
+  [named result], whose hypotheses are established by [declarations]' and
+  'polynomial time' is the entire point, and 27 inherited artifacts in this
+  project assert the latter."
+  (str "\n\nAnswer FAIL if the artifacts verify only instances of a claim"
+       " stated universally, if the proposed answer asserts anything no"
+       " artifact covers, or if the thesis and the evidence are about"
+       " different things. Answer PASS only if the evidence establishes"
+       " the answer as stated."
+       "\n\nONE EXCEPTION, for a step resting on an EXTERNAL RESULT. A problem"
+       " statement may authorise attributing a step rather than proving it —"
+       " a standard theorem from the literature, which by construction has no"
+       " artifact here. Such a step is acceptable, and NOT a case of asserting"
+       " something no artifact covers, when all three hold:"
+       "\n  (a) the answer NAMES the specific result and states what it asserts;"
+       "\n  (b) the answer says plainly that it is attributed, not proved here;"
+       "\n  (c) every hypothesis that result requires is covered by a confirmed"
+       " artifact or by the problem's own givens, and the answer says which."
+       "\nIt remains a FAIL if the answer names nothing and simply asserts the"
+       " conclusion; if it names a result whose hypotheses it does not show are"
+       " met, or whose hypotheses do not match what was proved; or if it"
+       " attributes something the problem asked to be PROVED rather than cited."
+       " Judge the fit yourself: a result about continuous variables does not"
+       " carry an integer problem, and a theorem stated for a restricted class"
+       " does not apply until the answer shows its case is in that class."))
+
 (defmethod run-tool "audit" [{:keys [branch] :as ctx}]
   (cond
     (missing ctx :claim :proposedAnswer)
@@ -1753,11 +1790,7 @@
                         " is the largest claim an answer can make, and it is the"
                         " one this list will not catch, because its words all come"
                         " from the problem statement."))
-                 "\n\nAnswer FAIL if the artifacts verify only instances of a claim"
-                 " stated universally, if the proposed answer asserts anything no"
-                 " artifact covers, or if the thesis and the evidence are about"
-                 " different things. Answer PASS only if the evidence establishes"
-                 " the answer as stated."
+                 audit-verdict-rules
                  ;; gen-33 shipped "Q-1 is settled." on evidence for one lemma of
                  ;; the correctness chain. The judge passed it GAPS: none and then
                  ;; wrote an ESTABLISHED line scoped strictly to that lemma — it

@@ -2145,6 +2145,29 @@
             (is (= :failure (:category r))
                 "line 5 is the branch's own first line, not the citation's")))))))
 
+(deftest the-audit-is-told-how-to-weigh-an-attributed-result
+  ;; vf-zk2. The rung is "FAIL if the answer asserts anything no artifact
+  ;; covers", and an external theorem has no artifact by construction. So an
+  ;; answer whose last step is attributed could never ship, however correctly
+  ;; it named the result and however completely its hypotheses were
+  ;; discharged. gen-36 B2.2 turn 35: "rests on a cited external algorithm
+  ;; that no confirmed artifact proves or verifies, so the answer claims more
+  ;; than the evidence establishes." Correct under the old rung, and fatal to
+  ;; a problem statement that explicitly authorises attribution.
+  ;;
+  ;; The prompt must now distinguish three things, and the narrowness is the
+  ;; point: a NAMED result with its hypotheses covered is acceptable; a bare
+  ;; assertion with nothing named is not; and attribution must not be used to
+  ;; carry what the problem asked to be proved.
+  (let [p tools/audit-verdict-rules]
+    (is (re-find #"(?i)external result" p)
+        "the judge is told external results exist as a category")
+    (is (re-find #"(?i)named|names" p))
+    (is (re-find #"(?i)hypothes" p)
+        "and that the hypotheses must be covered by confirmed artifacts")
+    (is (re-find #"(?i)without naming|names nothing|no named" p)
+        "and that an unnamed assertion is still a failure")))
+
 (deftest the-audit-sees-what-the-rest-of-the-run-proved
   ;; vf-u7p. `done`'s coverage rung already accepts a sibling's confirmed
   ;; artifacts — same run, same database, same engines (vf-b9c). The audit did
