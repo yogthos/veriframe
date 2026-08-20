@@ -642,3 +642,56 @@ stands after gen-33 is: the first half of the correctness chain is proved and
 independently verified end to end, by citation rather than by retyping; the
 second half rests on three surviving artifacts and seven rotten ones; and the
 complexity question the problem actually asks has not been touched.
+
+## gen-35: the reduction closed, and a run that shipped less than it knew
+
+Run `4e3ace4f`, deepseek-v4-flash with reasoning, 440 turns, seeded from
+gen-34 with a corpus that compiles. Nine theorems, each re-elaborated in a
+fresh Lean session with `#print axioms` clean:
+
+  `stage2_optimal_exists` — a stage-2 optimum exists whenever a feasible flow
+  does. By well-ordering, not by finiteness: `C ≥ 0` for `w ≥ 0`, so achievable
+  costs live in ℕ and `Nat.find` takes the least; then again for `Q`. No box,
+  no coercivity, over the infinite feasible set.
+
+  `support_bound_box` — every stage-2 optimum lies in `|k e| ≤ S`.
+  `box_faithful_no_k2_corrected_lex` — the selection over all feasible flows
+  equals the selection over the box, with no existence binder.
+
+  `scalarized_min_iff_three_stage` — over the boxed flows, minimising
+  `M1·C + M2·Q + kᵢ` is EQUIVALENT to the three-stage selection, both
+  directions. `prefix_scalarization_iff` — the same under prefix restriction.
+  `prefix_minima_imply_lex_least` — prefix minima give full lexicographic
+  minimality, which is stage 3 in its real form. That one needs only
+  `propext` and `Quot.sound`.
+
+  `prefix_obj_separable` and `prefix_coord_cost_discrete_convex` — the
+  objective is a sum of per-coordinate costs, each discretely convex.
+
+Together: the three-stage flow exists, lies in a box, and is exactly the
+minimiser of one separable convex objective over the integer flows in that
+box, with every coefficient of `O(log V + log B)` bits.
+
+### What it shipped, and why that is less
+
+One lemma, with an honest list of what it did not settle — including two
+things the run HAD proved, in other branches. The audit accepted only
+in-branch evidence while `done`'s coverage rung had accepted siblings since
+vf-b9c, so a branch wanting to ship had to re-prove the chain locally first.
+Turns 62–80 are three branches doing that in parallel, and the one that
+finished copying first held the smallest chain. The answer was bounded by the
+weakest assembler rather than by what the run knew (vf-u7p, fixed).
+
+The scope discipline itself was right, and is the opposite of gen-33's
+"Q-1 is settled" on a lemma. Under-claiming is a second kind of inaccuracy,
+but it is the recoverable kind.
+
+### What is still open
+
+The complexity claim, and it is not a theorem. Minimising a separable convex
+objective over integer flows with prescribed divergence and box bounds is the
+separable convex integer min-cost-flow problem, solvable in time polynomial in
+the node count, arc count and bit lengths by scaling. Naming that result and
+checking its hypotheses against the objective already built is what finishes
+Q-1. Branches repeatedly treated it as another Lean lemma to find; a Lean
+proof of a running time needs a model of computation Lean does not have.
