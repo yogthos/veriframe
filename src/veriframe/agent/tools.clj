@@ -1691,6 +1691,23 @@
     (let [claim (arg ctx :claim)
           answer (arg ctx :proposedAnswer)
           confirmed (state/confirmed-artifacts branch)
+          ;; What the REST of the run confirmed, too. `done`'s coverage rung
+          ;; has accepted a sibling's confirmed artifacts since vf-b9c — same
+          ;; run, same database, same engines — and the audit being stricter
+          ;; than the gate it guards is what forced gen-35 into triplication:
+          ;; it refused a converse "asserted via sibling-branch artifacts",
+          ;; three branches spent turns 62-80 re-proving one chain locally,
+          ;; and the branch that shipped was the one with the SMALLEST local
+          ;; chain. A run that had proved the whole reduction shipped one
+          ;; lemma of it (vf-u7p).
+          ;;
+          ;; Marked as from another branch rather than merged in silently: an
+          ;; engine-verified result is evidence wherever it was produced, but
+          ;; the judge should weigh provenance itself rather than be told
+          ;; everything is local.
+          elsewhere (when (and (:conn ctx) (:run-id ctx))
+                      (journal/corroborating-artifacts
+                       (:conn ctx) (:run-id ctx) (:id branch)))
           ;; The lexical check, handed over rather than enforced. It cannot
           ;; tell an unsupported assertion from ordinary English, and the
           ;; done gate refusing on it stranded eleven audited answers in one
@@ -1712,6 +1729,16 @@
                  (str/join "\n" (for [a confirmed]
                                   (str "- [" (name (:kind a)) "/" (name (:tier a)) "] "
                                        (:claim a))))
+                 (when (seq elsewhere)
+                   (str "\n\nCONFIRMED ELSEWHERE IN THIS RUN, by another branch ("
+                        (count elsewhere) "). Engine-verified in this run and this"
+                        " database, so they are evidence; weigh them as you would the"
+                        " branch's own, and say so if an answer leans on one for its"
+                        " central claim:\n"
+                        (str/join "\n" (for [a elsewhere]
+                                          (str "- [" (:branch_id a) " "
+                                               (str (:kind a)) "/" (str (:tier a)) "] "
+                                               (:claim a))))))
                  (when (seq flagged)
                    (str "\n\nThese words appear in the proposed answer and in no"
                         " artifact: " (str/join ", " (map #(str "`" % "`") (take 12 flagged)))

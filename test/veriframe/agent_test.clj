@@ -2145,6 +2145,45 @@
             (is (= :failure (:category r))
                 "line 5 is the branch's own first line, not the citation's")))))))
 
+(deftest the-audit-sees-what-the-rest-of-the-run-proved
+  ;; vf-u7p. `done`'s coverage rung already accepts a sibling's confirmed
+  ;; artifacts — same run, same database, same engines (vf-b9c). The audit did
+  ;; not, so it refused answers resting on results the run genuinely held, and
+  ;; a branch wanting to ship had to re-prove everything locally first.
+  ;;
+  ;; gen-35 is what that costs. The audit told B1.2.2 at turn 61 that the
+  ;; converse was "asserted via sibling-branch artifacts a#947/a#949" and
+  ;; refused; turns 62-80 are three branches each re-proving the same chain.
+  ;; The branch that reached done first held the SMALLEST local chain, so a
+  ;; run that had proved the entire reduction shipped one lemma of it and
+  ;; listed the rest as "not settled".
+  (with-db [c]
+    (let [rid (runs/start-run! c {:problem "p"})
+          b (assoc (state/new-branch {:id "B1" :problem "p"})
+                   ;; the audit refuses without a thesis to check scope against
+                   :thesis {:goal "prove the derived bound for every integer n"
+                            :technique "composition" :subClaims []})]
+      (runs/open-branch! c rid {:branch-id "B1"})
+      (runs/open-branch! c rid {:branch-id "B2"})
+      (journal/record-artifact! c rid
+        {:branch-id "B2" :turn 1 :kind :lean :claim "the sibling proved the converse"
+         :code "theorem sib : True := by trivial" :claim-status :confirmed})
+      (let [seen (atom nil)]
+        (with-redefs [llm/chat (fn [_ _ msgs _]
+                                 (reset! seen (str (:content (last msgs))))
+                                 {:content "GAPS: none\nVERDICT: PASS"})]
+          (tools/run-tool
+           {:branch b :conn c :run-id rid :turn 3 :tool-name "audit"
+            :args {:claim "every integer n satisfies the derived bound"
+                   :proposedAnswer "the derived bound holds for every integer n"}}))
+        (is (some? @seen))
+        (is (str/includes? @seen "the sibling proved the converse")
+            "a confirmed artifact from elsewhere in the run is evidence the audit
+             must see — it is engine-verified by construction")
+        (is (re-find #"(?i)another branch|sibling|elsewhere in (the|this) run" @seen)
+            "and it must be marked as from another branch, so the judge can
+             weigh provenance rather than being quietly told it is local")))))
+
 (deftest a-call-that-could-not-have-been-refused-is-not-compliance
   ;; vf-7uy. The stuck clause credits compliance when a verification call gets
   ;; through while the reframe stands, reasoning that the withheld claim would
