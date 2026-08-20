@@ -151,6 +151,12 @@
                   ;; default: shared lemmas may cost the beam its diversity, and
                   ;; whether they earn it is exactly what sweep-widths measures.
                   :share-artifacts? (= "1" (env "HARNESS_SHARE_ARTIFACTS"))
+                  ;; Per-branch method priors. On by default, and switchable
+                  ;; precisely because it is an experiment: the effect claimed
+                  ;; for it is branch DIVERSITY, which is measurable (share of
+                  ;; branches opening on the same verification tool), and a
+                  ;; claim nobody can turn off is a claim nobody can test.
+                  :personas? (not= "0" (or (env "HARNESS_PERSONAS") "1"))
                   ;; Winner-takes-all: the first verified `done` ends the run.
                   ;; Right for a question with one answer, wrong for a research
                   ;; campaign, where it returns the cheapest qualifying result

@@ -20,6 +20,8 @@
             [clojure.test :refer [deftest testing is are]]
             [veriframe.agent.arbiter :as arbiter]
             [veriframe.agent.beam :as beam]
+            [veriframe.config :as config]
+            [veriframe.agent.personas :as personas]
             [veriframe.agent.claims :as claims]
             [veriframe.agent.consensus :as consensus]
             [veriframe.agent.critic :as critic]
@@ -6669,3 +6671,87 @@
         (is (not= :success (:category r)) "and it is not recorded as a confirmation")
         (is (re-find #"(?i)True" (:result r))
             "the branch is told why: the statement says nothing")))))
+
+;; ---------------------------------------------------------------------------
+;; Method priors (personas) — vf-per
+;; ---------------------------------------------------------------------------
+
+(deftest method-priors-are-distinct-and-cover-the-beam
+  ;; Measured motivation, not a guess: across 29 runs with a beam of 3 or more,
+  ;; 64% of branches on average opened with the SAME first verification tool,
+  ;; and in 21% of runs every branch did. gen-38 was the degenerate case — all
+  ;; five branches independently encoded a 41-vertex adjacency matrix as 820
+  ;; SMT booleans and all of them were killed on the solver timeout. A beam
+  ;; that explores one thing five times is paying five times for one search.
+  ;;
+  ;; The literature is specific about what does and does not work here.
+  ;; Zheng et al. (EMNLP Findings 2024) tested 162 personas over 2,410 factual
+  ;; questions and found identity personas do not improve accuracy and
+  ;; sometimes hurt it; the follow-up retrieval study concludes role prompting
+  ;; "reshapes how models communicate expertise rather than improving
+  ;; underlying capability". What the multi-agent work credits is DIVERSITY of
+  ;; reasoning path. So these carry a METHOD, not a job title: what to reach
+  ;; for first, what to distrust, what counts as progress.
+  (let [ps personas/personas]
+    (is (<= 5 (count ps)) "at least one per branch of a default beam of five")
+    (is (apply distinct? (map :name ps)))
+    (is (apply distinct? (map :method ps)))
+    (doseq [p ps]
+      (is (str/includes? (:method p) "first")
+          (str (:name p) " must say what it reaches for FIRST — a prior on"
+               " method is the whole point; a job title is not"))
+      (is (< 100 (count (:method p)))
+          (str (:name p) " is too thin to change behaviour")))))
+
+(deftest method-priors-cycle-past-the-end
+  (let [n (count personas/personas)]
+    (is (= (personas/for-index 0) (personas/for-index n))
+        "a beam wider than the catalogue reuses rather than handing back nil")
+    (is (not= (personas/for-index 0) (personas/for-index 1)))))
+
+(deftest a-method-prior-rides-on-the-problem-message-not-the-system-frame
+  ;; It CANNOT go in messages[0]: refresh-frame re-renders the system frame
+  ;; from disk on the way to the wire every turn, so anything per-branch put
+  ;; there is overwritten before it is ever sent. The problem message is where
+  ;; `note` interventions live for the same reason — compact preserves the
+  ;; frame exactly, so it survives.
+  (let [p (personas/for-index 0)
+        msgs (aloop/initial-messages "the problem" p)]
+    (is (= 2 (count msgs)))
+    (is (not (str/includes? (:content (first msgs)) (:method p)))
+        "not in the system frame, which refresh-frame would clobber")
+    (is (str/includes? (:content (second msgs)) (:method p)))
+    (is (str/includes? (:content (second msgs)) "the problem")
+        "and the problem itself is still there")
+    (testing "and it survives the frame refresh that would have eaten it"
+      (let [out (#'aloop/refresh-frame msgs)]
+        (is (str/includes? (:content (second out)) (:method p)))))))
+
+(deftest initial-messages-without-a-prior-is-unchanged
+  ;; resume.clj rebuilds a branch's opening messages with the 1-arity form.
+  ;; Changing what that returns would silently rewrite replayed history.
+  (is (= (aloop/initial-messages "p") (aloop/initial-messages "p" nil))))
+
+(deftest a-fork-inherits-its-parents-method-prior
+  ;; A fork is a continuation of its parent's line of attack, so it keeps the
+  ;; parent's problem message verbatim — which already carries both the prior
+  ;; and any operator notes.
+  (let [p (personas/for-index 2)
+        parent {:messages (aloop/initial-messages "orig" p)}
+        forked (#'beam/fork-messages "orig" parent nil)]
+    (is (str/includes? (:content (second forked)) (:method p))))
+  (testing "a root branch with no parent takes the prior it is given"
+    (let [p (personas/for-index 3)
+          m (#'beam/fork-messages "orig" nil p)]
+      (is (str/includes? (:content (second m)) (:method p))))))
+
+(deftest method-priors-can-be-switched-off
+  ;; The claim made for these is branch diversity, and diversity is measurable:
+  ;; the share of branches opening on the same verification tool. A knob that
+  ;; cannot be turned off is a claim that cannot be tested, so the A/B arm has
+  ;; to exist before the feature is believed.
+  (is (true? (get-in (config/load-config {}) [:run :personas?]))
+      "on by default")
+  (is (false? (get-in (config/load-config {:run {:personas? false}})
+                      [:run :personas?]))
+      "and an explicit override is respected"))

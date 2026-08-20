@@ -24,6 +24,7 @@
             [clojure.tools.logging :as log]
             [veriframe.agent.arbiter :as arbiter]
             [veriframe.agent.gates :as gates]
+            [veriframe.agent.personas :as personas]
             [veriframe.agent.state :as state]
             [veriframe.agent.tools :as tools]
             [veriframe.engine.prolog :as prolog]
@@ -88,9 +89,23 @@
       (str (subs s 0 max-result-chars) "\n… [truncated]")
       s)))
 
-(defn initial-messages [problem]
-  [{:role "system" :content (system-prompt)}
-   {:role "user" :content (str "## Problem\n\n" problem "\n\nIssue your first tool call.")}])
+(defn initial-messages
+  "A branch's opening messages.
+
+  The optional method prior rides on the PROBLEM message, never the system
+  frame: `refresh-frame` re-renders messages[0] from disk on the way to the
+  wire every turn, so anything per-branch placed there is overwritten before
+  it is ever sent. `note` interventions live on the problem message for the
+  same reason — `compact` preserves the frame exactly.
+
+  The 1-arity form is what `resume` replays history with, so it must keep
+  returning exactly what it always did."
+  ([problem] (initial-messages problem nil))
+  ([problem persona]
+   [{:role "system" :content (system-prompt)}
+    {:role "user" :content (str "## Problem\n\n" problem
+                                (personas/render persona)
+                                "\n\nIssue your first tool call.")}]))
 
 (defn- refresh-frame
   "Re-render the system message from disk on the way to the wire.

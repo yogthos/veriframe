@@ -32,6 +32,7 @@
             [veriframe.agent.critic :as critic]
             [veriframe.agent.gates :as gates]
             [veriframe.agent.loop :as branch-loop]
+            [veriframe.agent.personas :as personas]
             [veriframe.agent.state :as state]
             [veriframe.engine.lean-repl :as lean-repl]
             [veriframe.engine.octave :as octave]
@@ -77,21 +78,23 @@
 
   The SYSTEM half is re-rendered rather than copied: it is a pure function of
   files on disk and the parent's copy may predate a deploy (see refresh-frame)."
-  [problem parent]
-  (let [base (vec (branch-loop/initial-messages problem))]
+  ([problem parent] (fork-messages problem parent nil))
+  ([problem parent persona]
+  (let [base (vec (branch-loop/initial-messages problem persona))]
     (if-let [pm (get-in parent [:messages 1])]
       (assoc base 1 pm)
-      base)))
+      base))))
 
 (defn- open-branch!
-  ([ctx id parent-id thesis turn] (open-branch! ctx id parent-id thesis turn nil))
-  ([{:keys [conn run-id config problem sessions]} id parent-id thesis turn parent]
+  ([ctx id parent-id thesis turn] (open-branch! ctx id parent-id thesis turn nil nil))
+  ([ctx id parent-id thesis turn parent] (open-branch! ctx id parent-id thesis turn parent nil))
+  ([{:keys [conn run-id config problem sessions]} id parent-id thesis turn parent persona]
   (let [session (prolog/create-session (get-in config [:engines :swipl]))
         _ (when sessions (swap! sessions conj session))
         b (state/new-branch
            {:id id :parent-id parent-id :problem problem :prolog session
             :created-at-turn turn
-            :messages (fork-messages problem parent)})]
+            :messages (fork-messages problem parent persona)})]
     (runs/open-branch! conn run-id {:branch-id id :parent-id parent-id
                                     :created-at-turn turn})
     (if thesis
@@ -858,7 +861,10 @@
     ;; journal poller handles that, and it is the honest picture — the branches
     ;; genuinely do not exist yet.
     (when on-start (on-start run-id))
-    (let [initial (mapv #(open-branch! ctx (str "B" (inc %)) nil nil 0) (range width))]
+    (let [personas? (get-in config [:run :personas?] true)
+          initial (mapv #(open-branch! ctx (str "B" (inc %)) nil nil 0 nil
+                                       (when personas? (personas/for-index %)))
+                        (range width))]
       (run-rounds ctx initial 1))))
 
 (defn summary
