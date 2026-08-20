@@ -168,7 +168,16 @@ proof_step({tactic})          Apply one tactic. A tactic that fails leaves the
                               goal UNCHANGED, so trying another costs nothing
                               but the turn. Closing the last goal records the
                               whole tactic script as slow-tier evidence.
-proof_state({})               The theorem and the tactics applied so far.
+proof_state({})               The theorem, the tactics applied so far, and
+                              how many of them can be stepped back.
+proof_undo({steps})           Step back `steps` tactics (default 1) to an
+                              earlier goal, keeping the rest of the proof. A
+                              tactic that FAILS leaves the goal alone and needs
+                              no undo; this is for one that SUCCEEDS and turns
+                              out to be the wrong move — an induction on the
+                              wrong variable, a `simp` that mangles the goal.
+                              Costs no engine call. Reach for it instead of
+                              abandoning a proof that is mostly right.
 proof_abandon({})             Drop the open proof and start over.
 
 fetch_turn({turn})            Reopen one of your own earlier turns in full —

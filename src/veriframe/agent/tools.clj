@@ -3021,7 +3021,16 @@
                                     :state (:proofState sorry)
                                     :cites (:handles cited)
                                     :cited-code (:code cited)
-                                    :tactics []})
+                                    :tactics []
+                                    ;; Every state the proof has been in, so a
+                                    ;; wrong-but-successful tactic can be
+                                    ;; stepped back out of (vf-w8e). Lean keeps
+                                    ;; old proof states addressable, so this is
+                                    ;; a pointer trail, not a replay log. Index
+                                    ;; i is the state AFTER tactic i; index 0
+                                    ;; is the goal as opened.
+                                    :history [{:state (:proofState sorry)
+                                               :goals [(:goal sorry)]}]})
               (str "Proof opened"
                    (when (seq (:handles cited))
                      (str ", standing on " (str/join ", " (:handles cited))))
@@ -3141,7 +3150,15 @@
                            " cited, inherited, or re-checked later.")
                       :failure {:claim (:claim p)
                                 :reason "the assembled proof did not elaborate"})
-                {:branch (assoc branch :proof (assoc p :state (:proof-state r) :closed? true))
+                ;; The closing step goes into the history too, or `tactics`
+                ;; and `history` fall out of step and proof_undo miscounts what
+                ;; can be stepped back. Found by undoing two tactics where the
+                ;; second had closed the proof: available read 1, not 2.
+                {:branch (assoc branch :proof
+                                (-> p
+                                    (assoc :state (:proof-state r) :closed? true)
+                                    (update :history (fnil conj [])
+                                            {:state (:proof-state r) :goals []})))
                  :category :success :progress? true
                  :result (str "No goals remain — the proof is CLOSED.\n\n" code)
                  :artifact {:kind :lean :claim (:claim p) :code code
@@ -3150,9 +3167,13 @@
         :else
         (ok (assoc branch :proof (-> p
                                      (assoc :state (:proof-state r))
-                                     (update :tactics conj (arg ctx :tactic))))
+                                     (update :tactics conj (arg ctx :tactic))
+                                     (update :history (fnil conj [])
+                                             {:state (:proof-state r)
+                                              :goals (vec (:goals r))})))
             (str (count (:goals r)) " goal(s) remain:\n\n"
-                 (str/join "\n\n" (:goals r)))
+                 (str/join "\n\n" (:goals r))
+                 "\n\n(" (inc (count (:tactics p))) " applied; `proof_undo` steps back.)")
             :progress? true)))))
 
 (defmethod run-tool "fetch_artifact" [{:keys [branch conn run-id] :as ctx}]
@@ -3256,8 +3277,75 @@
 (defmethod run-tool "proof_state" [{:keys [branch]}]
   (if-let [p (:proof branch)]
     (ok branch (str "Proving: " (:theorem p)
-                    "\nTactics so far:\n  " (str/join "\n  " (:tactics p))))
+                    "\nTactics so far:\n  " (str/join "\n  " (:tactics p))
+                    (when-let [h (:history p)]
+                      (str "\n\n" (dec (count h)) " step(s) can be undone;"
+                           " `proof_undo({steps})` steps back without losing"
+                           " the rest of the proof."))))
     (fail branch "No proof is open.")))
+
+(defmethod run-tool "proof_undo" [{:keys [branch] :as ctx}]
+  ;; Step back to an earlier proof state (vf-w8e).
+  ;;
+  ;; A failed tactic never needed this — the state is unchanged, so trying
+  ;; another costs only the turn. What needed it is a tactic that SUCCEEDS and
+  ;; is wrong: an `induction` on the wrong variable, a `simp` that mangles the
+  ;; goal. Before this the only retreat was `proof_abandon`, which drops
+  ;; everything, so a bad step twelve deep cost the whole proof. gen-34 opened
+  ;; ten proofs and closed one; gen-33's B1 ran 26 consecutive steps without
+  ;; closing.
+  ;;
+  ;; A pointer move, not a replay. Lean's REPL addresses proof states by id and
+  ;; keeps earlier ones live — applying a second tactic to a state something
+  ;; else has already advanced past works and can close the goal. So undo costs
+  ;; no engine call at all, and cannot fail on a dead session.
+  (let [p (:proof branch)
+        raw (arg ctx :steps)
+        n (if (nil? raw) 1 raw)
+        hist (:history p)
+        available (max 0 (dec (count hist)))]
+    (cond
+      (nil? p) (fail branch "No proof is open. Call proof_start first.")
+
+      (nil? hist)
+      (malformed branch
+                 (str "This proof was opened before step history was recorded,"
+                      " so there is nothing to step back through. Carry on, or"
+                      " `proof_abandon` and reopen it to get undo."))
+
+      (not (and (integer? n) (pos? n)))
+      (malformed branch "`steps` must be a positive whole number, or omitted for one.")
+
+      (zero? available)
+      (malformed branch
+                 (str "You are at the goal as opened, so there is nothing to"
+                      " undo. `proof_abandon` drops the proof entirely."))
+
+      (> n available)
+      (malformed branch
+                 (str "Only " available " step(s) have been applied, so " n
+                      " cannot be undone. The proof is unchanged."))
+
+      :else
+      (let [hist' (subvec (vec hist) 0 (- (count hist) n))
+            here (last hist')
+            p' (-> p
+                   (assoc :history hist'
+                          :state (:state here)
+                          :tactics (subvec (vec (:tactics p))
+                                           0 (- (count (:tactics p)) n)))
+                   (dissoc :closed?))]
+        (ok (assoc branch :proof p')
+            (str "Stepped back " n " tactic(s). " (count (:tactics p'))
+                 " remain applied"
+                 (when (seq (:tactics p'))
+                   (str ", ending with `" (last (:tactics p')) "`"))
+                 ".\n\n"
+                 (if-let [g (seq (:goals here))]
+                   (str (count g) " goal(s) here:\n\n" (str/join "\n\n" g))
+                   "The goal here was not recorded.")
+                 "\n\nThe discarded tactics are gone from the proof; apply a"
+                 " different one to go another way."))))))
 
 (defmethod run-tool "proof_abandon" [{:keys [branch]}]
   (ok (dissoc branch :proof) "Proof abandoned."))

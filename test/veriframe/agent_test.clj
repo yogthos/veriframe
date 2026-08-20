@@ -1104,7 +1104,7 @@
   (is (= #{"add_rule" "retract_rule" "verify" "verify_smt" "verify_template"
            "thesis" "branch_theses" "review" "audit" "done" "give_up"
            "verify_lean" "lean_search" "lean_check" "proof_start" "proof_step"
-           "proof_state" "proof_abandon" "sketch"
+           "proof_state" "proof_undo" "proof_abandon" "sketch"
            "octave_eval" "verify_octave" "measure" "fetch_artifact" "fetch_turn"}
          (set (tools/tool-names))))
   (is (some? (get-method tools/run-tool :default))
@@ -2144,6 +2144,104 @@
           (let [r (call 5 (fresh!))]
             (is (= :failure (:category r))
                 "line 5 is the branch's own first line, not the citation's")))))))
+
+(deftest a-proof-can-step-back-to-any-earlier-state
+  ;; vf-w8e. The only retreat was proof_abandon, which drops the whole proof.
+  ;; A FAILED tactic is harmless — the state is unchanged — but a SUCCESSFUL
+  ;; wrong one is not: an `induction` on the wrong variable at step 12 of 26
+  ;; could not be walked back, so the branch either ground on from a bad state
+  ;; or threw away 25 turns. gen-34 opened 10 proofs and closed 1; gen-33's B1
+  ;; ran 26 consecutive steps without closing.
+  ;;
+  ;; Lean's REPL addresses proof states by id and keeps old ones live —
+  ;; verified against a real session: applying a second tactic to the ORIGINAL
+  ;; state after a first had advanced past it works and closes the goal. So
+  ;; backtracking is a pointer move, not a replay.
+  (let [conn nil
+        opened {:id "B1" :problem "p" :lean {:id "s"}
+                :proof {:claim "c" :theorem "theorem t : True"
+                        :state 3 :tactics ["one" "two" "three"]
+                        :history [{:state 0 :goals ["G0"]}
+                                  {:state 1 :goals ["G1"]}
+                                  {:state 2 :goals ["G2"]}
+                                  {:state 3 :goals ["G3"]}]}}
+        undo (fn [b n] (tools/run-tool (cond-> {:branch b :tool-name "proof_undo" :args {}}
+                                         n (assoc :args {:steps n}))))]
+
+    (testing "one step back by default"
+      (let [r (undo opened nil)
+            p (get-in r [:branch :proof])]
+        (is (= :neutral (:category r)))
+        (is (false? (:progress? r)) "stepping back is not progress")
+        (is (= ["one" "two"] (:tactics p)))
+        (is (= 2 (:state p)) "the state pointer follows the truncation")
+        (is (= 3 (count (:history p))))
+        (is (str/includes? (:result r) "G2") "and the restored goal comes back")))
+
+    (testing "several steps at once"
+      (let [p (get-in (undo opened 3) [:branch :proof])]
+        (is (= [] (:tactics p)))
+        (is (= 0 (:state p)) "back to the goal as opened")
+        (is (= 1 (count (:history p))))))
+
+    (testing "undoing past the start is refused without disturbing the proof"
+      (let [r (undo opened 4)]
+        (is (= :mechanics (:category r))
+            "a bad step count is a call made wrong, not a failed proof")
+        (is (= ["one" "two" "three"] (get-in r [:branch :proof :tactics]))
+            "and the proof is left exactly as it was")
+        (is (str/includes? (:result r) "3"))))
+
+    (testing "at the opened goal there is nothing to undo"
+      (let [fresh (assoc-in opened [:proof] {:claim "c" :theorem "t" :state 0
+                                             :tactics []
+                                             :history [{:state 0 :goals ["G0"]}]})
+            r (undo fresh nil)]
+        (is (= :mechanics (:category r)))))
+
+    (testing "a nonsense step count is refused"
+      (is (= :mechanics (:category (undo opened 0))))
+      (is (= :mechanics (:category (undo opened -2)))))
+
+    (testing "no proof open"
+      (is (= :failure (:category (undo {:id "B1" :problem "p"} nil)))))
+
+    (testing "a closing tactic is recorded too, so the counts stay in step"
+      ;; Caught live: `all_goals omega` closed the proof, the closing branch
+      ;; banked the artifact without extending the history, and undoing two
+      ;; tactics was then refused because available read 1 instead of 2.
+      (let [closed {:id "B1" :problem "p"
+                    :proof {:claim "c" :theorem "t" :state 2 :closed? true
+                            :tactics ["one" "two"]
+                            :history [{:state 0 :goals ["G0"]}
+                                      {:state 1 :goals ["G1"]}
+                                      {:state 2 :goals []}]}}
+            r (undo closed 2)]
+        (is (= :neutral (:category r)))
+        (is (= [] (get-in r [:branch :proof :tactics])))
+        (is (nil? (get-in r [:branch :proof :closed?]))
+            "and it is no longer a closed proof")))
+
+    (testing "a proof opened before this feature existed says so rather than crashing"
+      ;; Deployed mid-run: branches already holding an open proof have no
+      ;; :history key, and must not hit a nil.
+      (let [legacy (assoc-in opened [:proof] {:claim "c" :theorem "t" :state 7
+                                              :tactics ["a" "b"]})
+            r (undo legacy nil)]
+        (is (= :mechanics (:category r)))
+        (is (= ["a" "b"] (get-in r [:branch :proof :tactics])))))))
+
+(deftest proof-state-reports-how-far-back-it-can-go
+  (let [b {:id "B1" :problem "p"
+           :proof {:claim "c" :theorem "theorem t : True"
+                   :state 2 :tactics ["one" "two"]
+                   :history [{:state 0 :goals ["G0"]}
+                             {:state 1 :goals ["G1"]}
+                             {:state 2 :goals ["G2"]}]}}
+        r (tools/run-tool {:branch b :tool-name "proof_state" :args {}})]
+    (is (str/includes? (:result r) "one"))
+    (is (re-find #"(?i)undo|step back" (:result r))
+        "a branch cannot use backtracking it is never told about")))
 
 (deftest a-fork-inherits-the-notes-appended-to-its-parent-s-problem
   ;; `note` exists because `message` decays at compaction: it appends to the
