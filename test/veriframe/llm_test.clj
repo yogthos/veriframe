@@ -27,6 +27,34 @@
 
 (defn- fenced [body] (str "prose before\n```tool-call\n" body "\n```\nprose after"))
 
+(deftest an-over-closed-call-is-not-thrown-away
+  ;; gen-35 B2.2 was culled after six consecutive no-calls, "could not emit a
+  ;; well-formed fence". It had emitted ```tool-call, a complete `thesis`
+  ;; payload with all four arguments, and no closing fence — which the
+  ;; trailing-call rung exists to forgive. What actually defeated it was one
+  ;; character: the payload ended `"}})`, a paren too many, and that rung
+  ;; anchors on whitespace-then-end. It repeated the identical 663-token
+  ;; response four times and died with a valid call in hand.
+  (testing "a stray closer after the object is tolerated"
+    (let [p (fence/parse-tool-call
+             "```tool-call\n{\"name\": \"thesis\", \"args\": {\"goal\": \"g\"}})")]
+      (is (= "thesis" (:name p)))
+      (is (= "g" (get-in p [:args :goal])))
+      (is (:unfenced? p) "and it stays visible as an unfenced call")))
+
+  (testing "several stray closers, and brackets too"
+    (is (= "t" (:name (fence/parse-tool-call "{\"name\": \"t\", \"args\": {}}}]) ")))))
+
+  (testing "trailing PROSE still means no call"
+    (is (nil? (fence/parse-tool-call
+               "{\"name\": \"t\", \"args\": {}}\nand now I will explain")))
+    (is (nil? (fence/parse-tool-call "```tool-call\nI will search for it"))
+        "an opener over prose is still no call at all"))
+
+  (testing "a properly closed fence is unaffected"
+    (is (= "a" (:name (fence/parse-tool-call
+                       "```tool-call\n{\"name\": \"a\", \"args\": {}}\n```"))))))
+
 (deftest a-plural-tool-calls-closer-still-closes-the-fence
   ;; gen-31 B1.2 (2026-08-18), three turns running. It opened with the
   ;; documented ```tool-call fence and closed with </tool-calls> — plural — so

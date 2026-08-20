@@ -55,8 +55,6 @@
 (def fence-re
   #"(?s)(?:```tool-call\s*\r?\n|<tool-call>\s*)(.*?)(?:```|</tool[-_]calls?>)")
 
-;; A general-purpose ```json fence, which a model also uses to show data. Only
-;; counts when the body is the DOCUMENTED shape, checked in json-fence below.
 (def ^:private json-fence-re #"(?s)```json\s*\r?\n(.*?)```")
 
 (defn repair-control-chars
@@ -137,7 +135,15 @@
 ;; simply omits the fence. Anchored to the END of the response and required to
 ;; balance from a `{` that starts a line, so a JSON example quoted mid-argument
 ;; cannot be mistaken for the call.
-(def ^:private trailing-object-re #"(?s)(?:^|\n)\s*(\{.*\})\s*\z")
+;; `[\s)\]]*` rather than `\s*` after the object: a model that over-closes its
+;; own call must not lose it. gen-35 B2.2 ended a complete `thesis` payload —
+;; all four arguments, valid JSON — with `"}})`, one paren too many, then
+;; repeated that identical 663-token response four times and was culled for
+;; "could not emit a well-formed fence". It had opened ```tool-call and never
+;; closed it, which this rung exists to forgive; the single stray `)` is what
+;; defeated it. Only stray CLOSERS and whitespace are tolerated, so trailing
+;; prose still means no call.
+(def ^:private trailing-object-re #"(?s)(?:^|\n)\s*(\{.*\})[\s)\]]*\z")
 
 (defn- trailing-call
   "The response's final top-level JSON object, but only if it is plausibly a
