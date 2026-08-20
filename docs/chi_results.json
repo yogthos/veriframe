@@ -1,0 +1,255 @@
+[
+ {
+  "n": 557,
+  "S": [
+   1,
+   8,
+   20
+  ],
+  "slug": "circulant-557-1-8-20-chromatic-number",
+  "chi": 3,
+  "settled": true
+ },
+ {
+  "n": 563,
+  "S": [
+   1,
+   9,
+   21
+  ],
+  "slug": "circulant-563-1-9-21-chromatic-number",
+  "chi": 3,
+  "settled": true
+ },
+ {
+  "n": 569,
+  "S": [
+   1,
+   10,
+   22
+  ],
+  "slug": "circulant-569-1-10-22-chromatic-number",
+  "chi": 3,
+  "settled": true
+ },
+ {
+  "n": 571,
+  "S": [
+   1,
+   11,
+   23
+  ],
+  "slug": "circulant-571-1-11-23-chromatic-number",
+  "chi": 3,
+  "settled": true
+ },
+ {
+  "n": 577,
+  "S": [
+   1,
+   12,
+   24
+  ],
+  "slug": "circulant-577-1-12-24-chromatic-number",
+  "chi": 4,
+  "settled": true
+ },
+ {
+  "n": 607,
+  "S": [
+   1,
+   6,
+   29
+  ],
+  "slug": "circulant-607-1-6-29-chromatic-number",
+  "chi": 3,
+  "settled": true
+ },
+ {
+  "n": 613,
+  "S": [
+   1,
+   7,
+   30
+  ],
+  "slug": "circulant-613-1-7-30-chromatic-number",
+  "chi": 3,
+  "settled": true
+ },
+ {
+  "n": 631,
+  "S": [
+   1,
+   10,
+   16
+  ],
+  "slug": "circulant-631-1-10-16-chromatic-number",
+  "chi": 3,
+  "settled": true
+ },
+ {
+  "n": 641,
+  "S": [
+   1,
+   11,
+   17
+  ],
+  "slug": "circulant-641-1-11-17-chromatic-number",
+  "chi": 3,
+  "settled": true
+ },
+ {
+  "n": 643,
+  "S": [
+   1,
+   12,
+   18
+  ],
+  "slug": "circulant-643-1-12-18-chromatic-number",
+  "chi": 3,
+  "settled": true
+ },
+ {
+  "n": 683,
+  "S": [
+   1,
+   8,
+   25
+  ],
+  "slug": "circulant-683-1-8-25-chromatic-number",
+  "chi": 3,
+  "settled": true
+ },
+ {
+  "n": 691,
+  "S": [
+   1,
+   9,
+   26
+  ],
+  "slug": "circulant-691-1-9-26-chromatic-number",
+  "chi": 3,
+  "settled": true
+ },
+ {
+  "n": 701,
+  "S": [
+   1,
+   10,
+   27
+  ],
+  "slug": "circulant-701-1-10-27-chromatic-number",
+  "chi": 3,
+  "settled": true
+ },
+ {
+  "n": 709,
+  "S": [
+   1,
+   11,
+   28
+  ],
+  "slug": "circulant-709-1-11-28-chromatic-number",
+  "chi": 3,
+  "settled": true
+ },
+ {
+  "n": 719,
+  "S": [
+   1,
+   12,
+   29
+  ],
+  "slug": "circulant-719-1-12-29-chromatic-number",
+  "chi": 3,
+  "settled": true
+ },
+ {
+  "n": 827,
+  "S": [
+   1,
+   10,
+   22
+  ],
+  "slug": "circulant-827-1-10-22-chromatic-number",
+  "chi": 3,
+  "settled": true
+ },
+ {
+  "n": 829,
+  "S": [
+   1,
+   11,
+   23
+  ],
+  "slug": "circulant-829-1-11-23-chromatic-number",
+  "chi": 3,
+  "settled": true
+ },
+ {
+  "n": 839,
+  "S": [
+   1,
+   12,
+   24
+  ],
+  "slug": "circulant-839-1-12-24-chromatic-number",
+  "chi": 4,
+  "settled": true
+ },
+ {
+  "n": 983,
+  "S": [
+   1,
+   10,
+   27
+  ],
+  "slug": "circulant-983-1-10-27-chromatic-number",
+  "chi": 3,
+  "settled": true
+ },
+ {
+  "n": 991,
+  "S": [
+   1,
+   11,
+   28
+  ],
+  "slug": "circulant-991-1-11-28-chromatic-number",
+  "chi": 3,
+  "settled": true
+ },
+ {
+  "n": 997,
+  "S": [
+   1,
+   12,
+   29
+  ],
+  "slug": "circulant-997-1-12-29-chromatic-number",
+  "chi": 3,
+  "settled": true
+ },
+ {
+  "n": 1063,
+  "S": [
+   1,
+   12,
+   23
+  ],
+  "slug": "circulant-1063-1-12-23-chromatic-number",
+  "chi": 3,
+  "settled": true
+ },
+ {
+  "n": 1229,
+  "S": [
+   1,
+   12,
+   28
+  ],
+  "slug": "circulant-1229-1-12-28-chromatic-number",
+  "chi": 3,
+  "settled": true
+ }
+]
