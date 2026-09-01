@@ -16,6 +16,10 @@
   entity with a durable id rather than a value threaded through the loop,
   because an intervention has to be able to name one."
   (:require [clojure.data.json :as json]
+            ;; db.jdbc registers the java.sql shim clojure.jdbc compiles against and
+            ;; points connection construction at the native driver; it has to load
+            ;; before jdbc.core.
+            [db.jdbc]
             [jdbc.core :as jdbc]
             [veriframe.store.db :as db]
             [veriframe.store.journal :as journal]))

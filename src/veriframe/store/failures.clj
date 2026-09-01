@@ -20,6 +20,10 @@
   indexed is a projection of claim plus reason and external-content deletes
   require the exact indexed values back. Sync is app-managed here, no triggers."
   (:require [clojure.string :as str]
+            ;; db.jdbc registers the java.sql shim clojure.jdbc compiles against and
+            ;; points connection construction at the native driver; it has to load
+            ;; before jdbc.core.
+            [db.jdbc]
             [jdbc.core :as jdbc]
             [veriframe.store.db :as db]
             [veriframe.store.journal :as journal]))

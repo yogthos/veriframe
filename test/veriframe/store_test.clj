@@ -16,6 +16,10 @@
   no error. Counting objects created against statements written is how that
   failure mode stays loud."
   (:require [clojure.test :refer [deftest testing is]]
+            ;; db.jdbc registers the java.sql shim clojure.jdbc compiles against and
+            ;; points connection construction at the native driver; it has to load
+            ;; before jdbc.core.
+            [db.jdbc]
             [jdbc.core :as jdbc]
             [veriframe.agent.gates :as gates]
             [veriframe.agent.loop :as branch-loop]

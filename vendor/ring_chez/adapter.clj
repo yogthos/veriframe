@@ -94,14 +94,14 @@
 ;; Linux: bytes0-1 = family (little-endian, so byte0 = AF_INET).
 (defn- make-sockaddr [port]
   (let [sa (ffi/alloc 16)]
-    (dotimes [i 16] (ffi/write sa :uint8 i 0))
+    (dotimes [i 16] (ffi/write sa :uint8 0 i))
     (if macos?
-      (do (ffi/write sa :uint8 0 16) (ffi/write sa :uint8 1 AF-INET))
-      (ffi/write sa :uint8 0 AF-INET))
-    (ffi/write sa :uint8 2 (bit-and (bit-shift-right port 8) 0xff))   ; port hi (network order)
-    (ffi/write sa :uint8 3 (bit-and port 0xff))                       ; port lo
-    (ffi/write sa :uint8 4 127) (ffi/write sa :uint8 5 0)             ; 127.0.0.1
-    (ffi/write sa :uint8 6 0)   (ffi/write sa :uint8 7 1)
+      (do (ffi/write sa :uint8 16 0) (ffi/write sa :uint8 AF-INET 1))
+      (ffi/write sa :uint8 AF-INET 0))
+    (ffi/write sa :uint8 (bit-and (bit-shift-right port 8) 0xff) 2)   ; port hi (network order)
+    (ffi/write sa :uint8 (bit-and port 0xff) 3)                       ; port lo
+    (ffi/write sa :uint8 127 4) (ffi/write sa :uint8 0 5)             ; 127.0.0.1
+    (ffi/write sa :uint8 0 6)   (ffi/write sa :uint8 1 7)
     sa))
 
 (defn- listen-socket [port]
@@ -111,7 +111,7 @@
   (let [fd (c-socket AF-INET (bit-or SOCK-STREAM sock-cloexec) 0)]
     (when (neg? fd) (throw (ex-info "socket() failed" {})))
     (let [opt (ffi/alloc 4)]
-      (ffi/write opt :int 0 1)
+      (ffi/write opt :int 1 0)
       (c-setsockopt fd sol-socket so-reuse opt 4)
       (ffi/free opt))
     (let [sa (make-sockaddr port)]

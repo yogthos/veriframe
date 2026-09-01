@@ -23,6 +23,10 @@
   approach another had already disproven, and did either arm actually solve the
   problem. Those are the rows to read."
   (:require [clojure.string :as str]
+            ;; db.jdbc registers the java.sql shim clojure.jdbc compiles against and
+            ;; points connection construction at the native driver; it has to load
+            ;; before jdbc.core.
+            [db.jdbc]
             [jdbc.core :as jdbc]
             [veriframe.agent.beam :as beam]
             [veriframe.config :as config]

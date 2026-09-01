@@ -21,6 +21,10 @@
   and did not get one is reported as INERT rather than as a pass, because a
   silent guard and a working guard look identical from the outside."
   (:require [clojure.string :as str]
+            ;; db.jdbc registers the java.sql shim clojure.jdbc compiles against and
+            ;; points connection construction at the native driver; it has to load
+            ;; before jdbc.core.
+            [db.jdbc]
             [jdbc.core :as jdbc]
             [veriframe.agent.beam :as beam]
             [veriframe.bench.beam :as metrics]
