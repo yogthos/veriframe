@@ -181,10 +181,17 @@
 
 ;; --- network ----------------------------------------------------------------
 
+(defn models-url
+  "The model listing for a provider's base URL. DeepSeek's /beta base, which
+  config uses for prefix completion, serves completions but 404s on /models;
+  the listing lives at the root."
+  [base-url]
+  (str (str/replace base-url #"/beta/?$" "") "/models"))
+
 (defn- provider-check [{:keys [base-url api-key model timeout-ms]}]
   (if (str/blank? api-key)
     [:skip "no API key in the environment"]
-    (let [resp (http/get (str base-url "/models")
+    (let [resp (http/get (models-url base-url)
                          {:headers {"Authorization" (str "Bearer " api-key)}
                           :socket-timeout timeout-ms})]
       (if (and (= 200 (:status resp)) (str/includes? (:body resp) model))

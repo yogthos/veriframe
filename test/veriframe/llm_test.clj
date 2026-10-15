@@ -21,7 +21,8 @@
             [veriframe.llm.client :as client]
             [veriframe.llm.fence :as fence]
             [veriframe.llm.message :as message]
-            [veriframe.llm.registry :as registry]))
+            [veriframe.llm.registry :as registry]
+            [veriframe.smoke :as smoke]))
 
 ;; --- fence extraction -------------------------------------------------------
 
@@ -863,3 +864,13 @@
       (is (:unfenced? p)))
     (is (nil? (fence/parse-tool-call "```tool-call\nI will search for it"))
         "and an opener over prose is still no call at all")))
+
+;; --- smoke probe URLs -------------------------------------------------------
+
+(deftest the-model-listing-leaves-deepseeks-beta-prefix
+  ;; /beta serves completions but 404s on /models, so the reachability probe
+  ;; failed against a provider that was answering completions fine.
+  (is (= "https://api.deepseek.com/models"
+         (smoke/models-url "https://api.deepseek.com/beta")))
+  (is (= "https://api.openai.com/v1/models"
+         (smoke/models-url "https://api.openai.com/v1"))))
